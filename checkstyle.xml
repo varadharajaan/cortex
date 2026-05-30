@@ -1,0 +1,176 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+        "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+        "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+    CORTEX -- Checkstyle configuration.
+
+    Enforces:
+      - ASCII only (Rule A0.1)
+      - 120-char Java line limit (Rule A0.6)
+      - Constructor injection only (Rule 14.1) -- enforced via SuppressionFilter
+        + custom check for @Autowired on fields
+      - No System.out.println (Rule 14.4)
+      - No magic numbers (Rule 14.6, soft via MagicNumber)
+      - Javadoc REQUIRED on every class, interface, enum, record (Rule 0.1.6)
+      - Javadoc REQUIRED on every method, public or private (Rule 0.1.6)
+      - Javadoc REQUIRED to include @param, @return, @throws (Rule 0.1.6)
+
+    Severity = error. Build fails on any violation.
+-->
+
+<module name="Checker">
+    <property name="charset" value="UTF-8"/>
+    <property name="severity" value="error"/>
+    <property name="fileExtensions" value="java, properties, xml"/>
+
+    <!-- ASCII only: forbid non-ASCII characters in source files. -->
+    <module name="RegexpSingleline">
+        <property name="format" value="[^\x00-\x7F]"/>
+        <property name="message" value="Non-ASCII character (Rule A0.1)."/>
+    </module>
+
+    <!-- No tabs. Rule A0.4 demands spaces only. -->
+    <module name="FileTabCharacter">
+        <property name="eachLine" value="true"/>
+    </module>
+
+    <!-- No System.out / System.err (Rule 14.4 / A2.5). -->
+    <module name="RegexpSingleline">
+        <property name="format" value="System\.(out|err)\.print"/>
+        <property name="message" value="Use SLF4J, not System.out/err (Rule 14.4)."/>
+    </module>
+
+    <!-- No e.printStackTrace (Rule A2.6). -->
+    <module name="RegexpSingleline">
+        <property name="format" value="\.printStackTrace\(\)"/>
+        <property name="message" value="Log with context, not printStackTrace (Rule A2.6)."/>
+    </module>
+
+    <!-- No @Autowired on fields (Rule 14.1 / A4.1). -->
+    <module name="RegexpSingleline">
+        <property name="format" value="^\s*@Autowired\s*$"/>
+        <property name="message" value="Constructor injection only; no field @Autowired (Rule 14.1)."/>
+    </module>
+
+    <!-- No TODO without an owner (Rule 14.5). -->
+    <module name="RegexpSingleline">
+        <property name="format" value="//\s*TODO(?!\(.+\))"/>
+        <property name="message" value="TODO must include owner: // TODO(name) ... (Rule 14.5)."/>
+    </module>
+
+    <module name="LineLength">
+        <property name="max" value="120"/>
+        <property name="fileExtensions" value="java"/>
+    </module>
+
+    <module name="TreeWalker">
+
+        <!-- ============================================================ -->
+        <!-- Javadoc enforcement (Rule 0.1.6)                              -->
+        <!-- Every class, every method (public AND private) must be doc'd. -->
+        <!-- ============================================================ -->
+
+        <module name="MissingJavadocType">
+            <property name="scope" value="private"/>
+            <property name="tokens"
+                      value="INTERFACE_DEF, CLASS_DEF, ENUM_DEF, ANNOTATION_DEF, RECORD_DEF"/>
+        </module>
+
+        <module name="MissingJavadocMethod">
+            <property name="scope" value="private"/>
+            <property name="allowMissingPropertyJavadoc" value="false"/>
+            <property name="ignoreMethodNamesRegex"
+                      value="^(equals|hashCode|toString|main)$"/>
+        </module>
+
+        <module name="JavadocType">
+            <property name="scope" value="private"/>
+        </module>
+
+        <module name="JavadocMethod">
+            <property name="accessModifiers" value="public,protected,package,private"/>
+            <property name="validateThrows" value="true"/>
+            <property name="allowMissingParamTags" value="false"/>
+            <property name="allowMissingReturnTag" value="false"/>
+        </module>
+
+        <module name="JavadocVariable">
+            <property name="scope" value="protected"/>
+        </module>
+
+        <!-- ============================================================ -->
+        <!-- Naming, imports, structure                                    -->
+        <!-- ============================================================ -->
+
+        <module name="PackageName">
+            <property name="format" value="^[a-z]+(\.[a-z][a-z0-9]*)*$"/>
+        </module>
+
+        <module name="TypeName"/>
+        <module name="MethodName"/>
+        <module name="ConstantName"/>
+        <module name="LocalVariableName"/>
+        <module name="MemberName"/>
+        <module name="ParameterName"/>
+
+        <module name="AvoidStarImport"/>
+        <module name="RedundantImport"/>
+        <module name="UnusedImports"/>
+
+        <!-- ============================================================ -->
+        <!-- Method / class size guardrails (Rule A2.10 / 14.8)            -->
+        <!-- ============================================================ -->
+
+        <module name="MethodLength">
+            <property name="max" value="30"/>
+            <property name="countEmpty" value="false"/>
+            <property name="severity" value="warning"/>
+        </module>
+
+        <module name="FileLength">
+            <property name="max" value="250"/>
+            <property name="severity" value="warning"/>
+            <property name="fileExtensions" value="java"/>
+        </module>
+
+        <module name="ParameterNumber">
+            <property name="max" value="6"/>
+        </module>
+
+        <!-- ============================================================ -->
+        <!-- Whitespace / formatting                                       -->
+        <!-- ============================================================ -->
+
+        <module name="EmptyBlock">
+            <property name="option" value="text"/>
+        </module>
+        <module name="LeftCurly"/>
+        <module name="NeedBraces"/>
+        <module name="RightCurly"/>
+        <module name="WhitespaceAround"/>
+        <module name="WhitespaceAfter"/>
+        <module name="NoWhitespaceBefore"/>
+
+        <!-- ============================================================ -->
+        <!-- Misc                                                          -->
+        <!-- ============================================================ -->
+
+        <module name="MagicNumber">
+            <property name="severity" value="warning"/>
+            <property name="ignoreNumbers" value="-1, 0, 1, 2, 100, 1000"/>
+        </module>
+        <module name="EqualsHashCode"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="StringLiteralEquality"/>
+        <module name="MissingSwitchDefault"/>
+        <module name="FallThrough"/>
+        <module name="ModifierOrder"/>
+        <module name="RedundantModifier"/>
+        <module name="FinalLocalVariable"/>
+
+    </module>
+
+</module>
