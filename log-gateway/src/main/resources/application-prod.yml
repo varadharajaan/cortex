@@ -1,12 +1,26 @@
 # ---------------------------------------------------------------------------
 # CORTEX log-gateway - prod profile (rule A6.1, 15.2).
 # Minimal endpoint surface, strict logging, fail-fast graceful shutdown.
-# Secrets MUST come from environment variables (rule A6.2).
+# Secrets MUST come from environment variables (rule A6.2):
+#   CORTEX_GATEWAY_JWT_SECRET           - Base64 HMAC key (>= 32 bytes)
+#   CORTEX_GATEWAY_ADMIN_PASSWORD       - bootstrap admin password
+# Bootstrap users are scaffolding only; P4 replaces them with PostgreSQL.
 # ---------------------------------------------------------------------------
 
 cortex:
   gateway:
     environment: prod
+    security:
+      jwt:
+        secret: ${CORTEX_GATEWAY_JWT_SECRET}
+        issuer: cortex-gateway
+        access-ttl: PT15M
+        refresh-ttl: P7D
+      bootstrap:
+        users:
+          - username: admin
+            password: ${CORTEX_GATEWAY_ADMIN_PASSWORD}
+            roles: [ADMIN, USER]
 
 management:
   endpoints:

@@ -1,11 +1,28 @@
 # ---------------------------------------------------------------------------
 # CORTEX log-gateway - dev profile (rule A6.1, 15.2).
 # Plain console logging, full health detail, debug-level CORTEX logs.
+# Dev JWT secret + bootstrap users live here so a developer can run the
+# gateway with zero env vars; both are overridden in staging / prod.
 # ---------------------------------------------------------------------------
 
 cortex:
   gateway:
     environment: dev
+    security:
+      jwt:
+        # 32-byte HMAC secret, Base64 of bytes 0..31. DEV ONLY.
+        secret: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+        issuer: cortex-gateway-dev
+        access-ttl: PT15M
+        refresh-ttl: P7D
+      bootstrap:
+        users:
+          - username: admin
+            password: dev-admin-pass
+            roles: [ADMIN, USER]
+          - username: user
+            password: dev-user-pass
+            roles: [USER]
 
 management:
   endpoint:

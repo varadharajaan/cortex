@@ -49,6 +49,17 @@ cortex:
   gateway:
     service: log-gateway
     environment: local
+    security:
+      jwt:
+        # Base64-encoded HMAC key (>= 32 bytes after decode). MUST come
+        # from env in every non-dev profile. The placeholder fails fast
+        # if no profile-specific override sets it.
+        secret: ${CORTEX_GATEWAY_JWT_SECRET:}
+        issuer: cortex-gateway
+        access-ttl: PT15M
+        refresh-ttl: P7D
+      bootstrap:
+        users: []
 
 logging:
   level:
