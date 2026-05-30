@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    OWASP Dependency-Check suppressions.
+
+    Add a <suppress> block ONLY with:
+      - a CVE id,
+      - a packageUrl regex,
+      - a justification including reviewer + date.
+
+    Empty by default. Do NOT pre-suppress.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+</suppressions>
