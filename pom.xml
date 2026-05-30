@@ -31,7 +31,15 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.5</version>
+        <!--
+          Pinned to 3.3.6 (minimum) because Spring Cloud Gateway 4.1.6
+          (Spring Cloud 2023.0.4) added a call to
+          `HttpHeaders.headerSet()`, which only exists in Spring
+          Framework 6.1.15+. That ships in Spring Boot 3.3.6+.
+          Reference: spring-cloud/spring-cloud-gateway#3664 +
+          Spring Cloud 2023.0.4 release notes.
+        -->
+        <version>3.3.6</version>
         <relativePath/>
     </parent>
 
