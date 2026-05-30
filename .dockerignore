@@ -1,0 +1,60 @@
+# Common Docker build excludes for all module images (Rule A18.2).
+
+# VCS
+.git/
+.gitignore
+.gitattributes
+
+# Build outputs are produced INSIDE the Docker build
+target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+
+# Local datastores
+loki-data/
+postgres-data/
+redis-data/
+rabbitmq-data/
+minio-data/
+quickwit-data/
+ollama-data/
+
+# Logs
+logs/
+*.log
+
+# Secrets
+.env
+.env.*
+secrets/
+*.pem
+*.key
+*.p12
+*.jks
+
+# Docs source
+docs/
+*.md
+!README.md
+LICENSE
+NOTICE
+CHANGELOG.md
+
+# Tooling
+infra/
+.github/
+.mvn/wrapper/maven-wrapper.jar
+node_modules/
+__pycache__/
+.venv/
+
+# Reports
+**/site/
+**/coverage/
+**/dependency-check-report*
+cyclonedx-sbom.xml

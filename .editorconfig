@@ -1,0 +1,40 @@
+# ============================================================================
+# CORTEX -- .editorconfig
+# Rule A0.4: spaces only, Java 4, YAML 2, JSON 2, markdown 2.
+# Rule A0.5: LF endings. Rule A0.6: 120 char max for Java, 100 for markdown.
+# ============================================================================
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.java]
+indent_size = 4
+max_line_length = 120
+
+[*.{xml,html}]
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+indent_size = 2
+max_line_length = 100
+trim_trailing_whitespace = false
+
+[*.{sh,bash}]
+indent_size = 2
+max_line_length = 80
+
+[*.{cmd,bat,ps1}]
+end_of_line = crlf
+indent_size = 2
+
+[Makefile]
+indent_style = tab

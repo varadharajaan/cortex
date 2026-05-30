@@ -1,0 +1,121 @@
+
+# ============================================================================
+# CORTEX -- .gitignore
+# ============================================================================
+# Rule A18.1: ignore build outputs, IDE files, logs, secrets, local datastores.
+# Q9: ignore local workspace planning docs and per-session tracking files.
+# ============================================================================
+
+# ---- Maven / Java build outputs ---------------------------------------------
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+.mvn/wrapper/maven-wrapper.jar
+
+# ---- IDE -------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.code-workspace
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+.apt_generated_test/
+nbproject/private/
+bin/
+
+# ---- OS --------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- Logs ------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+log/
+
+# ---- Local datastores / containers -----------------------------------------
+/tmp/
+loki-data/
+postgres-data/
+redis-data/
+rabbitmq-data/
+minio-data/
+quickwit-data/
+ollama-data/
+*.h2.db
+*.sqlite
+
+# ---- Secrets / env ---------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.jks
+secrets/
+
+# ---- Coverage / reports ----------------------------------------------------
+jacoco.exec
+**/site/
+**/coverage/
+**/spotbugs/
+**/dependency-check-report*
+cyclonedx-sbom.xml
+
+# ---- Node (postman tooling / commitlint) -----------------------------------
+node_modules/
+package-lock.json
+yarn.lock
+
+# ---- Python (helper scripts) -----------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+
+# ---- Terraform -------------------------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# ---- Ansible ---------------------------------------------------------------
+*.retry
+infra/ansible/.vault_pass
+
+# ---- Helm ------------------------------------------------------------------
+infra/helm/charts/**/charts/
+infra/helm/charts/**/*.tgz
+
+# ---- Workspace-local planning docs (Q9) ------------------------------------
+# These guided the design but are NOT part of the cortex deliverable.
+/agent-strict-rules-prompts.md
+/ai-powered-log-management-system.md
+/PLAN_MODE_PROMPT.md
+
+# ---- Local-only tracking files (Q9, A1.5 override) -------------------------
+# Per-session resumption files; live at root, never committed.
+/plan.md
+/checkpoint.md
+/memory.md
+/todo.md
+
+# ---- Workspace-local Copilot context (Q9 interpretation) -------------------
+# .github/copilot-instructions.md is workspace context for AI tooling,
+# NOT part of the cortex repo. .github/workflows/, CODEOWNERS, and
+# PULL_REQUEST_TEMPLATE.md ARE committed (required by Part 7.4 + B22).
+/.github/copilot-instructions.md
