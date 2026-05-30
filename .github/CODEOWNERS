@@ -1,0 +1,32 @@
+# CODEOWNERS for CORTEX.
+# Rule 14.10 / Part 7.4: every PR requires at least one CODEOWNER review.
+# Single-maintainer phase: everything routes to @varadharajaan.
+
+# Default fallback
+*                                @varadharajaan
+
+# Infrastructure as Code
+/infra/                          @varadharajaan
+/infra/terraform/                @varadharajaan
+/infra/helm/                     @varadharajaan
+/infra/ansible/                  @varadharajaan
+/infra/docker/                   @varadharajaan
+
+# Build / CI
+/pom.xml                         @varadharajaan
+/.github/                        @varadharajaan
+/.github/workflows/              @varadharajaan
+/checkstyle.xml                  @varadharajaan
+/renovate.json                   @varadharajaan
+/owasp-suppressions.xml          @varadharajaan
+
+# Database migrations
+**/src/main/resources/db/migration/   @varadharajaan
+**/src/main/resources/db/changelog/   @varadharajaan
+
+# Architecture Decision Records
+/docs/adr/                       @varadharajaan
+
+# Security-sensitive
+/SECURITY.md                     @varadharajaan
+/LICENSE                         @varadharajaan
