@@ -14,6 +14,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Unit tests for {@link GlobalExceptionHandler}: maps every exception
@@ -126,6 +128,21 @@ class GlobalExceptionHandlerTest {
                 new RuntimeException("dont leak this"), this.request);
 
         assertProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, ErrorCodes.INTERNAL_ERROR, "internal error");
+    }
+
+    /**
+     * {@link NoResourceFoundException} (thrown by Spring MVC when no handler
+     * matches an authenticated request) maps to {@code 404 Not Found} with
+     * the generic detail {@code "not found"} (no internal info leaked).
+     */
+    @Test
+    void mapsNoResourceFoundTo404() {
+        final NoResourceFoundException ex = new NoResourceFoundException(
+                HttpMethod.GET, "/api/v1/__nope__");
+
+        final ResponseEntity<ProblemDetail> response = this.handler.handleNoResource(ex, this.request);
+
+        assertProblem(response, HttpStatus.NOT_FOUND, ErrorCodes.NOT_FOUND, "not found");
     }
 
     /** When MDC carries a {@code traceId}, it appears on the problem body. */
