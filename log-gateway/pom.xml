@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-gateway - CORTEX edge service.
+
+  Spring Boot 3.3 service that fronts the CORTEX cluster: JWT/API key
+  authentication, request correlation, rate limiting, NL->LogQL routing
+  (via Spring AI), and reverse-proxy of /logs/** and /search/** to the
+  downstream services.
+
+  Uses Spring Cloud Gateway MVC (server-side, blocking) - NOT the
+  reactive WebFlux variant - to keep the stack consistent with the rest
+  of CORTEX (Spring MVC + JPA + Testcontainers). See ADR-0014.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-gateway</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-gateway</name>
+    <description>Edge gateway for CORTEX: auth, correlation, rate limit, NL-LogQL routing.</description>
+
+    <dependencies>
+
+        <!-- Spring Boot core -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Spring Cloud Gateway (server-side MVC variant; see ADR-0014) -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway-mvc</artifactId>
+        </dependency>
+
+        <!-- Sister CORTEX module: the gateway dogfoods the agent SDK. -->
+        <dependency>
+            <groupId>io.cortex</groupId>
+            <artifactId>log-agent-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry.
+             OpenTelemetry tracing bridge + OTLP exporter are deferred to a
+             later P3 sub-phase (no collector endpoint is wired yet). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <!-- OpenAPI / Swagger UI (rule A12.8). -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- MapStruct + Lombok (annotation processors wired by parent compiler config).
+             P3.0 has no @Mapper interfaces yet, so MapStruct is omitted; the
+             first sub-phase that needs a mapper will add it back and drop the
+             compiler-plugin override below (mirrors log-agent-lib LD12). -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- SpotBugs annotations (provided): lets us justify @SuppressFBWarnings
+             on stateless-API choices such as disabling CSRF in SecurityConfig. -->
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ArchUnit (rule 8.14 mandatory). -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers (rule 12.1 - no H2; even with no DB yet, locked in for P3.1+). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>4.2.2</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      P3.0 has no @Mapper interfaces yet. Override the parent's compiler
+      configuration to drop the MapStruct processor and its -A options;
+      keep Lombok so @RequiredArgsConstructor / @Slf4j still work. When
+      the first mapper lands, revert to inheriting the parent defaults
+      (mirrors the log-agent-lib LD12 pattern).
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Activate JaCoCo so the bundle-level 80% gate runs on verify
+                 and Surefire's @{argLine} placeholder is populated. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>
