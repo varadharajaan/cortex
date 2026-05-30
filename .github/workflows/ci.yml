@@ -1,0 +1,65 @@
+# CI workflow for CORTEX.
+#
+# Phase: P0 stub (full pipeline lands in P14).
+# Runs on push to main and on every PR:
+#   - validates Conventional Commits
+#   - validates POM well-formedness
+#   - cancels in-progress runs on the same ref
+#
+# P14 will add: full mvn verify with Testcontainers, SBOM upload,
+# image build + cosign sign, deploy preview, etc.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+jobs:
+
+  commitlint:
+    name: Commit message lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install commitlint
+        run: |
+          npm install --no-save \
+            @commitlint/cli \
+            @commitlint/config-conventional
+      - name: Lint PR commits
+        run: |
+          npx commitlint \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --to   "${{ github.event.pull_request.head.sha }}" \
+            --verbose
+
+  pom-validate:
+    name: Maven validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Validate parent POM
+        run: ./mvnw -B -N validate
