@@ -25,20 +25,23 @@ import com.tngtech.archunit.library.Architectures;
 public final class ArchitectureRulesTest {
 
     /** Rule 8.1 / 8.2 / 8.3: enforce the controller-service-repository layering.
-     *  The Service layer is added back once P3.1 lands the first service class
-     *  (layeredArchitecture rejects empty named layers). */
+     *  P3.1 re-adds the Service layer (P3.0 omitted it temporarily because
+     *  ArchUnit rejects empty layers; see memory.md EQ8). */
     @ArchTest
     static final ArchRule LAYERING = Architectures.layeredArchitecture().consideringAllDependencies()
             .layer("Controller").definedBy("..controller..")
+            .layer("Service").definedBy("..service..", "..service.impl..")
             .layer("Filter").definedBy("..filter..")
             .layer("Config").definedBy("..config..")
+            .layer("Security").definedBy("..security..")
             .layer("Exception").definedBy("..exception..")
             .layer("Dto").definedBy("..dto..")
             .layer("Constants").definedBy("..constants..")
 
             .whereLayer("Controller").mayNotBeAccessedByAnyLayer()
+            .whereLayer("Service").mayOnlyBeAccessedByLayers("Controller", "Service")
             .whereLayer("Exception").mayOnlyBeAccessedByLayers(
-                    "Controller", "Filter", "Config")
+                    "Controller", "Service", "Filter", "Config", "Security")
             .whereLayer("Filter").mayNotBeAccessedByAnyLayer();
 
     /** Rule 8.4: DTOs must be records so they are immutable by construction. */
