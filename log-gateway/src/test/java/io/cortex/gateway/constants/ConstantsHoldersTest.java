@@ -50,6 +50,7 @@ class ConstantsHoldersTest {
                         ErrorCodes.UNAUTHENTICATED,
                         ErrorCodes.FORBIDDEN,
                         ErrorCodes.NOT_FOUND,
+                        ErrorCodes.RATE_LIMITED,
                         ErrorCodes.UPSTREAM_UNAVAILABLE,
                         ErrorCodes.INTERNAL_ERROR);
         assertThat(ErrorCodes.valueOf("BAD_REQUEST")).isEqualTo(ErrorCodes.BAD_REQUEST);

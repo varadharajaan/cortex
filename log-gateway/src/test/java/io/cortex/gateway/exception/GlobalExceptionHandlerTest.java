@@ -3,6 +3,7 @@ package io.cortex.gateway.exception;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.cortex.gateway.constants.ErrorCodes;
+import io.cortex.gateway.constants.HeaderNames;
 import io.cortex.gateway.constants.LogFields;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -155,6 +156,31 @@ class GlobalExceptionHandlerTest {
 
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getProperties()).containsEntry("traceId", "trace-abc");
+    }
+
+    /**
+     * {@link RateLimitedException} maps to {@code 429 Too Many Requests}
+     * with a {@code Retry-After} header sourced from the exception's
+     * {@code retryAfterSeconds}. The X-RateLimit-* headers are NOT
+     * re-set here because the filter sets them before throwing.
+     */
+    @Test
+    void mapsRateLimitedTo429WithRetryAfterHeader() {
+        final RateLimitedException ex = new RateLimitedException(100L, 0L, 42L);
+
+        final ResponseEntity<ProblemDetail> response = this.handler.handleRateLimited(ex, this.request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getHeaders().getFirst(HeaderNames.RETRY_AFTER)).isEqualTo("42");
+        // Headers set by the filter must NOT be re-asserted by the handler
+        // (would create duplicate header values when both Spring writes).
+        assertThat(response.getHeaders().get(HeaderNames.X_RATELIMIT_LIMIT)).isNull();
+        assertThat(response.getHeaders().get(HeaderNames.X_RATELIMIT_REMAINING)).isNull();
+        assertThat(response.getHeaders().get(HeaderNames.X_RATELIMIT_RESET)).isNull();
+        final ProblemDetail body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.getDetail()).isEqualTo("rate limit exceeded");
+        assertThat(body.getProperties()).containsEntry("errorCode", ErrorCodes.RATE_LIMITED.name());
     }
 
     /**
