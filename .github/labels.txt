@@ -1,0 +1,37 @@
+# Labels for varadharajaan/cortex.
+# Loaded by infra script in P0.
+# Format: name | color (hex, no #) | description
+# Colors follow GitHub's standard palette.
+
+# area:*
+area:agent-lib | C5DEF5 | log-agent-lib shared SDK
+area:gateway | C5DEF5 | log-gateway edge service
+area:ingest | C5DEF5 | log-ingest-service
+area:processor | C5DEF5 | log-processor-service
+area:remediation | C5DEF5 | log-remediation-service
+area:indexer | C5DEF5 | log-indexer-service (Quickwit)
+area:monitoring | C5DEF5 | log-monitoring-service
+area:infra | C5DEF5 | docker / helm / terraform / ansible
+area:docs | C5DEF5 | documentation / ADRs
+
+# type:*
+type:feature | 0E8A16 | new user-visible capability
+type:bug | D73A4A | defect repair
+type:chore | FEF2C0 | build, deps, tooling
+type:docs | 0075CA | documentation only
+type:refactor | FEF2C0 | code cleanup, no behavior change
+type:test | F9D0C4 | tests only
+type:adr | 8B5CF6 | architecture decision record
+
+# priority:*
+priority:p1 | B60205 | critical / drop-everything
+priority:p2 | FB8C00 | high
+priority:p3 | FFEB3B | normal
+
+# cross-cutting
+ai-component | A371F7 | involves Spring AI / LLM
+security | EE0701 | security-relevant
+renovate | C2E0C6 | dependency update from Renovate
+breaking-change | B60205 | requires a major version bump
+
+# phase:P0..P18 (will be appended programmatically)
