@@ -74,7 +74,7 @@
 
     <!-- Modules are added per phase. Empty for P0; first module lands in P2. -->
     <modules>
-        <!-- Added in P2: <module>log-agent-lib</module> -->
+        <module>log-agent-lib</module>
         <!-- Added in P3: <module>log-gateway</module> -->
         <!-- Added in P4: <module>log-ingest-service</module> -->
         <!-- Added in P5: <module>log-processor-service</module> -->
