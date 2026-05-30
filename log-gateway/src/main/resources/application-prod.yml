@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-gateway - prod profile (rule A6.1, 15.2).
+# Minimal endpoint surface, strict logging, fail-fast graceful shutdown.
+# Secrets MUST come from environment variables (rule A6.2).
+# ---------------------------------------------------------------------------
+
+cortex:
+  gateway:
+    environment: prod
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    root: WARN
+    io.cortex: INFO

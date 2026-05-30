@@ -1,0 +1,18 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-gateway - dev profile (rule A6.1, 15.2).
+# Plain console logging, full health detail, debug-level CORTEX logs.
+# ---------------------------------------------------------------------------
+
+cortex:
+  gateway:
+    environment: dev
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    io.cortex: DEBUG
+    org.springframework.security: INFO

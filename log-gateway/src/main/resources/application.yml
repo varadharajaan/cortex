@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-gateway - base profile (rule A6.1, 15.2).
+# Profile-specific overrides live in application-{profile}.yml.
+# No secrets in this file; secrets come from env vars (rule A6.2).
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: log-gateway
+  main:
+    banner-mode: "off"
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8080
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+  forward-headers-strategy: framework
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  observations:
+    key-values:
+      service: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+cortex:
+  gateway:
+    service: log-gateway
+    environment: local
+
+logging:
+  level:
+    root: INFO
+    io.cortex: INFO
