@@ -64,6 +64,18 @@
             <artifactId>spring-cloud-starter-gateway-mvc</artifactId>
         </dependency>
 
+        <!-- Eureka client (ADR-0016): fetch-only - the gateway consumes the
+             discovery registry to resolve `lb://<service-id>` predicates,
+             but does NOT register itself (nothing inside the cluster routes
+             traffic to the gateway). `eureka.client.register-with-eureka`
+             is set to false in application.yml; `eureka.client.enabled` is
+             set to false in src/test/resources so MockMvc tests do not try
+             to reach a live registry. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
         <!-- Sister CORTEX module: the gateway dogfoods the agent SDK. -->
         <dependency>
             <groupId>io.cortex</groupId>
