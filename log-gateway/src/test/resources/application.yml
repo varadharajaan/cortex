@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-gateway - test classpath defaults.
+# Loaded with highest precedence under src/test/resources so @SpringBootTest
+# boots without env vars. Bootstrap users + a deterministic JWT secret give
+# tests a reproducible bearer-token round trip.
+# ---------------------------------------------------------------------------
+
+cortex:
+  gateway:
+    service: log-gateway
+    environment: test
+    security:
+      jwt:
+        # Deterministic 32-byte HMAC key (Base64 of 0x00..0x1F). TESTS ONLY.
+        secret: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+        issuer: cortex-gateway-test
+        access-ttl: PT15M
+        refresh-ttl: P1D
+      bootstrap:
+        users:
+          - username: admin
+            password: test-admin-pass
+            roles: [ADMIN, USER]
+          - username: user
+            password: test-user-pass
+            roles: [USER]
+
+logging:
+  level:
+    io.cortex: DEBUG
+    org.springframework.security: WARN

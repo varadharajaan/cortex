@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import io.cortex.gateway.config.GatewayProperties;
 import io.cortex.gateway.config.SecurityConfig;
 import io.cortex.gateway.constants.ApiPaths;
+import io.cortex.gateway.security.JwtProperties;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -47,9 +49,9 @@ class HealthControllerTest {
     }
 
     /**
-     * Supplies a fixed {@link GatewayProperties} bean to the slice test
-     * since {@code @ConfigurationPropertiesScan} is not active under
-     * {@code @WebMvcTest}.
+     * Supplies fixed {@link GatewayProperties} and {@link JwtProperties}
+     * beans to the slice test since {@code @ConfigurationPropertiesScan}
+     * is not active under {@code @WebMvcTest}.
      */
     @TestConfiguration
     static class PropertiesConfig {
@@ -61,6 +63,21 @@ class HealthControllerTest {
         @Bean
         GatewayProperties gatewayProperties() {
             return new GatewayProperties("log-gateway", "test");
+        }
+
+        /**
+         * Builds a JWT properties bean with a 32-byte Base64 dev secret
+         * so {@code SecurityConfig} can construct its decoder / encoder.
+         *
+         * @return a fixed-value JWT properties bean
+         */
+        @Bean
+        JwtProperties jwtProperties() {
+            return new JwtProperties(
+                    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+                    "cortex-gateway-test",
+                    Duration.ofMinutes(15),
+                    Duration.ofDays(1));
         }
     }
 }
