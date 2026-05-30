@@ -27,6 +27,9 @@ public enum ErrorCodes {
     /** Downstream dependency was unavailable; retry may succeed. */
     UPSTREAM_UNAVAILABLE,
 
+    /** Caller exceeded their rate-limit bucket (B5, RFC 6585 section 4). */
+    RATE_LIMITED,
+
     /** Fallback for any unexpected internal failure. */
     INTERNAL_ERROR;
 }

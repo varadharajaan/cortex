@@ -17,6 +17,18 @@ public final class HeaderNames {
     /** Inbound API key for ingest endpoints. */
     public static final String X_API_KEY = "X-Api-Key";
 
+    /** Outbound rate-limit capacity (B5.2). */
+    public static final String X_RATELIMIT_LIMIT = "X-RateLimit-Limit";
+
+    /** Outbound tokens remaining in the current refill window (B5.2). */
+    public static final String X_RATELIMIT_REMAINING = "X-RateLimit-Remaining";
+
+    /** Outbound seconds until the bucket is fully refilled (B5.2). */
+    public static final String X_RATELIMIT_RESET = "X-RateLimit-Reset";
+
+    /** RFC 7231 section 7.1.3 retry-after header, mirrors {@link #X_RATELIMIT_RESET}. */
+    public static final String RETRY_AFTER = "Retry-After";
+
     /**
      * Private constructor; constants holder.
      *
