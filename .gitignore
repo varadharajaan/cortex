@@ -119,3 +119,9 @@ infra/helm/charts/**/*.tgz
 # NOT part of the cortex repo. .github/workflows/, CODEOWNERS, and
 # PULL_REQUEST_TEMPLATE.md ARE committed (required by Part 7.4 + B22).
 /.github/copilot-instructions.md
+
+# Local scratch files
+.*.tmp
+.create-issues.ps1
+.cleanup-issues.ps1
+.commit-batch.ps1
