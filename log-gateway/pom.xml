@@ -76,6 +76,30 @@
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
+        <!-- Distributed rate limiting (B5.1, P3.2 / ADR-0017): Bucket4j 8.x
+             with a Lettuce-backed Redis store. The gateway wires a raw
+             RedisClient + StatefulRedisConnection + LettuceBasedProxyManager
+             (NOT spring-data-redis) so the per-key Bucket lookup path stays
+             a single network round-trip with no extra serialization layer.
+             Disabled via `cortex.gateway.rate-limit.enabled=false` in
+             src/test/resources so MockMvc tests do not need a live Redis. -->
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-redis-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-lettuce</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+
         <!-- Sister CORTEX module: the gateway dogfoods the agent SDK. -->
         <dependency>
             <groupId>io.cortex</groupId>
