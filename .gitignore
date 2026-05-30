@@ -125,3 +125,4 @@ infra/helm/charts/**/*.tgz
 .create-issues.ps1
 .cleanup-issues.ps1
 .commit-batch.ps1
+/scripts/
