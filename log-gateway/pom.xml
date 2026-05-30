@@ -50,6 +50,14 @@
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
+        <!-- OAuth2 Resource Server: pulls in spring-security-oauth2-jose
+             (Nimbus JOSE JWT under the hood) per rule B7.1.
+             We use HMAC HS256 for v0.1.0; JWKS rotation is deferred (ADR-0015). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
         <!-- Spring Cloud Gateway (server-side MVC variant; see ADR-0014) -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
