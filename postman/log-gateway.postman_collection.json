@@ -1,0 +1,176 @@
+{
+  "info": {
+    "name": "CORTEX :: log-gateway",
+    "_postman_id": "c0a1f3b0-0000-4000-8000-c0a1f3b0e001",
+    "description": "Postman collection for the CORTEX log-gateway service. Edge endpoints (auth, NL->LogQL, reverse proxy) plus admin and error scenarios.\n\nEnvironments:\n- `log-gateway.postman_environment_local.json` (http://localhost:8080)\n- `log-gateway.postman_environment_staging.json`\n- `log-gateway.postman_environment_prod.json`\n\nSee `postman/README.md` for run instructions (Newman CLI).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "request_id",
+      "value": "{{$guid}}",
+      "type": "string"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.collectionVariables.set('request_id', pm.variables.replaceIn('{{$guid}}'));"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('echoed X-Request-Id matches', function () {",
+          "  const sent = pm.collectionVariables.get('request_id');",
+          "  const echoed = pm.response.headers.get('X-Request-Id');",
+          "  if (echoed) { pm.expect(echoed).to.eql(sent); }",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /api/v1/health",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health"]
+            },
+            "description": "Public liveness endpoint. Returns 200 with {status, service, environment, timestamp}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body has status UP', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('UP');",
+                  "  pm.expect(body.service).to.eql('log-gateway');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GET /actuator/health",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/actuator/health",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Spring Boot actuator health probe. Public in dev; restricted in prod."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /actuator/info",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/actuator/info",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "info"]
+            }
+          }
+        },
+        {
+          "name": "GET /actuator/prometheus",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/plain" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/actuator/prometheus",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "prometheus"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Error Scenarios",
+      "item": [
+        {
+          "name": "GET unknown path returns 401 or 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/does-not-exist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "does-not-exist"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 or 404', () => {",
+                  "  pm.expect([401, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
