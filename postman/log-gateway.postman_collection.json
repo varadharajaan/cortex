@@ -2,7 +2,7 @@
   "info": {
     "name": "CORTEX :: log-gateway",
     "_postman_id": "c0a1f3b0-0000-4000-8000-c0a1f3b0e001",
-    "description": "Postman collection for the CORTEX log-gateway service. Edge endpoints (auth, NL->LogQL, reverse proxy) plus admin and error scenarios.\n\nEnvironments:\n- `log-gateway.postman_environment_local.json` (http://localhost:8080)\n- `log-gateway.postman_environment_staging.json`\n- `log-gateway.postman_environment_prod.json`\n\nSee `postman/README.md` for run instructions (Newman CLI).",
+    "description": "Postman collection for the CORTEX log-gateway service. Mirrors `scripts/smoke-p3-1.ps1` (Part 21 Levels 1-6) for every check expressible over HTTP. Folder order matters: Auth runs first to populate `jwt` + `refresh_token` + `consumed_refresh_token`, then Health, Admin, Error Scenarios.\n\nEnvironments:\n- `log-gateway.postman_environment_local.json` (http://localhost:8080)\n- `log-gateway.postman_environment_staging.json`\n- `log-gateway.postman_environment_prod.json`\n\nSee `postman/README.md` for run instructions (Newman CLI).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -44,7 +44,7 @@
       "name": "Auth",
       "item": [
         {
-          "name": "POST /api/v1/auth/login",
+          "name": "POST /api/v1/auth/login (good credentials)",
           "request": {
             "method": "POST",
             "header": [
@@ -61,7 +61,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "auth", "login"]
             },
-            "description": "Exchanges username + password for an access + refresh JWT pair. Stashes both tokens into environment variables `jwt` and `refresh_token` for chained requests."
+            "description": "Exchanges username + password for an access + refresh JWT pair. Stashes both tokens into environment variables `jwt`, `refresh_token`, AND `consumed_refresh_token` (the latter is replayed in the single-use test below)."
           },
           "event": [
             {
@@ -76,15 +76,27 @@
                   "  pm.expect(body.refreshToken).to.be.a('string').and.not.empty;",
                   "  pm.expect(body.tokenType).to.eql('Bearer');",
                   "});",
+                  "pm.test('accessExpiresAt is ISO-8601 in the future', () => {",
+                  "  pm.expect(body.accessExpiresAt).to.be.a('string').and.match(/T.*Z$/);",
+                  "  pm.expect(new Date(body.accessExpiresAt).getTime()).to.be.greaterThan(Date.now());",
+                  "});",
+                  "pm.test('access token header alg is HS256', () => {",
+                  "  const parts = body.accessToken.split('.');",
+                  "  pm.expect(parts).to.have.lengthOf(3);",
+                  "  const b64url = (s) => s.replace(/-/g,'+').replace(/_/g,'/');",
+                  "  const headerJson = JSON.parse(Buffer.from(b64url(parts[0]), 'base64').toString('utf8'));",
+                  "  pm.expect(headerJson.alg).to.eql('HS256');",
+                  "});",
                   "pm.environment.set('jwt', body.accessToken);",
-                  "pm.environment.set('refresh_token', body.refreshToken);"
+                  "pm.environment.set('refresh_token', body.refreshToken);",
+                  "pm.environment.set('consumed_refresh_token', body.refreshToken);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "POST /api/v1/auth/refresh",
+          "name": "POST /api/v1/auth/login (blank password -> 400 VALIDATION_FAILED)",
           "request": {
             "method": "POST",
             "header": [
@@ -94,14 +106,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}"
+              "raw": "{\n  \"username\": \"{{auth_username}}\",\n  \"password\": \"\"\n}"
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "raw": "{{base_url}}/api/v1/auth/login",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
+              "path": ["api", "v1", "auth", "login"]
             },
-            "description": "Rotates the access + refresh token pair. The previous refresh token is consumed (single-use, rule B7.5). New tokens replace `jwt` and `refresh_token` in the environment."
+            "description": "Bean Validation negative path: blank password returns 400 RFC 7807 ProblemDetail with errorCode=VALIDATION_FAILED."
           },
           "event": [
             {
@@ -109,21 +121,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
                   "const body = pm.response.json();",
-                  "pm.test('new tokens differ from previous', () => {",
-                  "  pm.expect(body.accessToken).to.not.eql(pm.environment.get('jwt'));",
-                  "  pm.expect(body.refreshToken).to.not.eql(pm.environment.get('refresh_token'));",
-                  "});",
-                  "pm.environment.set('jwt', body.accessToken);",
-                  "pm.environment.set('refresh_token', body.refreshToken);"
+                  "pm.test('errorCode is VALIDATION_FAILED', () => pm.expect(body.errorCode).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "POST /api/v1/auth/login (bad credentials)",
+          "name": "POST /api/v1/auth/login (bad credentials -> 401 UNAUTHENTICATED)",
           "request": {
             "method": "POST",
             "header": [
@@ -155,6 +162,143 @@
               }
             }
           ]
+        },
+        {
+          "name": "POST /api/v1/auth/refresh (rotates pair)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            },
+            "description": "Rotates the access + refresh token pair (rule B7.5 single-use). The previous refresh token is consumed; `consumed_refresh_token` env var still holds it for the replay test below. New tokens replace `jwt` and `refresh_token`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('new tokens differ from previous', () => {",
+                  "  pm.expect(body.accessToken).to.not.eql(pm.environment.get('jwt'));",
+                  "  pm.expect(body.refreshToken).to.not.eql(pm.environment.get('refresh_token'));",
+                  "});",
+                  "pm.test('accessExpiresAt is ISO-8601 in the future', () => {",
+                  "  pm.expect(body.accessExpiresAt).to.be.a('string').and.match(/T.*Z$/);",
+                  "  pm.expect(new Date(body.accessExpiresAt).getTime()).to.be.greaterThan(Date.now());",
+                  "});",
+                  "pm.environment.set('jwt', body.accessToken);",
+                  "pm.environment.set('refresh_token', body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/refresh (replay consumed -> 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{consumed_refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            },
+            "description": "Replays the original refresh token (already consumed by the rotation above). Expects 401 UNAUTHENTICATED -- single-use rule B7.5."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('errorCode is UNAUTHENTICATED', () => pm.expect(body.errorCode).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/health (WITH bearer -> 200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health"]
+            },
+            "description": "Round-trips the freshly rotated access token through the resource-server filter chain. Same path is public, so this also proves the bearer is parsed without error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body has status UP', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.eql('UP');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/health (tampered bearer -> 401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}X" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health"]
+            },
+            "description": "Appends junk to the signature segment. NimbusJwtDecoder fails HMAC verification -> 401 UNAUTHENTICATED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -162,7 +306,7 @@
       "name": "Health",
       "item": [
         {
-          "name": "GET /api/v1/health",
+          "name": "GET /api/v1/health (public)",
           "request": {
             "method": "GET",
             "header": [
@@ -183,7 +327,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "pm.test('body has status UP', () => {",
+                  "pm.test('body shape', () => {",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.status).to.eql('UP');",
                   "  pm.expect(body.service).to.eql('log-gateway');",
@@ -219,7 +363,64 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /actuator/health/liveness",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/actuator/health/liveness",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "health", "liveness"]
+            },
+            "description": "K8s-style liveness probe (Part 21 Level 2)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /actuator/health/readiness",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/actuator/health/readiness",
+              "host": ["{{base_url}}"],
+              "path": ["actuator", "health", "readiness"]
+            },
+            "description": "K8s-style readiness probe (Part 21 Level 2)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
                 ]
               }
             }
@@ -237,8 +438,23 @@
               "raw": "{{base_url}}/actuator/info",
               "host": ["{{base_url}}"],
               "path": ["actuator", "info"]
+            },
+            "description": "Reachable in dev; body may be empty `{}` until P14 wires git-info + build-info."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body is JSON object', () => {",
+                  "  pm.expect(pm.response.text()).to.match(/^\\s*\\{/);",
+                  "});"
+                ]
+              }
             }
-          }
+          ]
         },
         {
           "name": "GET /actuator/prometheus",
@@ -252,8 +468,88 @@
               "raw": "{{base_url}}/actuator/prometheus",
               "host": ["{{base_url}}"],
               "path": ["actuator", "prometheus"]
+            },
+            "description": "Prometheus scrape endpoint. Must expose Spring MVC request metrics (Part 21 Level 6) -- proves observability beyond just JVM internals."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const text = pm.response.text();",
+                  "pm.test('exposes http_server_requests metric', () => {",
+                  "  pm.expect(text).to.include('http_server_requests_seconds_count');",
+                  "});",
+                  "pm.test('exposes jvm_memory_used_bytes metric', () => {",
+                  "  pm.expect(text).to.include('jvm_memory_used_bytes');",
+                  "});"
+                ]
+              }
             }
-          }
+          ]
+        },
+        {
+          "name": "GET /v3/api-docs",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v3/api-docs",
+              "host": ["{{base_url}}"],
+              "path": ["v3", "api-docs"]
+            },
+            "description": "OpenAPI v3 document. Must list both /api/v1/auth/* and /api/v1/health (Part 21 Level 5 contract)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const spec = pm.response.json();",
+                  "pm.test('paths include /api/v1/auth/login', () => pm.expect(spec.paths).to.have.property('/api/v1/auth/login'));",
+                  "pm.test('paths include /api/v1/auth/refresh', () => pm.expect(spec.paths).to.have.property('/api/v1/auth/refresh'));",
+                  "pm.test('paths include /api/v1/health', () => pm.expect(spec.paths).to.have.property('/api/v1/health'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /swagger-ui/index.html",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/html" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/swagger-ui/index.html",
+              "host": ["{{base_url}}"],
+              "path": ["swagger-ui", "index.html"]
+            },
+            "description": "SpringDoc-served Swagger UI shell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body looks like HTML', () => {",
+                  "  pm.expect(pm.response.text()).to.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -261,7 +557,37 @@
       "name": "Error Scenarios",
       "item": [
         {
-          "name": "GET unknown path returns 401 or 404",
+          "name": "GET unknown path WITH bearer -> 404 NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/does-not-exist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "does-not-exist"]
+            },
+            "description": "Authenticated request to an unmapped path. Spring 6 throws NoResourceFoundException; GlobalExceptionHandler maps it to 404 + RFC 7807 with errorCode=NOT_FOUND (commit 5e811bf). Without that handler this returns 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('errorCode is NOT_FOUND', () => pm.expect(body.errorCode).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET unknown path NO bearer -> 401",
           "request": {
             "method": "GET",
             "header": [
@@ -272,7 +598,8 @@
               "raw": "{{base_url}}/api/v1/does-not-exist",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "does-not-exist"]
-            }
+            },
+            "description": "Same unknown path, no bearer. Resource-server filter chain denies anonymous access -> 401, never reaches the dispatcher."
           },
           "event": [
             {
@@ -280,9 +607,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 401 or 404', () => {",
-                  "  pm.expect([401, 404]).to.include(pm.response.code);",
-                  "});"
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
                 ]
               }
             }

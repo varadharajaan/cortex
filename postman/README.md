@@ -48,23 +48,59 @@ newman run postman/log-gateway.postman_collection.json \
 
 Every environment file defines:
 
-| Key         | Purpose                                                    |
-|-------------|------------------------------------------------------------|
-| `base_url`  | Service root URL. NO trailing slash.                       |
-| `tenant_id` | Default tenant id sent on multi-tenant endpoints.          |
-| `jwt_token` | Bearer token. Leave blank locally; CI injects in staging.  |
+| Key                       | Purpose                                                          |
+|---------------------------|------------------------------------------------------------------|
+| `base_url`                | Service root URL. NO trailing slash.                             |
+| `tenant_id`               | Default tenant id sent on multi-tenant endpoints.                |
+| `auth_username`           | Login user (local env only; dev bootstrap user).                 |
+| `auth_password`           | Login password (local env only; dev bootstrap password).         |
+| `jwt`                     | Access token. Populated dynamically by the Login + Refresh hooks.|
+| `refresh_token`           | Current refresh token. Rotates on every successful refresh.      |
+| `consumed_refresh_token`  | Snapshot of the original refresh token (set in Login) replayed by the single-use test to prove rule B7.5. |
+| `jwt_token`               | Legacy alias kept for backward compatibility; unused by P3.1.    |
 
 ## Adding a request
 
-1. Place the request under one of the existing folders (`Health`,
-   `Admin`, `Error Scenarios`) or create a new folder for a new
-   functional area.
+1. Place the request under one of the existing folders (`Auth`,
+   `Health`, `Admin`, `Error Scenarios`) or create a new folder for a
+   new functional area.
 2. Always send `X-Request-Id: {{request_id}}` so the gateway echoes
    the same correlation id back; the collection's top-level test hook
    asserts the echo.
 3. Add a `pm.test(...)` block that asserts the HTTP status and at least
    one body field.
-4. Re-export the collection from Postman to keep this file in sync.
+4. **Mirror in `scripts/smoke-p3-N.ps1`** -- LD23 requires that every
+   HTTP behavior checked by the Postman collection is also checked by
+   the equivalent sub-phase smoke script (and vice versa) so that
+   `mvn verify` -> smoke -> Newman is a closed loop. If you fix or add
+   any endpoint, update BOTH the collection and the smoke script in
+   the same commit batch.
+5. Re-export the collection from Postman to keep this file in sync
+   (or hand-edit; the file is human-readable JSON v2.1).
+
+## Current request matrix (P3.1, 16 requests / 30+ assertions)
+
+| Folder           | Request                                            | Purpose                                                |
+|------------------|----------------------------------------------------|--------------------------------------------------------|
+| Auth             | POST `/api/v1/auth/login` (good)                   | 200 + token shape + HS256 header + accessExpiresAt ISO |
+| Auth             | POST `/api/v1/auth/login` (blank password)         | 400 VALIDATION_FAILED                                  |
+| Auth             | POST `/api/v1/auth/login` (bad credentials)        | 401 UNAUTHENTICATED                                    |
+| Auth             | POST `/api/v1/auth/refresh` (rotates)              | 200 + rotated pair (tokens differ)                     |
+| Auth             | POST `/api/v1/auth/refresh` (replay consumed)      | 401 UNAUTHENTICATED (rule B7.5 single-use)             |
+| Auth             | GET  `/api/v1/health` (WITH bearer)                | 200 + bearer parsed through resource-server chain      |
+| Auth             | GET  `/api/v1/health` (tampered bearer)            | 401 (HMAC verification fails)                          |
+| Health           | GET  `/api/v1/health` (public)                     | 200 + {status:UP, service:log-gateway}                 |
+| Admin            | GET  `/actuator/health`                            | 200 + status UP                                        |
+| Admin            | GET  `/actuator/health/liveness`                   | 200 + status UP (K8s probe)                            |
+| Admin            | GET  `/actuator/health/readiness`                  | 200 + status UP (K8s probe)                            |
+| Admin            | GET  `/actuator/info`                              | 200 + JSON object                                      |
+| Admin            | GET  `/actuator/prometheus`                        | 200 + `http_server_requests_seconds_count` + `jvm_memory_used_bytes` |
+| Admin            | GET  `/v3/api-docs`                                | 200 + paths include /auth/login, /auth/refresh, /health|
+| Admin            | GET  `/swagger-ui/index.html`                      | 200 + HTML body                                        |
+| Error Scenarios  | GET  unknown path WITH bearer                      | 404 NOT_FOUND (proves NoResourceFoundException fix)    |
+| Error Scenarios  | GET  unknown path NO bearer                        | 401                                                    |
+
+Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression.
 
 ## Rules anchor
 
