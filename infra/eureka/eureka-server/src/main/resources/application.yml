@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# CORTEX local-dev Eureka standalone registry (ADR-0016).
+# Local-only, throwaway. Never run in staging or prod.
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: cortex-eureka-server
+  main:
+    banner-mode: "off"
+
+server:
+  port: 8761
+  shutdown: graceful
+
+# A standalone registry must NOT register itself and must NOT fetch
+# the registry from a peer (there is no peer).
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  server:
+    # Faster expiry for local-dev so a dev who Ctrl-C's a client sees
+    # the deregistration within seconds, not minutes.
+    enable-self-preservation: false
+    eviction-interval-timer-in-ms: 15000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.netflix.eureka: INFO
+    com.netflix.discovery: INFO

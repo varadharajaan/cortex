@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    infra/eureka/eureka-server - standalone Eureka service-registry for
+    CORTEX local-dev (ADR-0016).
+
+    This pom is DELIBERATELY NOT under the parent cortex-parent reactor.
+    The registry is throwaway local-only infrastructure (LD24), not a
+    Cortex production artifact. It inherits directly from
+    spring-boot-starter-parent so a developer can build/run it without
+    touching the rest of the reactor.
+
+    Run via:
+        cd infra/eureka/eureka-server
+        ..\..\..\mvnw.cmd spring-boot:run     (Windows)
+        ../../../mvnw spring-boot:run         (Unix)
+
+    Or via Docker compose:
+        docker compose -f infra/local/docker-compose.smoke.yml up eureka
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Aligned with the main cortex-parent (see top-level pom.xml). -->
+        <version>3.3.6</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.cortex.infra</groupId>
+    <artifactId>cortex-eureka-server</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>CORTEX :: infra :: eureka-server (local-dev only)</name>
+    <description>Standalone Eureka registry for CORTEX local-dev (ADR-0016).</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spring-cloud.version>2023.0.4</spring-cloud.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
