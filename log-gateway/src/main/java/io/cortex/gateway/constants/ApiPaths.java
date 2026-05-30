@@ -14,6 +14,15 @@ public final class ApiPaths {
     /** Service health endpoint (public). */
     public static final String HEALTH = API_V1 + "/health";
 
+    /** Base path for authentication endpoints (public). */
+    public static final String AUTH_BASE = API_V1 + "/auth";
+
+    /** Login endpoint accepting {@code POST} with a {@code LoginRequest} body. */
+    public static final String AUTH_LOGIN = AUTH_BASE + "/login";
+
+    /** Refresh endpoint accepting {@code POST} with a {@code RefreshRequest} body. */
+    public static final String AUTH_REFRESH = AUTH_BASE + "/refresh";
+
     /**
      * Private constructor; constants holder.
      *
