@@ -1,6 +1,7 @@
 package io.cortex.gateway.exception;
 
 import io.cortex.gateway.constants.ErrorCodes;
+import io.cortex.gateway.constants.HeaderNames;
 import io.cortex.gateway.constants.LogFields;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.OffsetDateTime;
@@ -36,6 +37,29 @@ public class GlobalExceptionHandler {
 
     /** Custom problem field name for the response timestamp. */
     private static final String FIELD_TIMESTAMP = "timestamp";
+
+    /**
+     * Maps {@link RateLimitedException} to {@code 429 Too Many Requests}
+     * (RFC 6585 \u00a74). The {@code Retry-After} header is set from the
+     * exception's {@code retryAfterSeconds}. The {@code X-RateLimit-*}
+     * triple is NOT re-asserted here because
+     * {@link io.cortex.gateway.filter.RateLimitFilter} already set them
+     * on the response before throwing; re-setting via
+     * {@link ResponseEntity#header} would emit duplicate header values.
+     *
+     * @param ex      thrown rate-limit exception
+     * @param request inbound HTTP request
+     * @return 429 problem response with retry-after header
+     */
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ProblemDetail> handleRateLimited(
+            final RateLimitedException ex, final HttpServletRequest request) {
+        final ProblemDetail body = buildProblem(
+                HttpStatus.TOO_MANY_REQUESTS, ErrorCodes.RATE_LIMITED, ex.getMessage(), request);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HeaderNames.RETRY_AFTER, Long.toString(ex.getRetryAfterSeconds()))
+                .body(body);
+    }
 
     /**
      * Maps every {@link ApplicationException} to a problem response. The
@@ -183,6 +207,7 @@ public class GlobalExceptionHandler {
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
             case UPSTREAM_UNAVAILABLE -> HttpStatus.BAD_GATEWAY;
+            case RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
             case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
