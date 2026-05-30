@@ -84,6 +84,9 @@
     <modules>
         <module>log-agent-lib</module>
         <module>log-gateway</module>
+        <!-- P3.0b throwaway downstream stub (ADR-0016). Removed when
+             log-ingest-service (P4) and log-query-service (P7-ish) land. -->
+        <module>log-echo-service</module>
         <!-- Added in P4: <module>log-ingest-service</module> -->
         <!-- Added in P5: <module>log-processor-service</module> -->
         <!-- Added in P6: <module>log-remediation-service</module> -->
@@ -128,6 +131,11 @@
         <opentelemetry.version>1.43.0</opentelemetry.version>
         <micrometer.version>1.13.6</micrometer.version>
         <quickwit-client.version>0.8.0</quickwit-client.version>
+        <!-- Pinned to resolve transitive convergence between
+             spring-cloud-starter-netflix-eureka-client paths
+             (eureka-core->guava 33.0.0-jre vs netflix-eventbus->guava 14.0.1).
+             Required by P3.0b (ADR-0016 / LD27). -->
+        <guava.version>33.0.0-jre</guava.version>
 
         <!-- ============================================================== -->
         <!-- Plugins                                                         -->
@@ -293,6 +301,15 @@
                 <groupId>net.logstash.logback</groupId>
                 <artifactId>logstash-logback-encoder</artifactId>
                 <version>${logstash-logback.version}</version>
+            </dependency>
+
+            <!-- Pinned to resolve transitive convergence between
+                 spring-cloud-starter-netflix-eureka-client paths.
+                 See ${guava.version} property comment. -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
             </dependency>
 
         </dependencies>
