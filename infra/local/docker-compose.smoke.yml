@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# CORTEX - local-dev smoke compose (P3.0b onward, ADR-0016 / LD24).
+#
+# What this brings up:
+#   - redis      : rate-limit + idempotency store (used by P3.2).
+#   - wiremock   : Ollama stub used by P3.3 (NL -> LogQL).
+#
+# What this DELIBERATELY does NOT bring up:
+#   - eureka     : booted by the per-phase smoke script via
+#                  `mvnw spring-boot:run` against
+#                  `infra/eureka/eureka-server` (avoids needing a
+#                  Dockerfile + image rebuild on every code change).
+#   - log-echo-service : same pattern as eureka. Booted by the smoke
+#                  script directly from source. Removed entirely at
+#                  P4 once log-ingest-service exists.
+#   - log-gateway : booted by the smoke script directly from source so
+#                  changes are picked up without an image rebuild.
+#
+# Per LD24 this file is a temporary BRIDGE. The full multi-service
+# compose stack lands at P10 (`infra/docker/`).
+#
+# Lifecycle (mirrored by scripts/smoke-p3-*.ps1):
+#   docker compose -f infra/local/docker-compose.smoke.yml up -d
+#   ... run smoke + Newman ...
+#   docker compose -f infra/local/docker-compose.smoke.yml down -v
+# ---------------------------------------------------------------------------
+
+name: cortex-smoke
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: cortex-smoke-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  wiremock:
+    image: wiremock/wiremock:3.10.0
+    container_name: cortex-smoke-wiremock
+    ports:
+      - "8081:8080"
+    command:
+      - --port=8080
+      - --verbose
+      - --global-response-templating
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/__admin/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
