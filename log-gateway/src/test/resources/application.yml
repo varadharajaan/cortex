@@ -5,6 +5,15 @@
 # tests a reproducible bearer-token round trip.
 # ---------------------------------------------------------------------------
 
+# Disable Eureka registry lookup in unit/integration tests (ADR-0016).
+# MockMvc tests do not boot a registry; the eureka-client auto-config
+# would otherwise log noisy connection-refused warnings every poll.
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
 cortex:
   gateway:
     service: log-gateway
