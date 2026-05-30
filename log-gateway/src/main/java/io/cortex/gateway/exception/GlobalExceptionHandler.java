@@ -4,6 +4,7 @@ import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.constants.LogFields;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.OffsetDateTime;
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -80,6 +82,26 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
                 buildProblem(HttpStatus.FORBIDDEN, ErrorCodes.FORBIDDEN,
                         ex.getMessage(), request));
+    }
+
+    /**
+     * Maps {@code @Valid} body / parameter failures to {@code 400 Bad Request}
+     * with {@link ErrorCodes#VALIDATION_FAILED}. The detail message is the
+     * concatenated default messages of each binding violation.
+     *
+     * @param ex      thrown validation exception
+     * @param request inbound HTTP request
+     * @return RFC 7807 problem detail wrapped in a response entity
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ProblemDetail> handleValidation(
+            final MethodArgumentNotValidException ex, final HttpServletRequest request) {
+        final String detail = ex.getBindingResult().getAllErrors().stream()
+                .map(err -> err.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(
+                buildProblem(HttpStatus.BAD_REQUEST, ErrorCodes.VALIDATION_FAILED,
+                        detail.isEmpty() ? "validation failed" : detail, request));
     }
 
     /**
