@@ -15,6 +15,7 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Single global handler producing RFC 7807 {@link ProblemDetail} responses
@@ -102,6 +103,26 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(
                 buildProblem(HttpStatus.BAD_REQUEST, ErrorCodes.VALIDATION_FAILED,
                         detail.isEmpty() ? "validation failed" : detail, request));
+    }
+
+    /**
+     * Maps {@link NoResourceFoundException} (thrown by Spring MVC when no
+     * handler resolves a request, e.g. an authenticated bearer hitting an
+     * unknown sub-path) to {@code 404 Not Found} with
+     * {@link ErrorCodes#NOT_FOUND}. Without this, the catch-all
+     * {@link #handleUnexpected} would return {@code 500} (Part 21 Level 3
+     * failure caught by `scripts/smoke-p3-1.ps1` test 18).
+     *
+     * @param ex      thrown no-resource-found exception
+     * @param request inbound HTTP request
+     * @return RFC 7807 problem detail wrapped in a response entity
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ProblemDetail> handleNoResource(
+            final NoResourceFoundException ex, final HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                buildProblem(HttpStatus.NOT_FOUND, ErrorCodes.NOT_FOUND,
+                        "not found", request));
     }
 
     /**
