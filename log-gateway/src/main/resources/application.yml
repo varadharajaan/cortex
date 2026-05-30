@@ -77,6 +77,18 @@ cortex:
         refresh-ttl: P7D
       bootstrap:
         users: []
+    # Distributed rate limit (B5.1, P3.2 / ADR-0017). Bucket4j with a
+    # Lettuce-backed Redis store. Authenticated callers consume from a
+    # per-principal bucket; anonymous callers consume from a smaller
+    # per-IP bucket. Disabled in src/test/resources so MockMvc tests
+    # do not need a live Redis. Override `REDIS_URI` per environment.
+    rate-limit:
+      enabled: ${CORTEX_GATEWAY_RATE_LIMIT_ENABLED:true}
+      capacity: ${CORTEX_GATEWAY_RATE_LIMIT_CAPACITY:100}
+      refill-period: ${CORTEX_GATEWAY_RATE_LIMIT_REFILL:PT1M}
+      anonymous-capacity: ${CORTEX_GATEWAY_RATE_LIMIT_ANON_CAPACITY:20}
+      redis-uri: ${REDIS_URI:redis://localhost:6379/0}
+      key-prefix: ${CORTEX_GATEWAY_RATE_LIMIT_PREFIX:cortex:rl:}
 
 logging:
   level:

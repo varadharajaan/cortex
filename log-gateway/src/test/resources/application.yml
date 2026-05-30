@@ -33,6 +33,16 @@ cortex:
           - username: user
             password: test-user-pass
             roles: [USER]
+    # Disable the Bucket4j + Lettuce + Redis stack in MockMvc tests
+    # (P3.2 / ADR-0017). RateLimitConfig is @ConditionalOnProperty so
+    # turning this off means no Lettuce client is constructed and no
+    # connection-refused noise appears in logs.
+    rate-limit:
+      enabled: false
+      capacity: 100
+      refill-period: PT1M
+      anonymous-capacity: 20
+      redis-uri: redis://localhost:6379/0
 
 logging:
   level:
