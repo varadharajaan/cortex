@@ -45,6 +45,23 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+# Eureka client (ADR-0016). The gateway only FETCHES the registry to
+# resolve `lb://<service-id>` predicates. It does NOT register itself
+# (nothing inside the cluster routes traffic to the gateway). Override
+# `EUREKA_DEFAULT_ZONE` per environment; staging/prod use K8s Service
+# DNS instead of Eureka entirely, so set `eureka.client.enabled=false`
+# in those profiles.
+eureka:
+  client:
+    enabled: ${EUREKA_CLIENT_ENABLED:true}
+    register-with-eureka: false
+    fetch-registry: true
+    registry-fetch-interval-seconds: 10
+    service-url:
+      defaultZone: ${EUREKA_DEFAULT_ZONE:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
 cortex:
   gateway:
     service: log-gateway
