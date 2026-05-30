@@ -724,6 +724,182 @@
           ]
         }
       ]
+    },
+    {
+      "name": "RateLimit",
+      "description": "P3.2: Bucket4j + Lettuce + Redis rate-limit assertions. Proves the B5.2 header contract (X-RateLimit-Limit / -Remaining / -Reset) on both the authenticated bucket (100/min, keyed on principal) AND the anonymous bucket (20/min, keyed on client IP), plus the 429 + Retry-After + RFC 7807 problem body when the authenticated bucket is exhausted. Run LAST: the 429 test floods ~110 requests against /echo/ping in the pre-request to exhaust the bucket, so any subsequent authenticated, non-excluded request would also see 429 until the refill window elapses.",
+      "item": [
+        {
+          "name": "Auth bucket: GET /echo/ping (bearer) -> 200 + X-RateLimit headers (limit=100)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/echo/ping",
+              "host": ["{{base_url}}"],
+              "path": ["echo", "ping"]
+            },
+            "description": "Authenticated request to a non-excluded path. Bucket4j sets the canonical X-RateLimit-* headers on the allowed response. The principal-keyed bucket is 100/min so X-RateLimit-Limit must be 100, Remaining must be a non-negative integer string, and Reset must be a positive integer of seconds within (0, 60]."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const limit = pm.response.headers.get('X-RateLimit-Limit');",
+                  "const remaining = pm.response.headers.get('X-RateLimit-Remaining');",
+                  "const reset = pm.response.headers.get('X-RateLimit-Reset');",
+                  "pm.test('X-RateLimit-Limit is 100 (authenticated bucket)', () => pm.expect(limit).to.eql('100'));",
+                  "pm.test('X-RateLimit-Remaining is a non-negative integer string', () => {",
+                  "  pm.expect(remaining).to.be.a('string').and.match(/^\\d+$/);",
+                  "  pm.expect(parseInt(remaining, 10)).to.be.at.least(0);",
+                  "  pm.expect(parseInt(remaining, 10)).to.be.at.most(100);",
+                  "});",
+                  "pm.test('X-RateLimit-Reset is a positive integer 1..60 (seconds)', () => {",
+                  "  pm.expect(reset).to.be.a('string').and.match(/^\\d+$/);",
+                  "  const r = parseInt(reset, 10);",
+                  "  pm.expect(r).to.be.at.least(1);",
+                  "  pm.expect(r).to.be.at.most(60);",
+                  "});",
+                  "pm.test('upstream is log-echo-service (sanity)', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.upstream).to.eql('log-echo-service');",
+                  "});",
+                  "pm.environment.set('rl_auth_remaining_first', remaining);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anon bucket: POST /api/v1/auth/login (bad creds) -> 401 + X-RateLimit headers (limit=20)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\":\"this-user-does-not-exist\",\"password\":\"wrong-pw\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Anonymous request to a non-excluded path. The RateLimitFilter sets X-RateLimit-* on EVERY response, including the 401 from the failed login. The IP-keyed anonymous bucket is 20/min so X-RateLimit-Limit must be 20. This proves the headers fire on rejected (non-2xx) responses too."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "const limit = pm.response.headers.get('X-RateLimit-Limit');",
+                  "const remaining = pm.response.headers.get('X-RateLimit-Remaining');",
+                  "const reset = pm.response.headers.get('X-RateLimit-Reset');",
+                  "pm.test('X-RateLimit-Limit is 20 (anonymous bucket)', () => pm.expect(limit).to.eql('20'));",
+                  "pm.test('X-RateLimit-Remaining is a non-negative integer string', () => {",
+                  "  pm.expect(remaining).to.be.a('string').and.match(/^\\d+$/);",
+                  "  pm.expect(parseInt(remaining, 10)).to.be.at.least(0);",
+                  "  pm.expect(parseInt(remaining, 10)).to.be.at.most(20);",
+                  "});",
+                  "pm.test('X-RateLimit-Reset is a positive integer 1..60 (seconds)', () => {",
+                  "  pm.expect(reset).to.be.a('string').and.match(/^\\d+$/);",
+                  "  const r = parseInt(reset, 10);",
+                  "  pm.expect(r).to.be.at.least(1);",
+                  "  pm.expect(r).to.be.at.most(60);",
+                  "});",
+                  "pm.test('body has errorCode UNAUTHENTICATED (sanity)', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.errorCode).to.eql('UNAUTHENTICATED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Exhausted bucket: GET /echo/ping (bearer) -> 429 + Retry-After + RFC 7807 problem",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/echo/ping",
+              "host": ["{{base_url}}"],
+              "path": ["echo", "ping"]
+            },
+            "description": "Pre-request: serially fire 110 GET /echo/ping requests with the same bearer to exhaust the principal-keyed 100/min bucket (Bucket4j's per-principal counter in Redis). Then the main request must return 429 with Retry-After present, X-RateLimit-Remaining=0, and an RFC 7807 problem body with errorCode=RATE_LIMITED. This proves the B5.2 contract end-to-end (filter -> RateLimitedException -> HandlerExceptionResolver -> GlobalExceptionHandler)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Serially flood the authenticated bucket (100/min) via pm.sendRequest.",
+                  "// Postman/Newman waits for in-flight sendRequest callbacks before running",
+                  "// the main request, and the recursive chain serialises the calls.",
+                  "const base = pm.environment.get('base_url');",
+                  "const jwt = pm.environment.get('jwt');",
+                  "const flood = (remaining, done) => {",
+                  "  if (remaining <= 0) { done(); return; }",
+                  "  pm.sendRequest({",
+                  "    url: base + '/echo/ping',",
+                  "    method: 'GET',",
+                  "    header: {",
+                  "      'Accept': 'application/json',",
+                  "      'Authorization': 'Bearer ' + jwt",
+                  "    }",
+                  "  }, (err, res) => {",
+                  "    if (err) { console.log('flood error: ' + err); }",
+                  "    flood(remaining - 1, done);",
+                  "  });",
+                  "};",
+                  "flood(110, () => console.log('rate-limit flood: 110 requests done'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "const retry = pm.response.headers.get('Retry-After');",
+                  "const remaining = pm.response.headers.get('X-RateLimit-Remaining');",
+                  "const limit = pm.response.headers.get('X-RateLimit-Limit');",
+                  "pm.test('Retry-After header present (positive seconds)', () => {",
+                  "  pm.expect(retry).to.be.a('string').and.match(/^\\d+$/);",
+                  "  pm.expect(parseInt(retry, 10)).to.be.at.least(1);",
+                  "});",
+                  "pm.test('X-RateLimit-Limit is 100 on the 429 too', () => pm.expect(limit).to.eql('100'));",
+                  "pm.test('X-RateLimit-Remaining is 0 on the 429', () => pm.expect(remaining).to.eql('0'));",
+                  "pm.test('body is RFC 7807 problem with errorCode RATE_LIMITED', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.errorCode).to.eql('RATE_LIMITED');",
+                  "  pm.expect(body.status).to.eql(429);",
+                  "  pm.expect(body.detail).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
