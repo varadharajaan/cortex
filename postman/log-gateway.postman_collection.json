@@ -554,6 +554,116 @@
       ]
     },
     {
+      "name": "Discovery",
+      "description": "Proves Eureka-mediated routing through `lb://log-echo-service` (ADR-0016, P3.0b). Requires the throwaway log-echo-service stub + standalone Eureka registry to be running (see scripts/smoke-p3-0b.ps1).",
+      "item": [
+        {
+          "name": "GET /echo/ping (no bearer -> 401 chain enforced)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/echo/ping",
+              "host": ["{{base_url}}"],
+              "path": ["echo", "ping"]
+            },
+            "description": "Anonymous request to the discovery-routed echo path. The gateway resource-server filter chain rejects before lb:// resolution -> 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /echo/ping (bearer -> 200 routed via lb://log-echo-service)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" },
+              { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/echo/ping",
+              "host": ["{{base_url}}"],
+              "path": ["echo", "ping"]
+            },
+            "description": "Authenticated request. Spring Cloud Gateway MVC resolves lb://log-echo-service via the Eureka registry and forwards to the throwaway stub. The stub echoes the request back so we can prove (a) routing worked, (b) Authorization survived the hop, (c) X-Tenant-Id propagated."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
+                  "pm.test('path is /echo/ping', () => pm.expect(body.path).to.eql('/echo/ping'));",
+                  "pm.test('method is GET', () => pm.expect(body.method).to.eql('GET'));",
+                  "pm.test('Authorization header survived the gateway hop', () => {",
+                  "  pm.expect(body.headers).to.be.an('object');",
+                  "  pm.expect(body.headers.authorization).to.be.a('string').and.match(/^Bearer /);",
+                  "});",
+                  "pm.test('X-Tenant-Id propagated through the gateway', () => {",
+                  "  pm.expect(body.headers['x-tenant-id']).to.eql(pm.environment.get('tenant_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /echo/foo/bar (bearer -> 200 deep path + verb)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"hello\": \"world\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/echo/foo/bar",
+              "host": ["{{base_url}}"],
+              "path": ["echo", "foo", "bar"]
+            },
+            "description": "Proves the route predicate is `path('/echo/**')` (matches arbitrary sub-paths) and that non-GET verbs forward correctly through the MVC handler."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
+                  "pm.test('path is /echo/foo/bar', () => pm.expect(body.path).to.eql('/echo/foo/bar'));",
+                  "pm.test('method is POST', () => pm.expect(body.method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Error Scenarios",
       "item": [
         {

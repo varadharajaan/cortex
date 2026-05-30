@@ -78,7 +78,7 @@ Every environment file defines:
 5. Re-export the collection from Postman to keep this file in sync
    (or hand-edit; the file is human-readable JSON v2.1).
 
-## Current request matrix (P3.1, 16 requests / 30+ assertions)
+## Current request matrix (P3.0b, 20 requests / 60+ assertions)
 
 | Folder           | Request                                            | Purpose                                                |
 |------------------|----------------------------------------------------|--------------------------------------------------------|
@@ -97,10 +97,13 @@ Every environment file defines:
 | Admin            | GET  `/actuator/prometheus`                        | 200 + `http_server_requests_seconds_count` + `jvm_memory_used_bytes` |
 | Admin            | GET  `/v3/api-docs`                                | 200 + paths include /auth/login, /auth/refresh, /health|
 | Admin            | GET  `/swagger-ui/index.html`                      | 200 + HTML body                                        |
+| Discovery        | GET  `/echo/ping` (no bearer)                      | 401 (chain enforced before lb:// resolution)           |
+| Discovery        | GET  `/echo/ping` (bearer)                         | 200 + upstream=log-echo-service + Authorization survived + X-Tenant-Id propagated |
+| Discovery        | POST `/echo/foo/bar` (bearer)                      | 200 + upstream=log-echo-service + method=POST + path=/echo/foo/bar |
 | Error Scenarios  | GET  unknown path WITH bearer                      | 404 NOT_FOUND (proves NoResourceFoundException fix)    |
 | Error Scenarios  | GET  unknown path NO bearer                        | 401                                                    |
 
-Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression.
+Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery folder requires the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1`); skip the folder when running Newman against a deployment that does not include `log-echo-service`.
 
 ## Rules anchor
 
@@ -110,4 +113,4 @@ Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh
 - 25.5: every request carries `X-Request-Id` so correlation works end
   to end (see also rule 17.5).
 - 25.7: folder layout is `Auth/` (added in P3.1), per-module folders,
-  `Admin/`, `Error Scenarios/`.
+  `Discovery/` (added in P3.0b), `Admin/`, `Error Scenarios/`.
