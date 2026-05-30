@@ -1,0 +1,42 @@
+# ============================================================================
+# CORTEX -- Conventional Commits enforcement (Rule 16.1, 16.7).
+# Enforced in CI via .github/workflows/ci.yml. Local hook optional.
+# ============================================================================
+
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  type-enum:
+    - 2
+    - always
+    - - feat
+      - fix
+      - chore
+      - docs
+      - refactor
+      - test
+      - build
+      - ci
+      - perf
+      - revert
+      - style
+  type-case:
+    - 2
+    - always
+    - lower-case
+  subject-empty:
+    - 2
+    - never
+  subject-full-stop:
+    - 2
+    - never
+    - "."
+  header-max-length:
+    - 2
+    - always
+    - 100
+  body-max-line-length:
+    - 1
+    - always
+    - 120

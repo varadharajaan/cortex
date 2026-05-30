@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    "schedule:weekly",
+    "group:allNonMajor"
+  ],
+  "timezone": "Asia/Kolkata",
+  "labels": ["type:chore", "renovate"],
+  "assignees": ["varadharajaan"],
+  "rangeStrategy": "bump",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "vulnerabilityAlerts": {
+    "labels": ["type:bug", "priority:p1", "security"],
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["maven"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "groupName": "maven non-major"
+    },
+    {
+      "matchManagers": ["maven"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["type:chore", "priority:p2", "major-upgrade"]
+    },
+    {
+      "matchPackagePatterns": ["spring-boot", "spring-cloud", "spring-ai"],
+      "groupName": "spring ecosystem",
+      "schedule": ["before 5am on monday"]
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"]
+  }
+}
