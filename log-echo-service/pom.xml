@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-echo-service - throwaway downstream stub for P3.0b..P3.4 (ADR-0016, LD24).
+
+  This module exists ONLY so `log-gateway` has a real downstream to
+  satisfy Part 21 Level 4 verification for rate-limit (P3.2), AI route
+  (P3.3), and RouteLocator (P3.4) sub-phases. It is deleted when
+  log-ingest-service (P4) and log-query-service (P7-ish) land.
+
+  Endpoint surface:
+      GET  /echo/**   - returns {upstream, path, method, headers}
+      GET  /actuator/health        - K8s probes
+      GET  /actuator/health/liveness
+      GET  /actuator/health/readiness
+      GET  /actuator/prometheus
+
+  Registers with Eureka at http://localhost:8761/eureka/ as
+  application-id = "log-echo-service".
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-echo-service</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-echo-service (throwaway downstream stub)</name>
+    <description>
+        Throwaway downstream stub used by log-gateway smoke tests for
+        P3.0b..P3.4 (ADR-0016). Deleted when log-ingest-service and
+        log-query-service take over.
+    </description>
+
+    <properties>
+        <!-- Throwaway stub (ADR-0016 / LD24): single echo controller +
+             one DTO record. Real downstream services (log-ingest, log-query)
+             will carry the 80% bundle gate. Skipping here avoids gating on
+             test code that has no business logic to cover. -->
+        <skip.jacoco>true</skip.jacoco>
+    </properties>
+
+    <dependencies>
+
+        <!-- Spring Boot core -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Eureka client (ADR-0016): registers with the local-dev
+             standalone registry at http://localhost:8761/eureka/. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry (Part 17). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      No @Mapper interfaces yet (throwaway stub). Mirror the log-gateway
+      compiler override: drop the MapStruct processor + -A options, keep
+      Lombok. Same LD12 / LD14 pattern.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>

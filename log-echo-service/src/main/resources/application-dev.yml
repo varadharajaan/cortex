@@ -1,0 +1,14 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-echo-service - dev profile (rule A6.1, 15.2).
+# Full health detail, debug-level CORTEX logs, faster Eureka registration.
+# ---------------------------------------------------------------------------
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    io.cortex: DEBUG
+    com.netflix.discovery: INFO

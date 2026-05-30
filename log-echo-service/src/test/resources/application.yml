@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-echo-service - test classpath defaults.
+# Loaded with highest precedence under src/test/resources so @SpringBootTest
+# boots without an actual Eureka registry running.
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: log-echo-service
+  main:
+    banner-mode: "off"
+
+server:
+  port: 0
+
+# Disable Eureka entirely for unit / context-load tests.
+# Smoke tests stand up a real Eureka via docker-compose instead.
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+logging:
+  level:
+    io.cortex: DEBUG
+    com.netflix.discovery: WARN
