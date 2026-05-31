@@ -87,7 +87,9 @@
         <!-- P3.0b throwaway downstream stub (ADR-0016). Removed when
              log-ingest-service (P4) and log-query-service (P7-ish) land. -->
         <module>log-echo-service</module>
-        <!-- Added in P4: <module>log-ingest-service</module> -->
+        <!-- Added in P4: log-ingest-service - validate, dedupe,
+             enrich, queue, Postgres write. -->
+        <module>log-ingest-service</module>
         <!-- Added in P5: <module>log-processor-service</module> -->
         <!-- Added in P6: <module>log-remediation-service</module> -->
         <!-- Added in P7: <module>log-indexer-service</module> -->
@@ -141,6 +143,13 @@
              Eureka client (netflix-eventbus -> netflix-infix -> antlr-runtime 3.4).
              Required by P3.3 (ADR-0018 / LD38). -->
         <antlr-runtime.version>3.5.3</antlr-runtime.version>
+
+        <!-- Pinned to resolve transitive convergence between
+             org.postgresql:postgresql 42.7.4 (checker-qual 3.42.0)
+             and com.google.guava:guava 33.0.0-jre (checker-qual 3.41.0).
+             Required by P4.0 (log-ingest-service Eureka + Postgres on
+             the same classpath / LD27 convergence rule). -->
+        <checker-qual.version>3.42.0</checker-qual.version>
 
         <!-- ============================================================== -->
         <!-- Plugins                                                         -->
@@ -340,6 +349,16 @@
                 <groupId>org.antlr</groupId>
                 <artifactId>antlr-runtime</artifactId>
                 <version>${antlr-runtime.version}</version>
+            </dependency>
+
+            <!-- Pinned to resolve checker-qual convergence between
+                 postgresql 42.7.4 and guava 33.0.0-jre on the
+                 log-ingest-service classpath (P4.0).
+                 See ${checker-qual.version} property comment. -->
+            <dependency>
+                <groupId>org.checkerframework</groupId>
+                <artifactId>checker-qual</artifactId>
+                <version>${checker-qual.version}</version>
             </dependency>
 
         </dependencies>

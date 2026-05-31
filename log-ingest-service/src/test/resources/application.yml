@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-ingest-service - test classpath defaults.
+#
+# Loaded with highest precedence under src/test/resources so
+# @SpringBootTest boots without:
+#   - a real Eureka registry (eureka.client.enabled=false)
+#   - a real Postgres (datasource pinned to H2 in PostgreSQL mode)
+#   - PII keystores or service-JWT issuer (mTLS scaffold stays off)
+#
+# Flyway V1__baseline.sql runs against the H2 database so the migration
+# is exercised by every @SpringBootTest.
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: log-ingest-service
+  main:
+    banner-mode: "off"
+  datasource:
+    url: jdbc:h2:mem:ingest-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+server:
+  port: 0
+
+# Disable Eureka entirely for unit / context-load tests.
+# Smoke tests stand up a real Eureka via the per-phase smoke script.
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+cortex:
+  security:
+    service-jwt:
+      required: false
+      expected-issuer: ""
+    mtls:
+      enabled: false
+
+logging:
+  level:
+    io.cortex: DEBUG
+    com.netflix.discovery: WARN
+    org.flywaydb: WARN

@@ -1,0 +1,16 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-ingest-service - dev profile (rule A6.1, 15.2).
+# Full health detail, debug-level CORTEX logs, faster Eureka registration.
+# Uses the smoke-compose Postgres on localhost:5432.
+# ---------------------------------------------------------------------------
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    io.cortex: DEBUG
+    com.netflix.discovery: INFO
+    org.flywaydb: INFO

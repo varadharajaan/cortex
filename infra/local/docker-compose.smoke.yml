@@ -2,8 +2,9 @@
 # CORTEX - local-dev smoke compose (P3.0b onward, ADR-0016 / LD24).
 #
 # What this brings up:
-#   - redis      : rate-limit + idempotency store (used by P3.2).
+#   - redis      : rate-limit + idempotency store (used by P3.2 + P4.2).
 #   - wiremock   : Ollama stub used by P3.3 (NL -> LogQL).
+#   - postgres   : ingestion durable system-of-record (used by P4.0+).
 #
 # What this DELIBERATELY does NOT bring up:
 #   - eureka     : booted by the per-phase smoke script via
@@ -12,14 +13,16 @@
 #                  Dockerfile + image rebuild on every code change).
 #   - log-echo-service : same pattern as eureka. Booted by the smoke
 #                  script directly from source. Removed entirely at
-#                  P4 once log-ingest-service exists.
+#                  P4 once log-ingest-service is mature.
 #   - log-gateway : booted by the smoke script directly from source so
 #                  changes are picked up without an image rebuild.
+#   - log-ingest-service : same pattern -- booted from source by the
+#                  P4.0+ smoke scripts so iteration is rebuild-free.
 #
 # Per LD24 this file is a temporary BRIDGE. The full multi-service
 # compose stack lands at P10 (`infra/docker/`).
 #
-# Lifecycle (mirrored by scripts/smoke-p3-*.ps1):
+# Lifecycle (mirrored by scripts/smoke-p3-*.ps1 / scripts/smoke-p4-*.ps1):
 #   docker compose -f infra/local/docker-compose.smoke.yml up -d
 #   ... run smoke + Newman ...
 #   docker compose -f infra/local/docker-compose.smoke.yml down -v
@@ -39,6 +42,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cortex-smoke-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cortex_ingest
+      POSTGRES_PASSWORD: cortex_ingest
+      POSTGRES_DB: cortex_ingest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cortex_ingest -d cortex_ingest"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
 
   wiremock:
