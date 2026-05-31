@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-ingest-service - validate / dedupe / enrich / queue / Postgres
+  write for the CORTEX ingestion path (P4 epic).
+
+  P4.0 (this commit) is the SCAFFOLD ONLY: module compiles, context
+  loads, POST /api/v1/ingest/batch returns 202, Flyway baseline runs,
+  Eureka registers, mTLS-ready scaffold (SslBundle + service-JWT
+  filter) is in place per O8 / ADR-0020. Real ingestion features
+  arrive in P4.1..P4.4.
+
+  Endpoint surface (P4.0):
+      POST /api/v1/ingest/batch    - accept batch, return 202 (no logic yet)
+      GET  /actuator/health        - K8s probes
+      GET  /actuator/health/liveness
+      GET  /actuator/health/readiness
+      GET  /actuator/prometheus
+
+  Registers with Eureka at http://localhost:8761/eureka/ as
+  application-id = "log-ingest-service".
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-ingest-service</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-ingest-service</name>
+    <description>
+        CORTEX log-ingest-service - validate, dedupe, enrich, queue,
+        Postgres write. P4.0 ships the scaffold; P4.1..P4.4 fill in
+        the ingestion pipeline.
+    </description>
+
+    <properties>
+        <!-- P4.0 is scaffold-only: controller returns 202 with no
+             business logic, JDBC writer lands in P4.1, dedupe in P4.2,
+             enrich in P4.3, queue publish in P4.4. Drop the 80% gate
+             until P4.1 plants real production code paths to cover. -->
+        <skip.jacoco>true</skip.jacoco>
+    </properties>
+
+    <dependencies>
+
+        <!-- Shared SDK + DTO contracts (LogEntry, LogLevel). -->
+        <dependency>
+            <groupId>io.cortex</groupId>
+            <artifactId>log-agent-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Boot core -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Persistence (D1: Spring Data JDBC, not JPA - ADR-0022).
+             P4.0 ships the JDBC + Flyway + Postgres dependencies; the
+             first repository + writer code lands in P4.1. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Eureka client (ADR-0016): registers with the local-dev
+             standalone registry at http://localhost:8761/eureka/. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- OpenAPI / Swagger UI (Part 19). -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry (Part 17). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- H2 with PostgreSQL mode + Flyway baseline = scaffold-safe
+             slice + context tests without Testcontainers. Real
+             Postgres lives in the smoke compose stack. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      No @Mapper interfaces yet (scaffold-only). Drop the MapStruct
+      annotation processor + -A options, keep Lombok. Same LD12 / LD14
+      override pattern used by log-gateway and log-echo-service.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>
