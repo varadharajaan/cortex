@@ -664,6 +664,127 @@
       ]
     },
     {
+      "name": "LogsRoute",
+      "description": "P3.4: Spring Cloud Gateway MVC RouteLocator for `/api/v1/logs/**` -> `lb://log-echo-service` (ADR-0016 routing pattern, log-echo-service stands in until P4 brings up log-ingest-service). Proves end-to-end routing through Eureka discovery for the logs path family. Auth + the global RateLimitFilter apply.",
+      "item": [
+        {
+          "name": "GET /api/v1/logs/echo (bearer -> 200 routed via lb://log-echo-service)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" },
+              { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/logs/echo",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "logs", "echo"]
+            },
+            "description": "Authenticated GET against the P3.4 logs route. Spring Cloud Gateway MVC resolves lb://log-echo-service via Eureka and forwards the request unmodified. The echo stub mirrors the request so we can prove (a) routing worked, (b) the original path survived (no rewrite), (c) Authorization + X-Tenant-Id propagated through the gateway."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
+                  "pm.test('path is /api/v1/logs/echo (no rewrite)', () => pm.expect(body.path).to.eql('/api/v1/logs/echo'));",
+                  "pm.test('method is GET', () => pm.expect(body.method).to.eql('GET'));",
+                  "pm.test('Authorization header survived the gateway hop', () => {",
+                  "  pm.expect(body.headers).to.be.an('object');",
+                  "  pm.expect(body.headers.authorization).to.be.a('string').and.match(/^Bearer /);",
+                  "});",
+                  "pm.test('X-Tenant-Id propagated through the gateway', () => {",
+                  "  pm.expect(body.headers['x-tenant-id']).to.eql(pm.environment.get('tenant_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/logs/deep/path (bearer -> 200 deep path + verb)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"hello\": \"world\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/logs/deep/path",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "logs", "deep", "path"]
+            },
+            "description": "Proves the route predicate is `path('/api/v1/logs/**')` (matches arbitrary sub-paths) and that non-GET verbs forward correctly through the MVC handler."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
+                  "pm.test('path is /api/v1/logs/deep/path', () => pm.expect(body.path).to.eql('/api/v1/logs/deep/path'));",
+                  "pm.test('method is POST', () => pm.expect(body.method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SearchRoute",
+      "description": "P3.4: Spring Cloud Gateway MVC RouteLocator for `/api/v1/search/**` -> `lb://log-echo-service` (log-echo-service stands in until P7 brings up the real search service). Same Eureka-discovery / lb:// posture as LogsRoute.",
+      "item": [
+        {
+          "name": "GET /api/v1/search/echo (bearer -> 200 routed via lb://log-echo-service)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/search/echo",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "search", "echo"]
+            },
+            "description": "Authenticated GET against the P3.4 search route. Same end-to-end proof as LogsRoute: Eureka resolution + lb:// forwarding + no path rewrite."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
+                  "pm.test('path is /api/v1/search/echo (no rewrite)', () => pm.expect(body.path).to.eql('/api/v1/search/echo'));",
+                  "pm.test('method is GET', () => pm.expect(body.method).to.eql('GET'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Error Scenarios",
       "item": [
         {
