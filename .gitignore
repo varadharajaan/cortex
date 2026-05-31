@@ -126,3 +126,10 @@ infra/helm/charts/**/*.tgz
 .cleanup-issues.ps1
 .commit-batch.ps1
 /scripts/
+
+#.out files from local test runs (e.g. integration test outputs, replay logs, etc.)
+# from any directory and subdirectories. This is a broad pattern, but .out files are typically not source files and are often generated as temporary outputs.
+**/*.out
+
+# also same for this pattern *output.txt, which is a common name for test outputs and logs.
+**/*output.txt
