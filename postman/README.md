@@ -78,7 +78,7 @@ Every environment file defines:
 5. Re-export the collection from Postman to keep this file in sync
    (or hand-edit; the file is human-readable JSON v2.1).
 
-## Current request matrix (P3.2, 23 requests / 80+ assertions)
+## Current request matrix (P3.3, 26 requests / 90+ assertions)
 
 | Folder           | Request                                            | Purpose                                                |
 |------------------|----------------------------------------------------|--------------------------------------------------------|
@@ -102,11 +102,14 @@ Every environment file defines:
 | Discovery        | POST `/echo/foo/bar` (bearer)                      | 200 + upstream=log-echo-service + method=POST + path=/echo/foo/bar |
 | Error Scenarios  | GET  unknown path WITH bearer                      | 404 NOT_FOUND (proves NoResourceFoundException fix)    |
 | Error Scenarios  | GET  unknown path NO bearer                        | 401                                                    |
+| NlQuery          | POST `/api/v1/query/nl` (trigger:HAPPY)            | 200 + non-empty logql with valid leading token + confidence in [0,1] + non-empty explanation |
+| NlQuery          | POST `/api/v1/query/nl` (trigger:SCHEMA_MISS)      | 422 + RFC 7807 errorCode=NL_QUERY_INVALID              |
+| NlQuery          | POST `/api/v1/query/nl` (trigger:REFUSAL)          | 422 + RFC 7807 errorCode=NL_QUERY_REFUSED              |
 | RateLimit        | GET  `/echo/ping` (bearer)                         | 200 + X-RateLimit-Limit=100 + Remaining digits + Reset 1..60 |
 | RateLimit        | POST `/api/v1/auth/login` (bad creds, no bearer)   | 401 + X-RateLimit-Limit=20 + Remaining digits + Reset 1..60 + errorCode=UNAUTHENTICATED |
 | RateLimit        | GET  `/echo/ping` (bearer, after pre-request flood)| 429 + Retry-After present + X-RateLimit-Remaining=0 + RFC 7807 errorCode=RATE_LIMITED |
 
-Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery folder requires the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1`); skip the folder when running Newman against a deployment that does not include `log-echo-service`. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
+Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery folder requires the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1`); skip the folder when running Newman against a deployment that does not include `log-echo-service`. The NlQuery folder requires WireMock running on `:8081` with the `infra/local/wiremock/mappings/` stubs mounted AND the gateway booted with `SPRING_AI_OLLAMA_BASE_URL=http://localhost:8081`; the sub-bucket-exhaustion 429 case is covered by `scripts/smoke-p3-3.ps1` only because it needs deterministic Redis state. Reset `cortex:rl:nlq:*` keys in Redis between the smoke and the newman run so the NlQuery folder starts with a full sub-bucket. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
 
 ## Rules anchor
 
@@ -116,10 +119,19 @@ Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh
 - 25.5: every request carries `X-Request-Id` so correlation works end
   to end (see also rule 17.5).
 - 25.7: folder layout is `Auth/` (added in P3.1), per-module folders,
-  `Discovery/` (added in P3.0b), `Admin/`, `Error Scenarios/`, `RateLimit/`
-  (added in P3.2).
+  `Discovery/` (added in P3.0b), `Admin/`, `Error Scenarios/`, `NlQuery/`
+  (added in P3.3), `RateLimit/` (added in P3.2).
 - B5.1 / B5.2 (strict rules): the `RateLimit/` folder asserts the
   distributed Bucket4j+Redis token-bucket contract and the canonical
   `X-RateLimit-*` + `Retry-After` headers on both allowed (200) AND
   rejected (401 / 429) responses; the 429 path additionally asserts the
   RFC 7807 problem body with `errorCode=RATE_LIMITED`.
+- B20.1 / ADR-0018 (strict rules): the `NlQuery/` folder asserts the
+  Spring AI ChatClient -> Ollama natural-language to LogQL contract.
+  Three outcome paths (happy / schema-miss / refusal) are exercised
+  against the WireMock `/api/chat` stubs under
+  `infra/local/wiremock/mappings/`. The 422 paths must surface RFC 7807
+  with `errorCode=NL_QUERY_INVALID` or `NL_QUERY_REFUSED` respectively;
+  the happy path must produce a valid `{logql, confidence, explanation}`
+  body with the LogQL starting with one of the allowed leading tokens
+  (stream selector `{` or scalar aggregation).

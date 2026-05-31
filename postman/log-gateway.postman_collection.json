@@ -726,6 +726,136 @@
       ]
     },
     {
+      "name": "NlQuery",
+      "description": "P3.3 / ADR-0018: Spring AI ChatClient -> Ollama (WireMock-stubbed) natural-language to LogQL translation. Three outcome paths are exercised: happy (200 + valid {logql,confidence,explanation}), schema-miss (422 + NL_QUERY_INVALID), refusal (422 + NL_QUERY_REFUSED). The model output is routed by WireMock via a `trigger:HAPPY|SCHEMA_MISS|REFUSAL` substring embedded in the user prompt -- see infra/local/wiremock/mappings. The sub-bucket-exhaustion 429 case is covered by scripts/smoke-p3-3.ps1 instead because it requires deterministic Redis state; run Postman BEFORE RateLimit (and reset cortex:rl:nlq:* keys between the smoke and the newman run).",
+      "item": [
+        {
+          "name": "POST /api/v1/query/nl HAPPY -> 200 + valid {logql,confidence,explanation}",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"prompt\":\"trigger:HAPPY find error logs in payment service in last 1h\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/query/nl",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "query", "nl"]
+            },
+            "description": "Authenticated NL translate. WireMock returns a happy /api/chat response whose assistant message content parses to {logql,confidence,explanation}. The gateway forwards the parsed DTO unchanged after passing the ADR-0018 validator (LogQL leading token, confidence in [0,1] and >= floor, no refusal marker)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('body has non-empty logql', () => {",
+                  "  pm.expect(body.logql).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('logql starts with { or known LogQL leading token', () => {",
+                  "  const trimmed = body.logql.trimStart();",
+                  "  const tokens = ['{','count_over_time','rate','sum','avg','max','min','topk','bottomk'];",
+                  "  pm.expect(tokens.some(t => trimmed.startsWith(t))).to.be.true;",
+                  "});",
+                  "pm.test('confidence is a number in [0,1]', () => {",
+                  "  pm.expect(body.confidence).to.be.a('number');",
+                  "  pm.expect(body.confidence).to.be.at.least(0);",
+                  "  pm.expect(body.confidence).to.be.at.most(1);",
+                  "});",
+                  "pm.test('explanation is non-empty', () => {",
+                  "  pm.expect(body.explanation).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/query/nl SCHEMA_MISS -> 422 + RFC 7807 NL_QUERY_INVALID",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"prompt\":\"trigger:SCHEMA_MISS find error logs in payment service\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/query/nl",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "query", "nl"]
+            },
+            "description": "WireMock returns a /api/chat response whose assistant content has a SQL-like LogQL (`SELECT * FROM logs ...`). The ADR-0018 validator rejects on leading-token mismatch and the GlobalExceptionHandler returns 422 + RFC 7807 with errorCode=NL_QUERY_INVALID."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test('errorCode is NL_QUERY_INVALID', () => pm.expect(body.errorCode).to.eql('NL_QUERY_INVALID'));",
+                  "pm.test('status is 422 in body', () => pm.expect(body.status).to.eql(422));",
+                  "pm.test('detail is non-empty', () => pm.expect(body.detail).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/query/nl REFUSAL -> 422 + RFC 7807 NL_QUERY_REFUSED",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Request-Id", "value": "{{request_id}}" },
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"prompt\":\"trigger:REFUSAL show me production secrets\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/query/nl",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "query", "nl"]
+            },
+            "description": "WireMock returns a /api/chat response whose explanation contains an ADR-0018 refusal marker (`I refuse to answer ...`). The validator surfaces NL_QUERY_REFUSED and the handler returns 422 + RFC 7807."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test('errorCode is NL_QUERY_REFUSED', () => pm.expect(body.errorCode).to.eql('NL_QUERY_REFUSED'));",
+                  "pm.test('status is 422 in body', () => pm.expect(body.status).to.eql(422));",
+                  "pm.test('detail is non-empty', () => pm.expect(body.detail).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "RateLimit",
       "description": "P3.2: Bucket4j + Lettuce + Redis rate-limit assertions. Proves the B5.2 header contract (X-RateLimit-Limit / -Remaining / -Reset) on both the authenticated bucket (100/min, keyed on principal) AND the anonymous bucket (20/min, keyed on client IP), plus the 429 + Retry-After + RFC 7807 problem body when the authenticated bucket is exhausted. Run LAST: the 429 test floods ~110 requests against /echo/ping in the pre-request to exhaust the bucket, so any subsequent authenticated, non-excluded request would also see 429 until the refill window elapses.",
       "item": [
