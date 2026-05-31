@@ -11,6 +11,20 @@ spring:
     banner-mode: "off"
   jackson:
     default-property-inclusion: non_null
+  ai:
+    # Spring AI 1.0.0 Ollama starter (B20.1, P3.3 / ADR-0018). The base
+    # URL points at WireMock (port 8081) in dev/test smoke and at a real
+    # Ollama (or Azure OpenAI under prod profile) elsewhere. Auto-pull is
+    # OFF so a dev without a local model gets a deterministic 503 from
+    # the gateway instead of a 10-minute model download on first request.
+    ollama:
+      base-url: ${SPRING_AI_OLLAMA_BASE_URL:http://localhost:11434}
+      init:
+        pull-model-strategy: never
+      chat:
+        options:
+          model: ${SPRING_AI_OLLAMA_CHAT_MODEL:mistral}
+          temperature: ${SPRING_AI_OLLAMA_CHAT_TEMPERATURE:0.2}
 
 server:
   port: 8080
@@ -89,6 +103,18 @@ cortex:
       anonymous-capacity: ${CORTEX_GATEWAY_RATE_LIMIT_ANON_CAPACITY:20}
       redis-uri: ${REDIS_URI:redis://localhost:6379/0}
       key-prefix: ${CORTEX_GATEWAY_RATE_LIMIT_PREFIX:cortex:rl:}
+    # Natural-language query endpoint (B20.1, P3.3 / ADR-0018). Disabled
+    # in src/test/resources for MockMvc tests that don't need it; the
+    # NL-specific @SpringBootTest classes re-enable it explicitly.
+    nl-query:
+      enabled: ${CORTEX_GATEWAY_NL_QUERY_ENABLED:true}
+      model: ${CORTEX_GATEWAY_NL_QUERY_MODEL:mistral}
+      temperature: ${CORTEX_GATEWAY_NL_QUERY_TEMPERATURE:0.2}
+      max-tokens: ${CORTEX_GATEWAY_NL_QUERY_MAX_TOKENS:512}
+      confidence-floor: ${CORTEX_GATEWAY_NL_QUERY_CONFIDENCE_FLOOR:0.3}
+      sub-bucket-capacity: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_CAPACITY:10}
+      sub-bucket-refill-period: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_REFILL:PT1M}
+      sub-bucket-key-prefix: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_PREFIX:cortex:rl:nlq:}
 
 logging:
   level:

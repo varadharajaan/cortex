@@ -43,6 +43,20 @@ cortex:
       refill-period: PT1M
       anonymous-capacity: 20
       redis-uri: redis://localhost:6379/0
+    # Disable the NL-to-LogQL endpoint in MockMvc tests by default
+    # (P3.3 / ADR-0018). NL-specific test classes re-enable it via
+    # @SpringBootTest(properties = ...) and supply a test ChatClient.
+    nl-query:
+      enabled: false
+
+spring:
+  ai:
+    # No Spring AI auto-config in MockMvc tests (no Ollama on test classpath
+    # boot). NL-specific @SpringBootTest classes provide a test ChatClient
+    # bean directly.
+    model:
+      chat: none
+      embedding: none
 
 logging:
   level:
