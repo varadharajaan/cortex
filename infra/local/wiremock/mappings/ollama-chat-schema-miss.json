@@ -1,0 +1,32 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "POST",
+    "url": "/api/chat",
+    "bodyPatterns": [
+      { "contains": "trigger:SCHEMA_MISS" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "model": "mistral",
+      "created_at": "2026-05-31T00:00:00.000000000Z",
+      "message": {
+        "role": "assistant",
+        "content": "{\"logql\":\"SELECT * FROM logs WHERE service='payment'\",\"confidence\":0.81,\"explanation\":\"reformulated the natural-language ask as an SQL-style select against the logs table for the payment service\"}"
+      },
+      "done": true,
+      "done_reason": "stop",
+      "total_duration": 1100000000,
+      "load_duration": 90000000,
+      "prompt_eval_count": 75,
+      "prompt_eval_duration": 180000000,
+      "eval_count": 55,
+      "eval_duration": 830000000
+    }
+  }
+}
