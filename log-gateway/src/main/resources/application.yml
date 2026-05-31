@@ -91,6 +91,12 @@ cortex:
         refresh-ttl: P7D
       bootstrap:
         users: []
+      # Anonymous IP-keyed sub-bucket for POST /auth/login (P3.4 /
+      # ADR-0021). Defends against credential-stuffing on top of the
+      # global anonymous bucket (P3.2). Read by the
+      # @RateLimitFeature on AuthController.login.
+      login-rate-limit-capacity: ${CORTEX_GATEWAY_AUTH_LOGIN_RL_CAPACITY:5}
+      login-rate-limit-refill: ${CORTEX_GATEWAY_AUTH_LOGIN_RL_REFILL:PT1M}
     # Distributed rate limit (B5.1, P3.2 / ADR-0017). Bucket4j with a
     # Lettuce-backed Redis store. Authenticated callers consume from a
     # per-principal bucket; anonymous callers consume from a smaller
