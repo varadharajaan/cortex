@@ -48,4 +48,39 @@ public class GatewayRoutesConfig {
                 .filter(lb("log-echo-service"))
                 .build();
     }
+
+    /**
+     * P3.4 logs proxy route: forwards {@code /api/v1/logs/**} through
+     * the load balancer to {@code log-echo-service} for now
+     * (placeholder until P4 brings up the real log ingest service).
+     * Auth + the global {@code RateLimitFilter} apply because the path
+     * matches {@link io.cortex.gateway.config.SecurityConfig}'s
+     * {@code anyRequest().authenticated()} rule and the
+     * {@code OncePerRequestFilter} chain.
+     *
+     * @return a router function carrying the logs proxy route
+     */
+    @Bean
+    public RouterFunction<ServerResponse> logsServiceRoute() {
+        return route("logs-service")
+                .route(path("/api/v1/logs/**"), http())
+                .filter(lb("log-echo-service"))
+                .build();
+    }
+
+    /**
+     * P3.4 search proxy route: forwards {@code /api/v1/search/**} via
+     * the load balancer to {@code log-echo-service} (placeholder until
+     * P7 brings up the real search service). Same auth + rate-limit
+     * posture as {@link #logsServiceRoute()}.
+     *
+     * @return a router function carrying the search proxy route
+     */
+    @Bean
+    public RouterFunction<ServerResponse> searchServiceRoute() {
+        return route("search-service")
+                .route(path("/api/v1/search/**"), http())
+                .filter(lb("log-echo-service"))
+                .build();
+    }
 }
