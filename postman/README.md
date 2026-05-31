@@ -78,7 +78,7 @@ Every environment file defines:
 5. Re-export the collection from Postman to keep this file in sync
    (or hand-edit; the file is human-readable JSON v2.1).
 
-## Current request matrix (P3.3, 26 requests / 90+ assertions)
+## Current request matrix (P3.4, 29 requests / 100+ assertions)
 
 | Folder           | Request                                            | Purpose                                                |
 |------------------|----------------------------------------------------|--------------------------------------------------------|
@@ -100,6 +100,9 @@ Every environment file defines:
 | Discovery        | GET  `/echo/ping` (no bearer)                      | 401 (chain enforced before lb:// resolution)           |
 | Discovery        | GET  `/echo/ping` (bearer)                         | 200 + upstream=log-echo-service + Authorization survived + X-Tenant-Id propagated |
 | Discovery        | POST `/echo/foo/bar` (bearer)                      | 200 + upstream=log-echo-service + method=POST + path=/echo/foo/bar |
+| LogsRoute        | GET  `/api/v1/logs/echo` (bearer)                  | 200 + upstream=log-echo-service + path=/api/v1/logs/echo (no rewrite) + Authorization + X-Tenant-Id propagated |
+| LogsRoute        | POST `/api/v1/logs/deep/path` (bearer)             | 200 + upstream=log-echo-service + method=POST + path=/api/v1/logs/deep/path |
+| SearchRoute      | GET  `/api/v1/search/echo` (bearer)                | 200 + upstream=log-echo-service + path=/api/v1/search/echo (no rewrite) |
 | Error Scenarios  | GET  unknown path WITH bearer                      | 404 NOT_FOUND (proves NoResourceFoundException fix)    |
 | Error Scenarios  | GET  unknown path NO bearer                        | 401                                                    |
 | NlQuery          | POST `/api/v1/query/nl` (trigger:HAPPY)            | 200 + non-empty logql with valid leading token + confidence in [0,1] + non-empty explanation |
@@ -109,7 +112,7 @@ Every environment file defines:
 | RateLimit        | POST `/api/v1/auth/login` (bad creds, no bearer)   | 401 + X-RateLimit-Limit=20 + Remaining digits + Reset 1..60 + errorCode=UNAUTHENTICATED |
 | RateLimit        | GET  `/echo/ping` (bearer, after pre-request flood)| 429 + Retry-After present + X-RateLimit-Remaining=0 + RFC 7807 errorCode=RATE_LIMITED |
 
-Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery folder requires the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1`); skip the folder when running Newman against a deployment that does not include `log-echo-service`. The NlQuery folder requires WireMock running on `:8081` with the `infra/local/wiremock/mappings/` stubs mounted AND the gateway booted with `SPRING_AI_OLLAMA_BASE_URL=http://localhost:8081`; the sub-bucket-exhaustion 429 case is covered by `scripts/smoke-p3-3.ps1` only because it needs deterministic Redis state. Reset `cortex:rl:nlq:*` keys in Redis between the smoke and the newman run so the NlQuery folder starts with a full sub-bucket. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
+Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery + LogsRoute + SearchRoute folders all require the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1` and `scripts/smoke-p3-4.ps1`); skip those folders when running Newman against a deployment that does not include `log-echo-service`. The NlQuery folder requires WireMock running on `:8081` with the `infra/local/wiremock/mappings/` stubs mounted AND the gateway booted with `SPRING_AI_OLLAMA_BASE_URL=http://localhost:8081`; the sub-bucket-exhaustion 429 case is covered by `scripts/smoke-p3-3.ps1` only because it needs deterministic Redis state. The AuthLogin sub-bucket exhaustion case (`@RateLimitFeature` on `/api/v1/auth/login`, P3.4 / ADR-0021) is likewise covered only by `scripts/smoke-p3-4.ps1` because Newman would otherwise lock the `admin` principal's login bucket for the rest of the run. Reset `cortex:rl:nlq:*` + `cortex:rl:auth:*` keys in Redis between the smoke and the newman run so the NlQuery + Auth folders start with full buckets. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
 
 ## Rules anchor
 
@@ -119,8 +122,9 @@ Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh
 - 25.5: every request carries `X-Request-Id` so correlation works end
   to end (see also rule 17.5).
 - 25.7: folder layout is `Auth/` (added in P3.1), per-module folders,
-  `Discovery/` (added in P3.0b), `Admin/`, `Error Scenarios/`, `NlQuery/`
-  (added in P3.3), `RateLimit/` (added in P3.2).
+  `Discovery/` (added in P3.0b), `LogsRoute/` + `SearchRoute/` (added in
+  P3.4), `Admin/`, `Error Scenarios/`, `NlQuery/` (added in P3.3),
+  `RateLimit/` (added in P3.2).
 - B5.1 / B5.2 (strict rules): the `RateLimit/` folder asserts the
   distributed Bucket4j+Redis token-bucket contract and the canonical
   `X-RateLimit-*` + `Retry-After` headers on both allowed (200) AND

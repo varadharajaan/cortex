@@ -86,6 +86,61 @@ in production code - typed properties only (rule A6.1).
 Any other request is rejected with `401 Unauthorized` until P3.1 lands
 the JWT and API-key filters.
 
+## Routes (P3.4 / ADR-0014 + ADR-0016)
+
+Programmatic Spring Cloud Gateway MVC routes registered in
+`GatewayRoutesConfig` (the Java DSL is stable across SCG 4.x and 5.x;
+the YAML route prefix moved between minors).
+
+| Predicate              | Filter                      | Target                | Notes                                                |
+|------------------------|-----------------------------|-----------------------|------------------------------------------------------|
+| `/echo/**`             | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.0b discovery proof.                              |
+| `/api/v1/logs/**`      | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.4 placeholder until P4 brings up log-ingest.     |
+| `/api/v1/search/**`    | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.4 placeholder until P7 brings up search.         |
+
+No path rewrite is applied; the downstream sees the original path. The
+throwaway `log-echo-service` stub mirrors every verb under
+`/echo/**`, `/api/v1/logs/**`, and `/api/v1/search/**` so the smoke +
+Newman can prove end-to-end routing through Eureka.
+
+## Per-feature rate limit -- `@RateLimitFeature` (P3.4 / ADR-0021)
+
+Declarative custom annotation that adds an independent Bucket4j
+sub-bucket on top of the global P3.2 `RateLimitFilter`. Wired via a
+Spring MVC `HandlerInterceptor` (`RateLimitFeatureInterceptor`); does
+**not** use `spring-aop` or `aspectjweaver` (LD41). Registered on
+`/api/**` only by `RateLimitFeatureConfig`.
+
+```java
+@PostMapping("/login")
+@PreAuthorize("permitAll()")
+@RateLimitFeature(
+        name = "auth-login",
+        capacity = "${cortex.gateway.security.login-rate-limit-capacity:5}",
+        refill   = "${cortex.gateway.security.login-rate-limit-refill:PT1M}",
+        errorCode = "RATE_LIMITED",
+        keyPrefix = "cortex:rl:auth:")
+public ResponseEntity<TokenResponse> login(@Valid @RequestBody final LoginRequest request) { ... }
+```
+
+Members:
+
+| Member       | Required | Resolves   | Purpose                                                            |
+|--------------|----------|------------|--------------------------------------------------------------------|
+| `name`       | yes      | literal    | Stable feature id; bucket cache key + log field.                   |
+| `capacity`   | yes      | placeholder or literal | Tokens per refill window.                              |
+| `refill`     | yes      | placeholder or literal | ISO-8601 `Duration` refill window (e.g. `PT1M`).       |
+| `errorCode`  | no       | placeholder or literal | `ErrorCodes` constant surfaced on 429 (default `RATE_LIMITED`). |
+| `keyPrefix`  | no       | literal    | Redis key namespace; full key is `<keyPrefix><name>:user:<principal>` (authed) or `<keyPrefix><name>:ip:<remote>` (anonymous). Default `cortex:rl:feat:`. |
+
+On exhaustion the interceptor throws `RateLimitedException` carrying
+the resolved `ErrorCodes` so `GlobalExceptionHandler` renders RFC 7807
++ sets `Retry-After`. **Sub-bucket 429s do NOT add the `X-RateLimit-*`
+headers** -- only the global `RateLimitFilter` owns those (LD33);
+this keeps the per-feature 429 body the only marker for sub-bucket
+exhaustion (e.g. `errorCode=NL_QUERY_RATE_LIMITED` vs the global
+`errorCode=RATE_LIMITED`).
+
 ## Observability
 
 - **Logs**: JSON via Logstash encoder in non-dev profiles (rule A8.1).
