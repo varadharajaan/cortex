@@ -42,7 +42,11 @@ public class EchoController {
      * @return HTTP 200 with an {@link EchoResponse} body
      */
     @RequestMapping(
-            value = {"/echo", "/echo/**"},
+            value = {
+                    "/echo",
+                    "/echo/**",
+                    "/api/v1/logs/**",
+                    "/api/v1/search/**"},
             method = {
                     RequestMethod.GET,
                     RequestMethod.POST,
