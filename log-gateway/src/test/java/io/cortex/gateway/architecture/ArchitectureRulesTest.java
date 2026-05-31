@@ -26,12 +26,16 @@ public final class ArchitectureRulesTest {
 
     /** Rule 8.1 / 8.2 / 8.3: enforce the controller-service-repository layering.
      *  P3.1 re-adds the Service layer (P3.0 omitted it temporarily because
-     *  ArchUnit rejects empty layers; see memory.md EQ8). */
+     *  ArchUnit rejects empty layers; see memory.md EQ8).
+     *  P3.4 introduces the {@code Annotation} + {@code Interceptor}
+     *  layers (ADR-0021 / memory.md LD41). */
     @ArchTest
     static final ArchRule LAYERING = Architectures.layeredArchitecture().consideringAllDependencies()
             .layer("Controller").definedBy("..controller..")
             .layer("Service").definedBy("..service..", "..service.impl..")
             .layer("Filter").definedBy("..filter..")
+            .layer("Interceptor").definedBy("..interceptor..")
+            .layer("Annotation").definedBy("..annotation..")
             .layer("Config").definedBy("..config..")
             .layer("Security").definedBy("..security..")
             .layer("Exception").definedBy("..exception..")
@@ -41,8 +45,10 @@ public final class ArchitectureRulesTest {
             .whereLayer("Controller").mayNotBeAccessedByAnyLayer()
             .whereLayer("Service").mayOnlyBeAccessedByLayers("Controller", "Service")
             .whereLayer("Exception").mayOnlyBeAccessedByLayers(
-                    "Controller", "Service", "Filter", "Config", "Security")
-            .whereLayer("Filter").mayNotBeAccessedByAnyLayer();
+                    "Controller", "Service", "Filter", "Interceptor", "Config", "Security")
+            .whereLayer("Filter").mayNotBeAccessedByAnyLayer()
+            .whereLayer("Interceptor").mayOnlyBeAccessedByLayers("Config")
+            .whereLayer("Annotation").mayOnlyBeAccessedByLayers("Controller", "Interceptor");
 
     /** Rule 8.4: DTOs must be records so they are immutable by construction. */
     @ArchTest
@@ -104,4 +110,22 @@ public final class ArchitectureRulesTest {
             .andShould().beStatic()
             .andShould().beFinal()
             .because("rule A8.7 - loggers are private static final");
+
+    /**
+     * P3.4 / ADR-0021 -- Bucket4j {@code ProxyManager} is the rate-limit
+     * primitive; only the global filter, the per-feature interceptor, and
+     * the rate-limit config (which constructs it) may touch it directly.
+     * Every other class must go through the
+     * {@link io.cortex.gateway.annotation.RateLimitFeature
+     * @RateLimitFeature} annotation or the global filter. Catches
+     * regressions where someone re-inlines bucket consumption inside a
+     * service.
+     */
+    @ArchTest
+    static final ArchRule PROXY_MANAGER_ACCESS_RESTRICTED = noClasses()
+            .that().resideInAPackage("io.cortex.gateway..")
+            .and().haveNameNotMatching(".*\\.(RateLimitFilter|RateLimitFeatureInterceptor|RateLimitConfig)")
+            .should().dependOnClassesThat().haveFullyQualifiedName(
+                    "io.github.bucket4j.distributed.proxy.ProxyManager")
+            .because("P3.4 / ADR-0021 - ProxyManager access goes through the filter or the interceptor");
 }

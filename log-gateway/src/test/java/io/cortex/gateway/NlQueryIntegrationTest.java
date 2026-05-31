@@ -50,9 +50,13 @@ import org.springframework.http.ResponseEntity;
  *
  * <p>Rate-limit composition (sub-bucket exhaustion) is NOT covered here:
  * {@code cortex.gateway.rate-limit.enabled=false} on the test classpath
- * means the {@code ProxyManager} bean is absent and the service's
- * sub-bucket check no-ops. That path is covered by the smoke + Postman
- * runs against a real Redis.</p>
+ * means BOTH the global filter AND the
+ * {@code RateLimitFeatureInterceptor} (P3.4 / ADR-0021) are
+ * conditionally absent, so the
+ * {@code @RateLimitFeature(name=\"nl-query\", ...)} on the controller
+ * is a no-op. That path is covered by the
+ * {@code RateLimitFeatureInterceptorTest} unit test and the smoke +
+ * Postman runs against a real Redis.</p>
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,

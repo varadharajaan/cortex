@@ -1,7 +1,5 @@
 package io.cortex.gateway.config;
 
-import io.github.bucket4j.Bandwidth;
-import io.github.bucket4j.BucketConfiguration;
 import java.net.http.HttpClient;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,9 +17,18 @@ import org.springframework.web.client.RestClient;
  * {@link org.springframework.ai.chat.client.ChatClient.Builder
  * ChatClient.Builder} from whatever {@link org.springframework.ai.chat.model.ChatModel
  * ChatModel} is on the classpath; the service injects that builder
- * directly so this configuration owns the per-principal NL sub-bucket
- * bean plus an explicit {@link OllamaApi} override that pins the
- * outbound HTTP client to HTTP/1.1.</p>
+ * directly so this configuration only owns the explicit
+ * {@link OllamaApi} override that pins the outbound HTTP client to
+ * HTTP/1.1 (memory.md LD42).</p>
+ *
+ * <p>Per-principal NL sub-bucket enforcement that previously lived
+ * here (a {@code nlQueryBucketConfiguration} {@link
+ * io.github.bucket4j.BucketConfiguration BucketConfiguration} bean)
+ * migrated to
+ * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
+ * in P3.4 / ADR-0021, driven by the
+ * {@link io.cortex.gateway.annotation.RateLimitFeature
+ * @RateLimitFeature} on the NL controller.</p>
  *
  * <p>The whole class is conditional on
  * {@code cortex.gateway.nl-query.enabled=true} so a deploy that wants the
@@ -30,25 +37,6 @@ import org.springframework.web.client.RestClient;
 @Configuration
 @ConditionalOnProperty(prefix = "cortex.gateway.nl-query", name = "enabled", havingValue = "true")
 public class NlQueryConfig {
-
-    /**
-     * Bucket configuration for the per-principal NL sub-bucket
-     * (ADR-0018 section 3). Sized intentionally smaller than the global
-     * per-principal bucket so feature-targeted floods are absorbed
-     * without exhausting the global quota.
-     *
-     * @param properties typed NL-query configuration
-     * @return immutable bucket configuration applied to per-principal NL buckets
-     */
-    @Bean
-    public BucketConfiguration nlQueryBucketConfiguration(final NlQueryProperties properties) {
-        return BucketConfiguration.builder()
-                .addLimit(Bandwidth.builder()
-                        .capacity(properties.subBucketCapacity())
-                        .refillGreedy(properties.subBucketCapacity(), properties.subBucketRefillPeriod())
-                        .build())
-                .build();
-    }
 
     /**
      * Hand-builds the Spring AI {@link OllamaApi} bean so the outbound

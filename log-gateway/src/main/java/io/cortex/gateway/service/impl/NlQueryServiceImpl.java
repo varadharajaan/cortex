@@ -5,20 +5,12 @@ import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.dto.request.NlQueryRequest;
 import io.cortex.gateway.dto.response.NlQueryResponse;
 import io.cortex.gateway.exception.ApplicationException;
-import io.cortex.gateway.exception.RateLimitedException;
 import io.cortex.gateway.service.NlQueryService;
-import io.github.bucket4j.Bucket;
-import io.github.bucket4j.BucketConfiguration;
-import io.github.bucket4j.ConsumptionProbe;
-import io.github.bucket4j.distributed.proxy.ProxyManager;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
@@ -29,11 +21,6 @@ import org.springframework.stereotype.Service;
  *
  * <p>Flow per call:</p>
  * <ol>
- *   <li>Consume one token from the per-principal NL sub-bucket via
- *       the rate-limit {@link ProxyManager}. On exhaustion, throw a
- *       {@link RateLimitedException} carrying
- *       {@link ErrorCodes#NL_QUERY_RATE_LIMITED} so the handler
- *       renders 429 + {@code Retry-After}. The LLM call is NOT made.</li>
  *   <li>Render the prompt template from
  *       {@code classpath:/prompts/nl-to-logql.st} substituting
  *       {@code {prompt}} with the user input.</li>
@@ -45,10 +32,14 @@ import org.springframework.stereotype.Service;
  *   <li>Return the validated {@link NlQueryResponse} to the controller.</li>
  * </ol>
  *
- * <p>When the rate-limit subsystem is disabled (test classpath,
- * {@code cortex.gateway.rate-limit.enabled=false}), the
- * {@link ProxyManager} bean is absent; sub-bucket enforcement no-ops
- * gracefully via {@link Optional}.</p>
+ * <p>Per-principal NL sub-bucket enforcement (P3.3 originally lived
+ * here) now runs in
+ * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
+ * driven by the
+ * {@link io.cortex.gateway.annotation.RateLimitFeature
+ * @RateLimitFeature} on {@code NlQueryController.translate(...)}
+ * (P3.4 / ADR-0021); the service therefore makes no rate-limit
+ * decisions on its own.</p>
  */
 @Slf4j
 @Service
@@ -60,12 +51,6 @@ public class NlQueryServiceImpl implements NlQueryService {
 
     /** Typed NL-query configuration. */
     private final NlQueryProperties properties;
-
-    /** NL sub-bucket configuration (capacity + refill window). */
-    private final BucketConfiguration subBucketConfig;
-
-    /** Distributed bucket proxy manager; absent when rate-limit is disabled. */
-    private final Optional<ProxyManager<String>> proxyManager;
 
     /** Validator that enforces the ADR-0018 output contract. */
     private final NlQueryValidator validator;
@@ -85,8 +70,6 @@ public class NlQueryServiceImpl implements NlQueryService {
      *
      * @param chatClientBuilder Spring AI chat client builder (auto-configured by the starter)
      * @param properties        typed NL-query configuration
-     * @param subBucketConfig   per-principal NL sub-bucket configuration
-     * @param proxyManager      distributed bucket proxy manager (may be absent)
      * @param validator         output-contract validator
      * @param promptTemplate    prompt template resource
      * @throws UncheckedIOException when the prompt template resource cannot be read
@@ -94,15 +77,11 @@ public class NlQueryServiceImpl implements NlQueryService {
     public NlQueryServiceImpl(
             final ChatClient.Builder chatClientBuilder,
             final NlQueryProperties properties,
-            @Qualifier("nlQueryBucketConfiguration") final BucketConfiguration subBucketConfig,
-            final Optional<ProxyManager<String>> proxyManager,
             final NlQueryValidator validator,
             @org.springframework.beans.factory.annotation.Value("classpath:/prompts/nl-to-logql.st")
             final Resource promptTemplate) {
         this.chatClient = chatClientBuilder.build();
         this.properties = properties;
-        this.subBucketConfig = subBucketConfig;
-        this.proxyManager = proxyManager;
         this.validator = validator;
         try {
             this.promptTemplateText = promptTemplate.getContentAsString(StandardCharsets.UTF_8);
@@ -119,37 +98,11 @@ public class NlQueryServiceImpl implements NlQueryService {
         if (principalName == null || principalName.isBlank()) {
             throw new ApplicationException(ErrorCodes.UNAUTHENTICATED, "principal is required");
         }
-        enforceSubBucket(principalName);
         final String renderedPrompt = renderPrompt(request.prompt());
         final ModelResponse parsed = callModel(renderedPrompt);
         final NlQueryResponse response = new NlQueryResponse(
                 parsed.logql(), parsed.confidence(), parsed.explanation());
         return validator.validate(response, properties.confidenceFloor());
-    }
-
-    /**
-     * Consumes one token from the per-principal NL sub-bucket. Throws a
-     * {@link RateLimitedException} carrying
-     * {@link ErrorCodes#NL_QUERY_RATE_LIMITED} when the bucket is empty.
-     *
-     * @param principalName authenticated principal name
-     * @throws RateLimitedException when the sub-bucket is exhausted
-     */
-    private void enforceSubBucket(final String principalName) {
-        if (proxyManager.isEmpty()) {
-            log.debug("NL sub-bucket skipped: ProxyManager is absent (rate-limit disabled)");
-            return;
-        }
-        final String key = properties.subBucketKeyPrefix() + "user:" + principalName;
-        final Bucket bucket = proxyManager.get().builder().build(key, () -> subBucketConfig);
-        final ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
-        if (!probe.isConsumed()) {
-            final long capacity = subBucketConfig.getBandwidths()[0].getCapacity();
-            final long retryAfter = Math.max(
-                    TimeUnit.NANOSECONDS.toSeconds(probe.getNanosToWaitForRefill()), 1L);
-            throw new RateLimitedException(
-                    ErrorCodes.NL_QUERY_RATE_LIMITED, capacity, 0L, retryAfter);
-        }
     }
 
     /**

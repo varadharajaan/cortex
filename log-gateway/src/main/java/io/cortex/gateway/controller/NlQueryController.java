@@ -1,5 +1,6 @@
 package io.cortex.gateway.controller;
 
+import io.cortex.gateway.annotation.RateLimitFeature;
 import io.cortex.gateway.constants.ApiPaths;
 import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.dto.request.NlQueryRequest;
@@ -44,12 +45,28 @@ public class NlQueryController {
     /**
      * Translates the supplied prompt to a structured LogQL response.
      *
+     * <p>The {@link RateLimitFeature @RateLimitFeature} annotation
+     * enforces a per-principal NL sub-bucket BEFORE the controller body
+     * runs; on exhaustion the
+     * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
+     * throws a {@link io.cortex.gateway.exception.RateLimitedException}
+     * carrying {@link ErrorCodes#NL_QUERY_RATE_LIMITED} so the LLM call
+     * is never made and the 429 body's {@code errorCode} is distinct
+     * from the global {@code RATE_LIMITED} code (ADR-0018 section 3 +
+     * ADR-0021).</p>
+     *
      * @param request validated NL prompt body
      * @return HTTP 200 with the structured response
      * @throws ApplicationException when the request has no authenticated principal
      */
     @PostMapping
     @PreAuthorize("isAuthenticated()")
+    @RateLimitFeature(
+            name = "nl-query",
+            capacity = "${cortex.gateway.nl-query.sub-bucket-capacity:10}",
+            refill = "${cortex.gateway.nl-query.sub-bucket-refill-period:PT1M}",
+            errorCode = "NL_QUERY_RATE_LIMITED",
+            keyPrefix = "${cortex.gateway.nl-query.sub-bucket-key-prefix:cortex:rl:nlq:}")
     public ResponseEntity<NlQueryResponse> translate(@Valid @RequestBody final NlQueryRequest request) {
         final Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {

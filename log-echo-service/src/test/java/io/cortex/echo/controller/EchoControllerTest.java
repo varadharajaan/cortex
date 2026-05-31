@@ -64,4 +64,39 @@ class EchoControllerTest {
                 .andExpect(jsonPath("$.path", equalTo("/echo")))
                 .andExpect(jsonPath("$.method", equalTo("POST")));
     }
+
+    /**
+     * GET /api/v1/logs/foo (P3.4 placeholder path) returns the request
+     * metadata as JSON. log-echo-service stands in for the future
+     * log-ingest-service so the gateway smoke can prove end-to-end
+     * routing via {@code lb://log-echo-service}.
+     *
+     * @throws Exception MockMvc may surface request-handling exceptions
+     */
+    @Test
+    void getLogsPathReturnsEchoBody() throws Exception {
+        this.mvc.perform(get("/api/v1/logs/echo")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.upstream", equalTo("log-echo-service")))
+                .andExpect(jsonPath("$.path", equalTo("/api/v1/logs/echo")))
+                .andExpect(jsonPath("$.method", equalTo("GET")));
+    }
+
+    /**
+     * GET /api/v1/search/foo (P3.4 placeholder path) returns the
+     * request metadata as JSON. Same rationale as
+     * {@link #getLogsPathReturnsEchoBody()} for the search route.
+     *
+     * @throws Exception MockMvc may surface request-handling exceptions
+     */
+    @Test
+    void getSearchPathReturnsEchoBody() throws Exception {
+        this.mvc.perform(get("/api/v1/search/echo")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.upstream", equalTo("log-echo-service")))
+                .andExpect(jsonPath("$.path", equalTo("/api/v1/search/echo")))
+                .andExpect(jsonPath("$.method", equalTo("GET")));
+    }
 }
