@@ -12,6 +12,8 @@ file per deployment target.
 | `log-gateway.postman_environment_local.json`      | Local dev (`http://localhost:8080`).              |
 | `log-gateway.postman_environment_staging.json`    | Staging cluster.                                  |
 | `log-gateway.postman_environment_prod.json`       | Production cluster.                               |
+| `log-ingest.postman_collection.json`              | Ingest happy-path + RFC 7807 error contract (P4.0 scaffold). |
+| `log-ingest.postman_environment_local.json`       | Local dev (`http://localhost:8091`).              |
 
 Additional services land here as P4-P8 progress.
 
