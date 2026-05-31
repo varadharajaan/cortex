@@ -1,5 +1,6 @@
 package io.cortex.gateway.controller;
 
+import io.cortex.gateway.annotation.RateLimitFeature;
 import io.cortex.gateway.constants.ApiPaths;
 import io.cortex.gateway.dto.request.LoginRequest;
 import io.cortex.gateway.dto.request.RefreshRequest;
@@ -32,11 +33,23 @@ public class AuthController {
     /**
      * Authenticates the supplied credentials and returns a fresh token pair.
      *
+     * <p>{@link RateLimitFeature @RateLimitFeature} adds an IP-keyed
+     * sub-bucket on top of the global P3.2 anonymous bucket so a single
+     * client cannot brute-force credentials -- exhaustion returns 429 +
+     * {@code Retry-After} long before the global anonymous bucket
+     * triggers (defence-in-depth; OWASP ASVS V2.2.1).</p>
+     *
      * @param request validated login body
      * @return HTTP 200 with the token response
      */
     @PostMapping("/login")
     @PreAuthorize("permitAll()")
+    @RateLimitFeature(
+            name = "auth-login",
+            capacity = "${cortex.gateway.security.login-rate-limit-capacity:5}",
+            refill = "${cortex.gateway.security.login-rate-limit-refill:PT1M}",
+            errorCode = "RATE_LIMITED",
+            keyPrefix = "cortex:rl:auth:")
     public ResponseEntity<TokenResponse> login(@Valid @RequestBody final LoginRequest request) {
         return ResponseEntity.ok(this.authService.login(request.username(), request.password()));
     }
