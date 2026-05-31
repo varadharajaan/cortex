@@ -30,6 +30,18 @@ public enum ErrorCodes {
     /** Caller exceeded their rate-limit bucket (B5, RFC 6585 section 4). */
     RATE_LIMITED,
 
+    /** Caller exceeded the per-feature NL-query sub-bucket (B20 + B5, P3.3 / ADR-0018). */
+    NL_QUERY_RATE_LIMITED,
+
+    /** NL-to-LogQL model output failed schema or content validation (P3.3 / ADR-0018). */
+    NL_QUERY_INVALID,
+
+    /** NL-to-LogQL model refused to answer (safety / policy marker in response). */
+    NL_QUERY_REFUSED,
+
+    /** NL-to-LogQL upstream model call failed (Ollama unreachable, timeout, parse error). */
+    NL_QUERY_UPSTREAM_FAILED,
+
     /** Fallback for any unexpected internal failure. */
     INTERNAL_ERROR;
 }

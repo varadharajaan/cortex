@@ -23,6 +23,12 @@ public final class ApiPaths {
     /** Refresh endpoint accepting {@code POST} with a {@code RefreshRequest} body. */
     public static final String AUTH_REFRESH = AUTH_BASE + "/refresh";
 
+    /** Base path for natural-language query endpoints (B20.1, P3.3 / ADR-0018). */
+    public static final String QUERY_BASE = API_V1 + "/query";
+
+    /** NL-to-LogQL translation endpoint accepting {@code POST} with an {@code NlQueryRequest} body. */
+    public static final String QUERY_NL = QUERY_BASE + "/nl";
+
     /**
      * Private constructor; constants holder.
      *
