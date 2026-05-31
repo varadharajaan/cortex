@@ -100,6 +100,22 @@
             <artifactId>lettuce-core</artifactId>
         </dependency>
 
+        <!-- Spring AI (B20.1, P3.3 / ADR-0018). Ollama is the local/dev
+             provider; WireMock stubs Ollama's /api/chat in tests + smoke so
+             neither CI nor `mvn verify` needs a running LLM. The 1.0.0 GA
+             artifact id is `spring-ai-starter-model-ollama` (renamed from
+             the pre-1.0 `spring-ai-ollama-spring-boot-starter`). The Spring
+             AI BOM is imported by the parent POM. Auto-pull is disabled
+             (`spring.ai.ollama.init.pull-model-strategy=never`) so a
+             dev with no local model still gets a deterministic 503
+             UPSTREAM_UNAVAILABLE rather than a multi-minute pull. Prod
+             switches to Azure OpenAI via a different starter under the
+             `prod` profile (out of scope for P3.3). -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-ollama</artifactId>
+        </dependency>
+
         <!-- Sister CORTEX module: the gateway dogfoods the agent SDK. -->
         <dependency>
             <groupId>io.cortex</groupId>
@@ -181,6 +197,17 @@
             <groupId>org.awaitility</groupId>
             <artifactId>awaitility</artifactId>
             <version>4.2.2</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- WireMock standalone (rule 12 + P3.3 / ADR-0018). Stubs Ollama's
+             /api/chat endpoint inside NlQueryIntegrationTest so the test
+             slice exercises the full Spring AI + RestClient + JSON parsing
+             path without any external network. Version managed by the
+             parent POM (wiremock.version property). -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
             <scope>test</scope>
         </dependency>
 
