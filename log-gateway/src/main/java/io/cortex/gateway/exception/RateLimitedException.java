@@ -42,4 +42,28 @@ public class RateLimitedException extends ApplicationException {
         this.remaining = remaining;
         this.retryAfterSeconds = retryAfterSeconds;
     }
+
+    /**
+     * Builds a rate-limit exception carrying an explicit error code so the
+     * NL sub-bucket (P3.3 / ADR-0018) can surface
+     * {@link ErrorCodes#NL_QUERY_RATE_LIMITED} while the global bucket
+     * keeps surfacing {@link ErrorCodes#RATE_LIMITED}. Both still map to
+     * HTTP 429 + {@code Retry-After}; only the response body's
+     * {@code errorCode} differs.
+     *
+     * @param code              stable error code to surface in the problem body
+     * @param capacity          bucket capacity
+     * @param remaining         tokens remaining at the moment of rejection (zero)
+     * @param retryAfterSeconds seconds until refill; must be positive
+     */
+    public RateLimitedException(
+            final ErrorCodes code,
+            final long capacity,
+            final long remaining,
+            final long retryAfterSeconds) {
+        super(code, "rate limit exceeded");
+        this.capacity = capacity;
+        this.remaining = remaining;
+        this.retryAfterSeconds = retryAfterSeconds;
+    }
 }
