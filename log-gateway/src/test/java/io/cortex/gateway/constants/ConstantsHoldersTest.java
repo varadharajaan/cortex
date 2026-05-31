@@ -19,6 +19,8 @@ class ConstantsHoldersTest {
     void apiPathsExposesExpectedValues() {
         assertThat(ApiPaths.API_V1).isEqualTo("/api/v1");
         assertThat(ApiPaths.HEALTH).isEqualTo("/api/v1/health");
+        assertThat(ApiPaths.QUERY_BASE).isEqualTo("/api/v1/query");
+        assertThat(ApiPaths.QUERY_NL).isEqualTo("/api/v1/query/nl");
         assertReflectiveCtorThrows(ApiPaths.class);
     }
 
@@ -51,9 +53,14 @@ class ConstantsHoldersTest {
                         ErrorCodes.FORBIDDEN,
                         ErrorCodes.NOT_FOUND,
                         ErrorCodes.RATE_LIMITED,
+                        ErrorCodes.NL_QUERY_RATE_LIMITED,
+                        ErrorCodes.NL_QUERY_INVALID,
+                        ErrorCodes.NL_QUERY_REFUSED,
+                        ErrorCodes.NL_QUERY_UPSTREAM_FAILED,
                         ErrorCodes.UPSTREAM_UNAVAILABLE,
                         ErrorCodes.INTERNAL_ERROR);
         assertThat(ErrorCodes.valueOf("BAD_REQUEST")).isEqualTo(ErrorCodes.BAD_REQUEST);
+        assertThat(ErrorCodes.valueOf("NL_QUERY_RATE_LIMITED")).isEqualTo(ErrorCodes.NL_QUERY_RATE_LIMITED);
     }
 
     /**

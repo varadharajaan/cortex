@@ -184,6 +184,54 @@ class GlobalExceptionHandlerTest {
     }
 
     /**
+     * NL sub-bucket exhaustion: {@link RateLimitedException} constructed
+     * with {@link ErrorCodes#NL_QUERY_RATE_LIMITED} still maps to 429
+     * + {@code Retry-After}, but the problem body's {@code errorCode}
+     * carries the NL-flavoured code so clients can distinguish global
+     * vs feature-scoped rate-limits.
+     */
+    @Test
+    void mapsNlQueryRateLimitedTo429WithDistinctErrorCode() {
+        final RateLimitedException ex = new RateLimitedException(
+                ErrorCodes.NL_QUERY_RATE_LIMITED, 10L, 0L, 7L);
+
+        final ResponseEntity<ProblemDetail> response = this.handler.handleRateLimited(ex, this.request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getHeaders().getFirst(HeaderNames.RETRY_AFTER)).isEqualTo("7");
+        final ProblemDetail body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.getProperties()).containsEntry("errorCode", ErrorCodes.NL_QUERY_RATE_LIMITED.name());
+    }
+
+    /** {@link ErrorCodes#NL_QUERY_INVALID} maps to {@code 422 Unprocessable Entity}. */
+    @Test
+    void mapsNlQueryInvalidTo422() {
+        final ResponseEntity<ProblemDetail> response = this.handler.handleApplication(
+                new ApplicationException(ErrorCodes.NL_QUERY_INVALID, "bad logql"), this.request);
+
+        assertProblem(response, HttpStatus.UNPROCESSABLE_ENTITY, ErrorCodes.NL_QUERY_INVALID, "bad logql");
+    }
+
+    /** {@link ErrorCodes#NL_QUERY_REFUSED} maps to {@code 422 Unprocessable Entity}. */
+    @Test
+    void mapsNlQueryRefusedTo422() {
+        final ResponseEntity<ProblemDetail> response = this.handler.handleApplication(
+                new ApplicationException(ErrorCodes.NL_QUERY_REFUSED, "refused"), this.request);
+
+        assertProblem(response, HttpStatus.UNPROCESSABLE_ENTITY, ErrorCodes.NL_QUERY_REFUSED, "refused");
+    }
+
+    /** {@link ErrorCodes#NL_QUERY_UPSTREAM_FAILED} maps to {@code 502 Bad Gateway}. */
+    @Test
+    void mapsNlQueryUpstreamFailedTo502() {
+        final ResponseEntity<ProblemDetail> response = this.handler.handleApplication(
+                new ApplicationException(ErrorCodes.NL_QUERY_UPSTREAM_FAILED, "ollama down"), this.request);
+
+        assertProblem(response, HttpStatus.BAD_GATEWAY, ErrorCodes.NL_QUERY_UPSTREAM_FAILED, "ollama down");
+    }
+
+    /**
      * @return a mock request with a fixed URI for the {@code instance} field
      */
     private static MockHttpServletRequest buildRequest() {
