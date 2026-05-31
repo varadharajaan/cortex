@@ -136,6 +136,11 @@
              (eureka-core->guava 33.0.0-jre vs netflix-eventbus->guava 14.0.1).
              Required by P3.0b (ADR-0016 / LD27). -->
         <guava.version>33.0.0-jre</guava.version>
+        <!-- Pinned to resolve transitive convergence between Spring AI
+             (spring-ai-template-st -> ST4 -> antlr-runtime 3.5.3) and
+             Eureka client (netflix-eventbus -> netflix-infix -> antlr-runtime 3.4).
+             Required by P3.3 (ADR-0018 / LD38). -->
+        <antlr-runtime.version>3.5.3</antlr-runtime.version>
 
         <!-- ============================================================== -->
         <!-- Plugins                                                         -->
@@ -326,6 +331,15 @@
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>${guava.version}</version>
+            </dependency>
+
+            <!-- Pinned to resolve antlr-runtime convergence between Spring AI
+                 (ST4 template engine) and Eureka client (netflix-eventbus).
+                 See ${antlr-runtime.version} property comment. -->
+            <dependency>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr-runtime</artifactId>
+                <version>${antlr-runtime.version}</version>
             </dependency>
 
         </dependencies>
