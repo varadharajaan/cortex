@@ -55,7 +55,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ProblemDetail> handleRateLimited(
             final RateLimitedException ex, final HttpServletRequest request) {
         final ProblemDetail body = buildProblem(
-                HttpStatus.TOO_MANY_REQUESTS, ErrorCodes.RATE_LIMITED, ex.getMessage(), request);
+                HttpStatus.TOO_MANY_REQUESTS, ex.getErrorCode(), ex.getMessage(), request);
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header(HeaderNames.RETRY_AFTER, Long.toString(ex.getRetryAfterSeconds()))
                 .body(body);
@@ -206,8 +206,9 @@ public class GlobalExceptionHandler {
             case UNAUTHENTICATED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case UPSTREAM_UNAVAILABLE -> HttpStatus.BAD_GATEWAY;
-            case RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
+            case UPSTREAM_UNAVAILABLE, NL_QUERY_UPSTREAM_FAILED -> HttpStatus.BAD_GATEWAY;
+            case RATE_LIMITED, NL_QUERY_RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
+            case NL_QUERY_INVALID, NL_QUERY_REFUSED -> HttpStatus.UNPROCESSABLE_ENTITY;
             case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
