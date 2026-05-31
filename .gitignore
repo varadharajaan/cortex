@@ -133,3 +133,9 @@ infra/helm/charts/**/*.tgz
 
 # also same for this pattern *output.txt, which is a common name for test outputs and logs.
 **/*output.txt
+# local one-shot issue/PR body templates
+.issue-*.md
+.pr-*.md
+
+# local detached-process PID registry (LD25 / LD45 / Part 26.1)
+/pids.json
