@@ -5,7 +5,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import io.cortex.agent.LogEntry;
+import io.cortex.ingest.enrichment.GeoEnricher;
+import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -158,5 +162,79 @@ class IngestPersistenceIT {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         assertThat(this.repository.count()).isEqualTo(before);
+    }
+
+    /**
+     * Posts a batch carrying {@code X-Request-Id} and mixed-case
+     * label keys; asserts the persisted {@code labels} JSONB
+     * column contains the P4.3 server-stamped entries
+     * ({@code tenant}, {@code trace_id}, {@code geo_country})
+     * AND the inbound labels collapsed to their canonical
+     * lowercase form. Also asserts {@code received_at} is
+     * populated by the server (not by the client timestamp).
+     *
+     * @throws Exception      MockMvc may surface request-handling
+     *                        exceptions
+     * @throws AssertionError if the expected enriched row is
+     *                        absent from the repository after
+     *                        the POST
+     */
+    @Test
+    void postBatchEnrichesPersistedLabels() throws Exception {
+        final String correlationId = "corr-it-1";
+        final String body = """
+                {
+                  "entries": [
+                    {
+                      "timestamp": "2026-06-01T13:00:00Z",
+                      "level": "INFO",
+                      "service": "cortex-it-enrich",
+                      "message": "enrich-target",
+                      "labels": {"Env": "it", "  Region  ": "  eu-west  "}
+                    }
+                  ]
+                }
+                """;
+        this.mvc.perform(post("/api/v1/ingest/batch")
+                        .header("X-Tenant-Id", "cortex-dev")
+                        .header("X-Request-Id", correlationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.receivedCount").value(1));
+
+        final RawLog persisted = this.repository
+                .findAll().iterator().next();
+        for (final RawLog candidate : this.repository.findAll()) {
+            if ("enrich-target".equals(candidate.message())) {
+                assertEnrichedRow(candidate, correlationId);
+                return;
+            }
+        }
+        throw new AssertionError("enrich-target row not found; first row="
+                + persisted);
+    }
+
+    /**
+     * Asserts the P4.3 enrichment contract on a persisted row.
+     *
+     * @param row           persisted {@link RawLog}
+     * @param correlationId expected trace id label value
+     * @throws AssertionError if any P4.3 label or
+     *                        {@code received_at} expectation fails
+     */
+    private static void assertEnrichedRow(final RawLog row,
+                                          final String correlationId) {
+        final Map<String, String> labels = row.labels();
+        assertThat(labels)
+                .as("enriched labels on persisted row")
+                .containsEntry(LogEntry.LABEL_TENANT, "cortex-dev")
+                .containsEntry(LogEntry.LABEL_TRACE_ID, correlationId)
+                .containsEntry(GeoEnricher.LABEL_GEO_COUNTRY, "unknown")
+                .containsEntry("env", "it")
+                .containsEntry("region", "eu-west");
+        assertThat(row.receivedAt())
+                .as("server-side received_at pinned on insert")
+                .isNotNull();
     }
 }

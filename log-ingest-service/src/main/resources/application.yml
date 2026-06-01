@@ -112,6 +112,14 @@ cortex:
     dedupe:
       enabled: ${CORTEX_INGEST_DEDUPE_ENABLED:true}
       ttl: ${CORTEX_INGEST_DEDUPE_TTL:PT24H}
+    # Server-side enrichment pipeline (P4.3 / plan row 169).
+    # GeoIP enricher returns this constant country code for every
+    # caller; real MaxMind GeoLite2 lookup is deferred to P5 (the
+    # label key set + Postman + smoke wiring stays stable across
+    # both implementations).
+    enrichment:
+      geo:
+        fixed-country: ${CORTEX_INGEST_GEO_FIXED_COUNTRY:unknown}
   security:
     # When true, every request to /api/** MUST carry a valid
     # X-Cortex-Service-JWT header (presence-only in P4.0; full parse +

@@ -35,6 +35,10 @@ public interface IngestService {
      * @param idempotencyKey verbatim {@code Idempotency-Key} header
      *                       from the inbound request; may be
      *                       {@code null} when absent
+     * @param correlationId  resolved correlation / trace id minted
+     *                       by {@link io.cortex.ingest.filter.CorrelationIdFilter
+     *                       CorrelationIdFilter}; must not be
+     *                       {@code null} or blank (P4.3)
      * @return acknowledgement carrying the persisted entry count and
      *         the server-side acceptance timestamp; never
      *         {@code null}
@@ -42,5 +46,6 @@ public interface IngestService {
     IngestAcceptedResponse acceptBatch(
             IngestBatchRequest request,
             String tenantId,
-            String idempotencyKey);
+            String idempotencyKey,
+            String correlationId);
 }

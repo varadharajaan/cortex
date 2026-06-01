@@ -1,5 +1,6 @@
 package io.cortex.ingest.config;
 
+import io.cortex.ingest.enrichment.EnrichmentProperties;
 import io.cortex.ingest.security.ServiceJwtProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
@@ -16,7 +17,9 @@ import org.springframework.context.annotation.Configuration;
  * metadata on {@code /v3/api-docs} and {@code /swagger-ui.html}.</p>
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(ServiceJwtProperties.class)
+@EnableConfigurationProperties({
+        ServiceJwtProperties.class,
+        EnrichmentProperties.class})
 public class IngestConfig {
 
     /** Module artifactId for the OpenAPI {@code info.title}. */

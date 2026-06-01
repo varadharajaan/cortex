@@ -13,6 +13,9 @@ import io.cortex.agent.LogLevel;
 import io.cortex.ingest.dedupe.IdempotencyDedupeService;
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
+import io.cortex.ingest.enrichment.EnrichmentProperties;
+import io.cortex.ingest.enrichment.EnrichmentService;
+import io.cortex.ingest.enrichment.GeoEnricher;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -58,11 +61,17 @@ class IngestServiceImplTest {
     /** Tenant id used by every test. */
     private static final String TENANT = "cortex-dev";
 
+    /** Correlation id stamped onto every test invocation (P4.3). */
+    private static final String CORRELATION = "test-corr-1";
+
     /** Mocked repository. */
     private RawLogRepository repository;
 
     /** In-memory Micrometer registry; recreated per test for clean counter values. */
     private MeterRegistry registry;
+
+    /** Enrichment service wired with the default GeoEnricher stub. */
+    private EnrichmentService enrichment;
 
     /** SUT - recreated per test for isolation. */
     private IngestServiceImpl service;
@@ -77,8 +86,10 @@ class IngestServiceImplTest {
     void initService() {
         this.repository = Mockito.mock(RawLogRepository.class);
         this.registry = new SimpleMeterRegistry();
+        this.enrichment = new EnrichmentService(
+                new GeoEnricher(new EnrichmentProperties(null)));
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.empty(), this.registry);
+                Optional.empty(), this.enrichment, this.registry);
     }
 
     /**
@@ -93,7 +104,7 @@ class IngestServiceImplTest {
 
         final IngestBatchRequest request = singleEntryBatch("entry-1");
         final IngestAcceptedResponse response =
-                this.service.acceptBatch(request, TENANT, null);
+                this.service.acceptBatch(request, TENANT, null, CORRELATION);
 
         assertThat(response.receivedCount()).isEqualTo(1);
         verify(this.repository, times(1)).save(any(RawLog.class));
@@ -112,7 +123,7 @@ class IngestServiceImplTest {
 
         final IngestBatchRequest request = singleEntryBatch("entry-wrapped");
         final IngestAcceptedResponse response =
-                this.service.acceptBatch(request, TENANT, null);
+                this.service.acceptBatch(request, TENANT, null, CORRELATION);
 
         assertThat(response.receivedCount()).isEqualTo(1);
         verify(this.repository, times(1)).save(any(RawLog.class));
@@ -132,7 +143,7 @@ class IngestServiceImplTest {
 
         final IngestBatchRequest request = singleEntryBatch("entry-fail");
 
-        assertThatThrownBy(() -> this.service.acceptBatch(request, TENANT, null))
+        assertThatThrownBy(() -> this.service.acceptBatch(request, TENANT, null, CORRELATION))
                 .isSameAs(ex);
     }
 
@@ -148,11 +159,11 @@ class IngestServiceImplTest {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-1")).thenReturn(false);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.registry);
+                Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-hot-path");
         final IngestAcceptedResponse response =
-                this.service.acceptBatch(request, TENANT, "idem-1");
+                this.service.acceptBatch(request, TENANT, "idem-1", CORRELATION);
 
         assertThat(response.receivedCount()).isEqualTo(1);
         verify(this.repository, Mockito.never()).save(any(RawLog.class));
@@ -169,11 +180,11 @@ class IngestServiceImplTest {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-2")).thenReturn(true);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.registry);
+                Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-fresh");
         final IngestAcceptedResponse response =
-                this.service.acceptBatch(request, TENANT, "idem-2");
+                this.service.acceptBatch(request, TENANT, "idem-2", CORRELATION);
 
         assertThat(response.receivedCount()).isEqualTo(1);
         verify(this.repository, times(1)).save(any(RawLog.class));
@@ -189,10 +200,10 @@ class IngestServiceImplTest {
     void hotPathSkippedWhenIdempotencyKeyAbsent() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.registry);
+                Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-no-idem");
-        this.service.acceptBatch(request, TENANT, null);
+        this.service.acceptBatch(request, TENANT, null, CORRELATION);
 
         verify(this.repository, times(1)).save(any(RawLog.class));
         Mockito.verifyNoInteractions(dedupe);
@@ -210,7 +221,7 @@ class IngestServiceImplTest {
     void piiInMessageIsMaskedBeforePersistence() {
         final IngestBatchRequest request =
                 singleEntryBatch("user alice@example.com just logged in");
-        this.service.acceptBatch(request, TENANT, null);
+        this.service.acceptBatch(request, TENANT, null, CORRELATION);
 
         final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
         verify(this.repository).save(captor.capture());
@@ -236,7 +247,7 @@ class IngestServiceImplTest {
                 LogLevel.INFO, "cortex-it", "user bob@example.com", Map.of());
         final IngestBatchRequest request = new IngestBatchRequest(List.of(alice, bob));
 
-        this.service.acceptBatch(request, TENANT, null);
+        this.service.acceptBatch(request, TENANT, null, CORRELATION);
 
         final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
         verify(this.repository, times(2)).save(captor.capture());
@@ -257,7 +268,7 @@ class IngestServiceImplTest {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-metric-hot")).thenReturn(false);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.registry);
+                Optional.of(dedupe), this.enrichment, this.registry);
 
         final LogEntry one = new LogEntry(
                 Instant.parse("2026-06-01T11:00:00Z"),
@@ -266,7 +277,7 @@ class IngestServiceImplTest {
                 Instant.parse("2026-06-01T11:00:01Z"),
                 LogLevel.INFO, "cortex-it", "msg-2", Map.of());
         this.service.acceptBatch(new IngestBatchRequest(List.of(one, two)),
-                TENANT, "idem-metric-hot");
+                TENANT, "idem-metric-hot", CORRELATION);
 
         assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "hot")
                 .count()).isEqualTo(2.0d);
@@ -286,7 +297,7 @@ class IngestServiceImplTest {
         when(this.repository.save(any(RawLog.class)))
                 .thenThrow(new DuplicateKeyException("uk vio"));
 
-        this.service.acceptBatch(singleEntryBatch("entry-cold"), TENANT, null);
+        this.service.acceptBatch(singleEntryBatch("entry-cold"), TENANT, null, CORRELATION);
 
         assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "cold")
                 .count()).isEqualTo(1.0d);
@@ -305,10 +316,56 @@ class IngestServiceImplTest {
     void maskAppliedCounterTracksTotalSubstitutions() {
         this.service.acceptBatch(
                 singleEntryBatch("alice@example.com cc bob@example.com"),
-                TENANT, null);
+                TENANT, null, CORRELATION);
 
         assertThat(this.registry.counter("cortex.ingest.mask.applied").count())
                 .isEqualTo(2.0d);
+    }
+
+    /**
+     * P4.3 enrichment MUST stamp the resolved tenant id,
+     * correlation id, and GeoIP stub onto every persisted
+     * {@code labels} map. Server-supplied keys overwrite any
+     * client-supplied collision.
+     */
+    @Test
+    void enrichmentStampsTenantTraceAndGeoLabels() {
+        final IngestBatchRequest request = singleEntryBatch("with-labels");
+        this.service.acceptBatch(request, TENANT, null, CORRELATION);
+
+        final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
+        verify(this.repository).save(captor.capture());
+        final Map<String, String> labels = captor.getValue().labels();
+        assertThat(labels).containsEntry(LogEntry.LABEL_TENANT, TENANT);
+        assertThat(labels).containsEntry(LogEntry.LABEL_TRACE_ID, CORRELATION);
+        assertThat(labels).containsEntry(GeoEnricher.LABEL_GEO_COUNTRY,
+                EnrichmentProperties.DEFAULT_FIXED_COUNTRY);
+        assertThat(labels).containsEntry("env", "test");
+    }
+
+    /**
+     * P4.3 label normalisation lowercases keys before the
+     * {@code event_id} hash so two clients that differ only in
+     * casing produce the SAME dedupe key (cold-path UNIQUE
+     * constraint absorbs the second row).
+     */
+    @Test
+    void labelNormalizationProducesStableEventIdAcrossCasing() {
+        final LogEntry upper = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO, "cortex-it", "case-test",
+                Map.of("Env", "test"));
+        final LogEntry lower = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO, "cortex-it", "case-test",
+                Map.of("env", "test"));
+        this.service.acceptBatch(
+                new IngestBatchRequest(List.of(upper, lower)), TENANT, null, CORRELATION);
+
+        final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
+        verify(this.repository, times(2)).save(captor.capture());
+        assertThat(captor.getAllValues().get(0).eventId())
+                .isEqualTo(captor.getAllValues().get(1).eventId());
     }
 
     /**
