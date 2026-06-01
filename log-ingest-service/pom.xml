@@ -43,11 +43,13 @@
     </description>
 
     <properties>
-        <!-- P4.0 is scaffold-only: controller returns 202 with no
-             business logic, JDBC writer lands in P4.1, dedupe in P4.2,
-             enrich in P4.3, queue publish in P4.4. Drop the 80% gate
-             until P4.1 plants real production code paths to cover. -->
-        <skip.jacoco>true</skip.jacoco>
+        <!-- P4.1 flips the 80% line + branch JaCoCo gate ON (LD3 / Rule
+             12.5 / 13.4). The persistence package (RawLog,
+             RawLogRepository, JdbcConvertersConfig), the controller,
+             TenantResolver, and IngestServiceImpl are all exercised by
+             the Testcontainers integration tests under failsafe so the
+             BUNDLE coverage target is met without exercising scaffold-
+             excluded packages (dto, config, exception). -->
     </properties>
 
     <dependencies>
@@ -91,7 +93,6 @@
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
         </dependency>
 
         <!-- Eureka client (ADR-0016): registers with the local-dev
@@ -143,12 +144,29 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- H2 with PostgreSQL mode + Flyway baseline = scaffold-safe
-             slice + context tests without Testcontainers. Real
-             Postgres lives in the smoke compose stack. -->
+        <!-- Testcontainers Postgres for full-context @SpringBootTest +
+             integration tests (P4.1 / RA1 / LD61). The Spring Boot
+             starter auto-wires PostgreSQLContainer to the application
+             DataSource via the @ServiceConnection annotation, which
+             overrides any URL declared in src/test/resources/
+             application.yml. H2 was deliberately removed from the test
+             classpath in P4.1: declaring driver-class-name=org.h2.Driver
+             in the test application.yml would survive a @ServiceConnection
+             URL swap and leave Hikari speaking H2 wire protocol to a
+             real Postgres socket (LD61). -->
         <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -189,6 +207,19 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Activate Failsafe so the *IT.java classes
+                 (RawLogRepositoryIT, IngestPersistenceIT) run during
+                 `verify`. Inherits the include/exclude pattern + the
+                 integration-test + verify executions from
+                 pluginManagement in the parent POM. Without this
+                 plugin declaration, Failsafe stays dormant and the IT
+                 classes are never executed - which leaves the JaCoCo
+                 bundle coverage below the 80% gate (P4.1 / LD61). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
 
         </plugins>

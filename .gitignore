@@ -113,6 +113,7 @@ infra/helm/charts/**/*.tgz
 /checkpoint.md
 /memory.md
 /todo.md
+/user-inputs-prompts.txt
 
 # ---- Workspace-local Copilot context (Q9 interpretation) -------------------
 # .github/copilot-instructions.md is workspace context for AI tooling,

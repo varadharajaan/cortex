@@ -4,11 +4,15 @@
 # Loaded with highest precedence under src/test/resources so
 # @SpringBootTest boots without:
 #   - a real Eureka registry (eureka.client.enabled=false)
-#   - a real Postgres (datasource pinned to H2 in PostgreSQL mode)
 #   - PII keystores or service-JWT issuer (mTLS scaffold stays off)
 #
-# Flyway V1__baseline.sql runs against the H2 database so the migration
-# is exercised by every @SpringBootTest.
+# Datasource is intentionally NOT declared here. Slice tests
+# (@WebMvcTest, plain JUnit) do not need a DataSource, and full
+# @SpringBootTest classes wire Postgres via Testcontainers +
+# @ServiceConnection (P4.1 / RA1 / ADR-0022). Declaring a static
+# H2 URL here would override @ServiceConnection's driver-class-name
+# and leave Hikari loading the H2 driver against a real Postgres
+# socket (LD61).
 # ---------------------------------------------------------------------------
 
 spring:
@@ -16,11 +20,6 @@ spring:
     name: log-ingest-service
   main:
     banner-mode: "off"
-  datasource:
-    url: jdbc:h2:mem:ingest-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
-    username: sa
-    password:
-    driver-class-name: org.h2.Driver
   flyway:
     enabled: true
     baseline-on-migrate: true
