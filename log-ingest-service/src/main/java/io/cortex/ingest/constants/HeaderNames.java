@@ -9,6 +9,14 @@ package io.cortex.ingest.constants;
  */
 public final class HeaderNames {
 
+    /**
+     * Per-request correlation header set by log-gateway's
+     * {@code CorrelationIdFilter} and propagated downstream. Read by
+     * the ingest service's own {@code CorrelationIdFilter} into
+     * {@link LogFields#TRACE_ID} for every log line (rule 17.5, A8.2).
+     */
+    public static final String X_REQUEST_ID = "X-Request-Id";
+
     /** Correlation id propagated from log-gateway and any upstream caller. */
     public static final String CORRELATION_ID = "X-Correlation-Id";
 
