@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e040",
-    "name": "log-ingest-service (P4.0 scaffold)",
-    "description": "Smoke contract for log-ingest-service. P4.0 ships POST /api/v1/ingest/batch returning 202 with no business logic. Validation, dedupe, enrichment, queue publish land in P4.1..P4.4.",
+    "name": "log-ingest-service (P4.1 validate + persist raw)",
+    "description": "Smoke contract for log-ingest-service. P4.0 introduced POST /api/v1/ingest/batch returning 202 with no business logic. P4.1 lights up the persistence path: X-Tenant-Id is required, every batch entry is persisted to raw_logs as a row, server-computed event_id (SHA-256 of tenantId|service|ts.epochMicros|message|sortedLabelsJson) gives the UNIQUE (tenant_id, event_id) constraint a stable key, and the labels map roundtrips through Postgres JSONB. Cold-path duplicates are absorbed silently. Hot-path dedupe (Redis SETNX) + masking land in P4.2.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -151,6 +151,107 @@
               "pm.test('status 404', function () { pm.response.to.have.status(404); });",
               "const body = pm.response.json();",
               "pm.test('errorCode NOT_FOUND', function () { pm.expect(body.errorCode).to.eql('NOT_FOUND'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.1 ingest/batch rich labels -> 202 + jsonb roundtrip",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
+          { "key": "X-Request-Id", "value": "newman-p4-1-rich-{{$timestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-01T12:01:00Z\",\n      \"level\": \"WARN\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-1 rich newman {{$timestamp}}\",\n      \"labels\": { \"env\": \"newman\", \"region\": \"use2\", \"build\": \"0.1.0\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount echoes batch size', function () { pm.expect(body.receivedCount).to.eql(1); });",
+              "pm.test('receivedAt is ISO-8601', function () { pm.expect(body.receivedAt).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.1 ingest/batch missing X-Tenant-Id -> 400 VALIDATION_FAILED",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-01T12:02:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-1 no-tenant\",\n      \"labels\": {}\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "const body = pm.response.json();",
+              "pm.test('errorCode VALIDATION_FAILED', function () { pm.expect(body.errorCode).to.eql('VALIDATION_FAILED'); });",
+              "pm.test('instance is the batch path', function () { pm.expect(body.instance).to.eql('/api/v1/ingest/batch'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.1 ingest/batch duplicate event -> 202 dedupe transparent",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-01T12:04:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-1 newman dup-fixed\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount echoes batch size on dedupe', function () { pm.expect(body.receivedCount).to.eql(1); });"
             ]
           }
         }

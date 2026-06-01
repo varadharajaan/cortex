@@ -1,0 +1,156 @@
+package io.cortex.ingest.service.impl;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortex.agent.LogEntry;
+import io.cortex.agent.LogLevel;
+import io.cortex.ingest.dto.request.IngestBatchRequest;
+import io.cortex.ingest.dto.response.IngestAcceptedResponse;
+import io.cortex.ingest.persistence.RawLog;
+import io.cortex.ingest.persistence.RawLogRepository;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.relational.core.conversion.DbAction;
+import org.springframework.data.relational.core.conversion.DbActionExecutionException;
+
+/**
+ * Unit tests for {@link IngestServiceImpl} that drive the dedupe
+ * absorption branches not reachable through the
+ * {@link io.cortex.ingest.IngestPersistenceIT IT} happy path
+ * (P4.1 / LD3 / Rule 12.5 / 13.4).
+ *
+ * <p>Two branches are exercised here:</p>
+ * <ul>
+ *   <li>{@link RawLogRepository#save(Object)} throwing a bare
+ *       {@link DuplicateKeyException} - kept as a fallback because
+ *       a future Spring Data JDBC release could unwrap the cause
+ *       before it reaches the service.</li>
+ *   <li>{@link RawLogRepository#save(Object)} throwing a
+ *       {@link DbActionExecutionException} whose cause is NOT a
+ *       {@link DuplicateKeyException} - must be rethrown so the
+ *       caller sees the real failure.</li>
+ * </ul>
+ */
+class IngestServiceImplTest {
+
+    /** Fixed clock so the {@code receivedAt} timestamp is deterministic. */
+    private static final Clock FIXED_CLOCK =
+            Clock.fixed(Instant.parse("2026-06-01T00:00:00Z"), ZoneOffset.UTC);
+
+    /** Tenant id used by every test. */
+    private static final String TENANT = "cortex-dev";
+
+    /** Mocked repository. */
+    private RawLogRepository repository;
+
+    /** SUT - recreated per test for isolation. */
+    private IngestServiceImpl service;
+
+    /** Default constructor used by JUnit. */
+    IngestServiceImplTest() {
+        // no state; per-test setup in initService()
+    }
+
+    /** Resets mocks and rewires the SUT before each test. */
+    @BeforeEach
+    void initService() {
+        this.repository = Mockito.mock(RawLogRepository.class);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper());
+    }
+
+    /**
+     * Bare {@link DuplicateKeyException} thrown from
+     * {@link RawLogRepository#save(Object)} is absorbed silently;
+     * the response still mirrors the inbound entry count.
+     */
+    @Test
+    void bareDuplicateKeyExceptionIsAbsorbed() {
+        when(this.repository.save(any(RawLog.class)))
+                .thenThrow(new DuplicateKeyException("constraint vio"));
+
+        final IngestBatchRequest request = singleEntryBatch("entry-1");
+        final IngestAcceptedResponse response =
+                this.service.acceptBatch(request, TENANT, null);
+
+        assertThat(response.receivedCount()).isEqualTo(1);
+        verify(this.repository, times(1)).save(any(RawLog.class));
+    }
+
+    /**
+     * A {@link DbActionExecutionException} whose cause IS a
+     * {@link DuplicateKeyException} is unwrapped and absorbed; the
+     * response still mirrors the inbound entry count.
+     */
+    @Test
+    void wrappedDuplicateKeyExceptionIsAbsorbed() {
+        final DbActionExecutionException wrapped = new DbActionExecutionException(
+                stubAction(), new DuplicateKeyException("uk vio"));
+        when(this.repository.save(any(RawLog.class))).thenThrow(wrapped);
+
+        final IngestBatchRequest request = singleEntryBatch("entry-wrapped");
+        final IngestAcceptedResponse response =
+                this.service.acceptBatch(request, TENANT, null);
+
+        assertThat(response.receivedCount()).isEqualTo(1);
+        verify(this.repository, times(1)).save(any(RawLog.class));
+    }
+
+    /**
+     * A {@link DbActionExecutionException} whose cause is NOT a
+     * {@link DuplicateKeyException} must propagate unchanged so the
+     * {@link io.cortex.ingest.exception.GlobalExceptionHandler}
+     * surfaces it as 500.
+     */
+    @Test
+    void nonDuplicateDbActionExceptionIsRethrown() {
+        final DbActionExecutionException ex = new DbActionExecutionException(
+                stubAction(), new IllegalStateException("connection reset"));
+        when(this.repository.save(any(RawLog.class))).thenThrow(ex);
+
+        final IngestBatchRequest request = singleEntryBatch("entry-fail");
+
+        assertThatThrownBy(() -> this.service.acceptBatch(request, TENANT, null))
+                .isSameAs(ex);
+    }
+
+    /**
+     * Builds a single-entry batch request anchored to a fixed
+     * timestamp so the SHA-256 event id is deterministic.
+     *
+     * @param message body of the single log entry
+     * @return populated batch request
+     */
+    private static IngestBatchRequest singleEntryBatch(final String message) {
+        final LogEntry entry = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO,
+                "cortex-it",
+                message,
+                Map.of("env", "test"));
+        return new IngestBatchRequest(List.of(entry));
+    }
+
+    /**
+     * Returns a benign stub for the {@link DbAction} that
+     * {@link DbActionExecutionException} requires; the action itself
+     * is never inspected by the service code.
+     *
+     * @return any non-null {@link DbAction}
+     */
+    private static DbAction<?> stubAction() {
+        return Mockito.mock(DbAction.class);
+    }
+}

@@ -149,3 +149,196 @@ starter on log-ingest-service's `pom.xml`.
 - plan.md section 9b (P4 sub-phases)
 - memory.md "### P4 PLAN RATIFIED -- 2026-05-31" (D1, OQ4 -> RESOLVED)
 - log-ingest-service/src/test/java/io/cortex/ingest/architecture/ArchitectureRulesTest.java (`NO_JPA`)
+
+---
+
+## Amendment - 2026-06-01 (P4.1 ratification)
+
+Status: Accepted (amendment)
+Date: 2026-06-01
+Scope: locks in the `raw_logs` schema, the server-computed `event_id`
+contract, the JSONB roundtrip pattern, and the duplicate-key unwrap
+strategy that the P4.1 implementation chose. Issue #47, PR for branch
+`feat/47-p4-1-validate-persist-raw`. No previous decision is reversed
+or superseded.
+
+### A1. `raw_logs` schema (Flyway V2)
+
+`log-ingest-service/src/main/resources/db/migration/V2__raw_logs.sql`:
+
+```sql
+CREATE TABLE raw_logs (
+  id              BIGSERIAL    PRIMARY KEY,
+  tenant_id       VARCHAR(64)  NOT NULL REFERENCES tenants(tenant_id),
+  event_id        VARCHAR(64)  NOT NULL,
+  ts              TIMESTAMPTZ  NOT NULL,
+  level           VARCHAR(16)  NOT NULL,
+  service         VARCHAR(128) NOT NULL,
+  message         TEXT         NOT NULL,
+  labels          JSONB        NOT NULL DEFAULT '{}'::jsonb,
+  idempotency_key VARCHAR(255),
+  received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  CONSTRAINT raw_logs_tenant_event_uk UNIQUE (tenant_id, event_id)
+);
+
+CREATE INDEX raw_logs_received_at_idx       ON raw_logs (received_at);
+CREATE INDEX raw_logs_tenant_service_ts_idx ON raw_logs (tenant_id, service, ts DESC);
+```
+
+- `UNIQUE (tenant_id, event_id)` is the cold-path dedupe key. Hot-path
+  Redis SETNX still lands in P4.2 -- but every retry that races past
+  the cache must be absorbed silently at the DB so the API stays
+  idempotent.
+- `received_at` index supports the P4.5 retention sweeper.
+- `(tenant_id, service, ts DESC)` is the canonical read shape the search
+  service (P7) will project from.
+- `labels` is `JSONB`, NOT `TEXT`. JSONB compresses, indexes via GIN if
+  ever needed, and Postgres validates the input. See A4 for the Spring
+  Data JDBC binding pattern.
+
+### A2. Server-computed `event_id`
+
+The wire `LogEntry` does NOT carry an `eventId` field. P4.1 computes it
+server-side as:
+
+```
+event_id = sha256_hex(
+    tenantId | service | ts.epochMicros | message | sortedLabelsJson
+)
+```
+
+with FIELD_SEPARATOR = `|` (single ASCII pipe), `ts.epochMicros` as a
+base-10 string of Unix epoch microseconds, and `sortedLabelsJson` the
+canonical JSON encoding of the labels map after sorting keys
+lexicographically. The implementation lives in
+`io.cortex.ingest.service.impl.IngestServiceImpl.computeEventId` (see
+the `FIELD_SEPARATOR`, `MICROS_PER_SECOND`, `NANOS_PER_MICRO`,
+`HEX_PER_BYTE`, `BYTE_MASK` constants there).
+
+Why server-side:
+
+- **Tamper-resistant.** Clients cannot bypass dedupe by mutating or
+  omitting an id field.
+- **Deterministic.** Two identical payloads from any producer collapse
+  to the same row. This is the contract the cold-path UNIQUE relies on
+  to mean "same event".
+- **Idempotency separate.** `Idempotency-Key` (P4.4 outbox /
+  publish-once) is an orthogonal request-scoped key; `event_id` is the
+  durable row identity.
+
+### A3. Tenant resolution (`X-Tenant-Id`, JWT-claim ready)
+
+`io.cortex.ingest.tenant.TenantResolver` requires the `X-Tenant-Id`
+header today and rejects null / blank with
+`ApplicationException(VALIDATION_FAILED, ...)`. The interface is
+designed so the P5.x service-JWT introspection can drop in a
+JWT-claim resolution branch (`token.claim("tenant_id")`) without
+touching `IngestController`.
+
+### A4. JSONB roundtrip via `AbstractJdbcConfiguration.userConverters()`
+
+The `labels` column is bound through two converters wired in
+`io.cortex.ingest.persistence.JdbcConvertersConfig`, which extends
+`AbstractJdbcConfiguration`. Two non-obvious choices are LOCKED here:
+
+- **Extend `AbstractJdbcConfiguration` and override `userConverters()`.**
+  Exposing a bare `@Bean JdbcCustomConversions` works in isolation but
+  REPLACES the conversion service Spring Boot's
+  `SpringBootJdbcConfiguration` wires; in particular the dialect-specific
+  store conversions are lost and writes silently revert to inferring
+  `VARCHAR` from the Java type. Overriding `userConverters()` prepends
+  our two converters while keeping the dialect store conversions
+  intact.
+- **Writing converter returns `JdbcValue.of(PGobject, JDBCType.OTHER)`,
+  NOT a bare `PGobject`.** Even when the converter hands back a
+  `PGobject`, Spring Data JDBC re-infers `VARCHAR` from the property's
+  declared type (`Map<String, String>`) and binds with `Types.VARCHAR`.
+  Postgres then refuses the cast and the insert dies with
+  `column "labels" is of type jsonb but expression is of type character
+  varying`. Wrapping the bind in `JdbcValue.of(obj, JDBCType.OTHER)`
+  forces the parameter to be bound with `Types.OTHER`, which pgjdbc
+  routes through `PGobject`'s own typed write path.
+
+### A5. `DbActionExecutionException` unwrap for cold-path dedupe
+
+`IngestServiceImpl.saveAbsorbingDuplicate` catches BOTH:
+
+- a bare `org.springframework.dao.DuplicateKeyException` (fallback for
+  contexts where Spring Data JDBC does not wrap), AND
+- an `org.springframework.data.relational.core.conversion.DbActionExecutionException`
+  whose `getCause() instanceof DuplicateKeyException`.
+
+Spring Data JDBC wraps repository-action exceptions inside
+`DbActionExecutionException`; a narrow `catch (DuplicateKeyException)`
+silently misses every cold-path duplicate that arrives via a
+`@Repository.save` call. The two-arm catch keeps dedupe absorption
+correct for both code paths. Any other `DbActionExecutionException`
+cause is rethrown.
+
+### A6. `postgresql` MUST be at `compile` scope (not `runtime`)
+
+`org.postgresql.util.PGobject` is referenced directly from
+`JdbcConvertersConfig` (production code, not just the JDBC driver
+runtime ServiceLoader). Pinning `postgresql` at `runtime` scope, the
+default for vanilla web modules, fails compilation. The
+`log-ingest-service/pom.xml` overrides scope to `compile`.
+
+### A7. Testcontainers 1.21.4 BOM bump (Docker Engine 29 on Windows)
+
+`org.testcontainers:testcontainers-bom:1.21.4` is the lowest version
+whose bundled `docker-java` client speaks the Docker Engine 29 API on
+Windows Docker Desktop. The 1.20.x BOM bundled by Spring Boot's
+managed dependencies handshakes against Engine 28 and throws
+`ApiVersion not supported` against current Docker Desktop. The parent
+pom now overrides the BOM; every Testcontainers-using module
+(log-ingest-service, log-gateway, future P5..P10 services) inherits
+the override automatically.
+
+### A8. Failsafe explicit in module pom
+
+The integration-test reactor relies on `*IT.java` execution via
+`maven-failsafe-plugin`. Inheritance from the parent pom alone leaves
+the plugin in `<pluginManagement>` only; the module pom MUST add an
+explicit `<plugin>` entry with `<configuration><goals>` for `verify`
+to actually run the ITs. This is the same pattern P3 (log-gateway)
+already uses; P4.1 confirms it for log-ingest-service.
+
+### A9. JaCoCo gate ON; `GlobalExceptionHandler` NOT excluded
+
+P4.0 set `<skip.jacoco>true</skip.jacoco>` for log-ingest-service to
+let the scaffold land without coverage. P4.1 flips the gate ON. The
+parent JaCoCo `<excludes>` only excludes `**/exception/*Exception.class`
+(i.e. concrete `*Exception` types), NOT `**/exception/**`. That means
+`GlobalExceptionHandler` IS counted by the bundle gate and requires
+real switch-arm coverage; see
+`io.cortex.ingest.exception.GlobalExceptionHandlerTest` (12 tests
+covering every `ErrorCodes` branch + the three Spring-built-in
+overloads + the catch-all).
+
+### A10. Out of scope for this amendment
+
+- Redis SETNX hot-path dedupe (P4.2).
+- PII masking on the write path (P4.2).
+- Correlation-id propagation + end-to-end split + geo enrichment
+  (P4.3).
+- Spring Cloud Stream publish + outbox (P4.4).
+- Retention sweeper consuming the `received_at` index (P4.5).
+
+### A11. Verification evidence
+
+- `mvnw verify -B` (full reactor): BUILD SUCCESS, 99 tests pass (51
+  agent + 43 gateway + 5 ingest test classes); both `log-gateway` and
+  `log-ingest-service` meet the 0.80 line and branch BUNDLE gates.
+  Reactor green at branch HEAD prior to PR open.
+- `scripts/smoke-p4-1.ps1` against the live booted stack
+  (cortex-smoke-postgres + eureka:8761 + ingest:8092): 10 / 10 groups
+  PASS, including DB row-count deltas via `docker exec ... psql`.
+- `npx newman run postman/log-ingest.postman_collection.json`: 8
+  requests / 21 assertions / 0 failed.
+
+### A12. Lessons distilled
+
+The amendments above were arrived at the hard way; the matching
+LD entries land in `memory.md` under "### P4.1 SHIPPED" so future
+modules do not relitigate them.
+
