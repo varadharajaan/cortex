@@ -12,7 +12,7 @@ file per deployment target.
 | `log-gateway.postman_environment_local.json`      | Local dev (`http://localhost:8090`).              |
 | `log-gateway.postman_environment_staging.json`    | Staging cluster.                                  |
 | `log-gateway.postman_environment_prod.json`       | Production cluster.                               |
-| `log-ingest.postman_collection.json`              | Ingest happy-path + RFC 7807 error contract (P4.0 scaffold). |
+| `log-ingest.postman_collection.json`              | Ingest happy-path + RFC 7807 error contract + P4.1 multi-tenant/jsonb labels + P4.2 Redis SETNX hot-path dedupe (Idempotency-Key) + server-side PII masking + Prometheus counter scrape. |
 | `log-ingest.postman_environment_local.json`       | Local dev (`http://localhost:8092`).              |
 
 Additional services land here as P4-P8 progress.
@@ -80,7 +80,9 @@ Every environment file defines:
 5. Re-export the collection from Postman to keep this file in sync
    (or hand-edit; the file is human-readable JSON v2.1).
 
-## Current request matrix (P3.4, 29 requests / 100+ assertions)
+## Current request matrix
+
+### log-gateway collection (P3.4, 29 requests / 100+ assertions)
 
 | Folder           | Request                                            | Purpose                                                |
 |------------------|----------------------------------------------------|--------------------------------------------------------|
@@ -115,6 +117,34 @@ Every environment file defines:
 | RateLimit        | GET  `/echo/ping` (bearer, after pre-request flood)| 429 + Retry-After present + X-RateLimit-Remaining=0 + RFC 7807 errorCode=RATE_LIMITED |
 
 Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery + LogsRoute + SearchRoute folders all require the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1` and `scripts/smoke-p3-4.ps1`); skip those folders when running Newman against a deployment that does not include `log-echo-service`. The NlQuery folder requires WireMock running on `:8094` with the `infra/local/wiremock/mappings/` stubs mounted AND the gateway booted with `SPRING_AI_OLLAMA_BASE_URL=http://localhost:8094`; the sub-bucket-exhaustion 429 case is covered by `scripts/smoke-p3-3.ps1` only because it needs deterministic Redis state. The AuthLogin sub-bucket exhaustion case (`@RateLimitFeature` on `/api/v1/auth/login`, P3.4 / ADR-0021) is likewise covered only by `scripts/smoke-p3-4.ps1` because Newman would otherwise lock the `admin` principal's login bucket for the rest of the run. Reset `cortex:rl:nlq:*` + `cortex:rl:auth:*` keys in Redis between the smoke and the newman run so the NlQuery + Auth folders start with full buckets. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
+
+### log-ingest collection (P4.2, 12 requests / 30 assertions)
+
+| # | Request                                                                                | Purpose                                                                                                          |
+|---|----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| 1 | GET  `/actuator/health`                                                                | 200 + `status: UP` (live-boot readiness gate, Part 21 level 2).                                                  |
+| 2 | POST `/api/v1/ingest/batch` (happy)                                                    | 202 + `receivedCount=N` + ISO-8601 `receivedAt` (P4.0 baseline contract).                                        |
+| 3 | POST `/api/v1/ingest/batch` (empty `entries`)                                          | 400 + RFC 7807 `errorCode=VALIDATION_FAILED` (Part 26.3.4 input-validation gate).                                |
+| 4 | POST `/api/v1/ingest/batch` (malformed JSON)                                           | 400 + RFC 7807 `errorCode=BAD_REQUEST` (parser-error path).                                                      |
+| 5 | GET  `/api/v1/ingest/unknown`                                                          | 404 + RFC 7807 `errorCode=NOT_FOUND` (Part 26.3.3 unknown-path gate).                                            |
+| 6 | POST `/api/v1/ingest/batch` (P4.1 rich `labels` map)                                   | 202 + jsonb roundtrip survives (multi-tenant + label cardinality).                                               |
+| 7 | POST `/api/v1/ingest/batch` (P4.1, NO `X-Tenant-Id`)                                   | 400 + RFC 7807 `errorCode=VALIDATION_FAILED` (tenant-header contract, ADR-0022).                                 |
+| 8 | POST `/api/v1/ingest/batch` (P4.1, same `event_id` twice)                              | both 202; second call dedup'd by Postgres `UNIQUE(tenant_id, event_id)` cold path (transparent to client).       |
+| 9 | POST `/api/v1/ingest/batch` (P4.2, `Idempotency-Key` first send)                       | 202 + `receivedCount=1` (Redis SETNX claims key `cortex:ingest:idem:{tenant}:{idemKey}` with PT24H TTL).         |
+|10 | POST `/api/v1/ingest/batch` (P4.2, SAME `Idempotency-Key` replay)                      | 202 absorbed by hot path; `cortex.ingest.dedupe.hits{path=hot}` increments (D3 contract).                        |
+|11 | POST `/api/v1/ingest/batch` (P4.2, PII in `message`)                                   | 202; persisted row has `message` rewritten with mask tokens (`<EMAIL>`, `<PHONE>`, etc.); D4 server-side leg.    |
+|12 | GET  `/actuator/prometheus`                                                            | 200 + scrape contains `cortex_ingest_dedupe_hits_total` (with `path` tag) + `cortex_ingest_mask_applied_total`. |
+
+Just import and run: open Postman, import `log-ingest.postman_collection.json` and `log-ingest.postman_environment_local.json`, pick the `log-ingest-service :: local` environment, boot the service with `mvnw -pl log-ingest-service spring-boot:run` (requires Postgres on :5432 and Redis on :6379 from `infra/local/docker-compose.smoke.yml`), and hit "Run collection". Headless equivalent:
+
+```bash
+newman run postman/log-ingest.postman_collection.json \
+       -e postman/log-ingest.postman_environment_local.json \
+       --reporters cli,junit \
+       --reporter-junit-export target/newman/log-ingest-junit.xml
+```
+
+Mirror in `scripts/smoke-p4-0.ps1` / `scripts/smoke-p4-1.ps1` / `scripts/smoke-p4-2.ps1` (LD23 / Part 26.2 closed-loop rule): every HTTP-observable assertion in the collection above has a matching assertion in the per-phase smoke script (and vice versa). Items 2-5 mirror smoke-p4-0; items 6-8 mirror smoke-p4-1; items 9-12 mirror smoke-p4-2. The smoke-only assertions (DB row-count baselines, `redis-cli GET`, run-log ERROR grep, eureka registry scrape) are intentionally not in Newman because they are not HTTP-observable from the service boundary.
 
 ## Rules anchor
 
