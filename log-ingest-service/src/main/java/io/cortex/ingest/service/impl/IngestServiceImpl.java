@@ -11,6 +11,8 @@ import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
 import io.cortex.ingest.service.IngestService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -74,6 +76,12 @@ public class IngestServiceImpl implements IngestService {
     /** Field separator inside the event-id pre-image. */
     private static final String FIELD_SEPARATOR = "|";
 
+    /** Counter name for dedupe hits, tagged by {@code path=hot|cold}. */
+    private static final String METRIC_DEDUPE_HITS = "cortex.ingest.dedupe.hits";
+
+    /** Counter name for total PII substitutions applied server-side. */
+    private static final String METRIC_MASK_APPLIED = "cortex.ingest.mask.applied";
+
     /** Clock used for the acceptance timestamp; injected so tests can pin it. */
     private final Clock clock;
 
@@ -91,6 +99,27 @@ public class IngestServiceImpl implements IngestService {
     private final Optional<IdempotencyDedupeService> dedupeService;
 
     /**
+     * Counter incremented once per ENTRY absorbed by the hot-path
+     * dedupe (Redis SETNX rejected the batch). Tagged
+     * {@code path=hot}.
+     */
+    private final Counter dedupeHotCounter;
+
+    /**
+     * Counter incremented once per ENTRY absorbed by the cold-path
+     * dedupe (Postgres {@code UNIQUE (tenant_id, event_id)}
+     * constraint vio). Tagged {@code path=cold}.
+     */
+    private final Counter dedupeColdCounter;
+
+    /**
+     * Counter incremented by the number of PII substitutions
+     * applied by {@link PiiMasker} across every batch. A single
+     * entry containing two emails increments this counter by 2.
+     */
+    private final Counter maskAppliedCounter;
+
+    /**
      * Constructs the persisting service implementation.
      *
      * @param clock         clock used for the acceptance timestamp;
@@ -104,15 +133,34 @@ public class IngestServiceImpl implements IngestService {
      * @param dedupeService optional hot-path dedupe (D3); empty when
      *                      the bean is disabled or not on the
      *                      classpath
+     * @param meterRegistry Micrometer registry; must not be
+     *                      {@code null}. The dedupe (hot / cold)
+     *                      and mask counters are registered eagerly
+     *                      at construction so they appear in the
+     *                      {@code /actuator/prometheus} scrape even
+     *                      before the first batch arrives (P4.2 /
+     *                      ADR-0023)
      */
     public IngestServiceImpl(final Clock clock,
                              final RawLogRepository repository,
                              final ObjectMapper objectMapper,
-                             final Optional<IdempotencyDedupeService> dedupeService) {
+                             final Optional<IdempotencyDedupeService> dedupeService,
+                             final MeterRegistry meterRegistry) {
         this.clock = clock;
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.dedupeService = dedupeService;
+        this.dedupeHotCounter = Counter.builder(METRIC_DEDUPE_HITS)
+                .description("Entries absorbed by ingest dedupe, tagged hot or cold path")
+                .tag("path", "hot")
+                .register(meterRegistry);
+        this.dedupeColdCounter = Counter.builder(METRIC_DEDUPE_HITS)
+                .description("Entries absorbed by ingest dedupe, tagged hot or cold path")
+                .tag("path", "cold")
+                .register(meterRegistry);
+        this.maskAppliedCounter = Counter.builder(METRIC_MASK_APPLIED)
+                .description("PII substitutions applied server-side by PiiMasker")
+                .register(meterRegistry);
     }
 
     @Override
@@ -122,6 +170,7 @@ public class IngestServiceImpl implements IngestService {
         final OffsetDateTime receivedAt = OffsetDateTime.now(this.clock);
         final int total = request.entries().size();
         if (this.isHotPathHit(tenantId, idempotencyKey)) {
+            this.dedupeHotCounter.increment(total);
             LOG.info("ingest-batch dedupe-hot-path tenant={} accepted={}",
                     tenantId, total);
             return new IngestAcceptedResponse(total, receivedAt);
@@ -170,6 +219,7 @@ public class IngestServiceImpl implements IngestService {
             persistedCount += this.saveAbsorbingDuplicate(raw, tenantId, eventId);
         }
         if (piiAppliedTotal > 0) {
+            this.maskAppliedCounter.increment(piiAppliedTotal);
             LOG.info("ingest-batch pii-masked tenant={} appliedCount={}",
                     tenantId, piiAppliedTotal);
         }
@@ -230,11 +280,13 @@ public class IngestServiceImpl implements IngestService {
             this.repository.save(raw);
             return 1;
         } catch (DuplicateKeyException dup) {
+            this.dedupeColdCounter.increment();
             LOG.debug("ingest-batch dedupe-cold-path tenant={} eventId={}",
                     tenantId, eventId);
             return 0;
         } catch (DbActionExecutionException wrapped) {
             if (wrapped.getCause() instanceof DuplicateKeyException) {
+                this.dedupeColdCounter.increment();
                 LOG.debug("ingest-batch dedupe-cold-path tenant={} eventId={}",
                         tenantId, eventId);
                 return 0;

@@ -15,6 +15,8 @@ import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -59,6 +61,9 @@ class IngestServiceImplTest {
     /** Mocked repository. */
     private RawLogRepository repository;
 
+    /** In-memory Micrometer registry; recreated per test for clean counter values. */
+    private MeterRegistry registry;
+
     /** SUT - recreated per test for isolation. */
     private IngestServiceImpl service;
 
@@ -71,8 +76,9 @@ class IngestServiceImplTest {
     @BeforeEach
     void initService() {
         this.repository = Mockito.mock(RawLogRepository.class);
+        this.registry = new SimpleMeterRegistry();
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.empty());
+                Optional.empty(), this.registry);
     }
 
     /**
@@ -142,7 +148,7 @@ class IngestServiceImplTest {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-1")).thenReturn(false);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe));
+                Optional.of(dedupe), this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-hot-path");
         final IngestAcceptedResponse response =
@@ -163,7 +169,7 @@ class IngestServiceImplTest {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-2")).thenReturn(true);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe));
+                Optional.of(dedupe), this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-fresh");
         final IngestAcceptedResponse response =
@@ -183,7 +189,7 @@ class IngestServiceImplTest {
     void hotPathSkippedWhenIdempotencyKeyAbsent() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe));
+                Optional.of(dedupe), this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-no-idem");
         this.service.acceptBatch(request, TENANT, null);
@@ -238,6 +244,71 @@ class IngestServiceImplTest {
         assertThat(saved.get(0).eventId()).isNotEqualTo(saved.get(1).eventId());
         assertThat(saved.get(0).message()).isEqualTo("user <email>");
         assertThat(saved.get(1).message()).isEqualTo("user <email>");
+    }
+
+    /**
+     * On a hot-path hit, the
+     * {@code cortex.ingest.dedupe.hits{path=hot}} counter MUST be
+     * incremented by the FULL entry count of the absorbed batch
+     * (every entry of the replay is conceptually deduped).
+     */
+    @Test
+    void hotPathHitIncrementsHotDedupeCounterByEntryCount() {
+        final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
+        when(dedupe.claim(TENANT, "idem-metric-hot")).thenReturn(false);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
+                Optional.of(dedupe), this.registry);
+
+        final LogEntry one = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO, "cortex-it", "msg-1", Map.of());
+        final LogEntry two = new LogEntry(
+                Instant.parse("2026-06-01T11:00:01Z"),
+                LogLevel.INFO, "cortex-it", "msg-2", Map.of());
+        this.service.acceptBatch(new IngestBatchRequest(List.of(one, two)),
+                TENANT, "idem-metric-hot");
+
+        assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "hot")
+                .count()).isEqualTo(2.0d);
+        assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "cold")
+                .count()).isEqualTo(0.0d);
+    }
+
+    /**
+     * When the cold-path UNIQUE constraint absorbs a duplicate
+     * (via {@link DuplicateKeyException} or wrapped in
+     * {@link DbActionExecutionException}), the
+     * {@code cortex.ingest.dedupe.hits{path=cold}} counter MUST
+     * be incremented once per absorbed row.
+     */
+    @Test
+    void coldPathDuplicateIncrementsColdDedupeCounter() {
+        when(this.repository.save(any(RawLog.class)))
+                .thenThrow(new DuplicateKeyException("uk vio"));
+
+        this.service.acceptBatch(singleEntryBatch("entry-cold"), TENANT, null);
+
+        assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "cold")
+                .count()).isEqualTo(1.0d);
+        assertThat(this.registry.counter("cortex.ingest.dedupe.hits", "path", "hot")
+                .count()).isEqualTo(0.0d);
+    }
+
+    /**
+     * The {@code cortex.ingest.mask.applied} counter MUST be
+     * incremented by the TOTAL number of PII substitutions made by
+     * {@link io.cortex.agent.pii.PiiMasker} across every entry in
+     * the batch. One entry with two emails increments the counter
+     * by 2.
+     */
+    @Test
+    void maskAppliedCounterTracksTotalSubstitutions() {
+        this.service.acceptBatch(
+                singleEntryBatch("alice@example.com cc bob@example.com"),
+                TENANT, null);
+
+        assertThat(this.registry.counter("cortex.ingest.mask.applied").count())
+                .isEqualTo(2.0d);
     }
 
     /**
