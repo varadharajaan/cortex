@@ -3,6 +3,7 @@ package io.cortex.ingest.service.impl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cortex.agent.LogEntry;
+import io.cortex.ingest.dedupe.IdempotencyDedupeService;
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.persistence.RawLog;
@@ -15,6 +16,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,22 +82,35 @@ public class IngestServiceImpl implements IngestService {
     private final ObjectMapper objectMapper;
 
     /**
+     * Optional hot-path dedupe (D3 / P4.2); empty when
+     * {@code cortex.ingest.dedupe.enabled=false} or when Spring did
+     * not wire the bean (e.g. test slices that exclude Redis).
+     */
+    private final Optional<IdempotencyDedupeService> dedupeService;
+
+    /**
      * Constructs the persisting service implementation.
      *
-     * @param clock        clock used for the acceptance timestamp;
-     *                     must not be {@code null}
-     * @param repository   raw-logs JDBC repository; must not be
-     *                     {@code null}
-     * @param objectMapper shared Jackson encoder used to canonicalise
-     *                     the {@code labels} map for the event-id
-     *                     pre-image; must not be {@code null}
+     * @param clock         clock used for the acceptance timestamp;
+     *                      must not be {@code null}
+     * @param repository    raw-logs JDBC repository; must not be
+     *                      {@code null}
+     * @param objectMapper  shared Jackson encoder used to
+     *                      canonicalise the {@code labels} map for
+     *                      the event-id pre-image; must not be
+     *                      {@code null}
+     * @param dedupeService optional hot-path dedupe (D3); empty when
+     *                      the bean is disabled or not on the
+     *                      classpath
      */
     public IngestServiceImpl(final Clock clock,
                              final RawLogRepository repository,
-                             final ObjectMapper objectMapper) {
+                             final ObjectMapper objectMapper,
+                             final Optional<IdempotencyDedupeService> dedupeService) {
         this.clock = clock;
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.dedupeService = dedupeService;
     }
 
     @Override
@@ -103,6 +118,12 @@ public class IngestServiceImpl implements IngestService {
                                               final String tenantId,
                                               final String idempotencyKey) {
         final OffsetDateTime receivedAt = OffsetDateTime.now(this.clock);
+        final int total = request.entries().size();
+        if (this.isHotPathHit(tenantId, idempotencyKey)) {
+            LOG.info("ingest-batch dedupe-hot-path tenant={} accepted={}",
+                    tenantId, total);
+            return new IngestAcceptedResponse(total, receivedAt);
+        }
         final Instant receivedAtInstant = receivedAt.toInstant();
         int persistedCount = 0;
         for (final LogEntry entry : request.entries()) {
@@ -111,12 +132,35 @@ public class IngestServiceImpl implements IngestService {
                     receivedAtInstant);
             persistedCount += this.saveAbsorbingDuplicate(raw, tenantId, eventId);
         }
-        final int total = request.entries().size();
         if (persistedCount < total) {
             LOG.info("ingest-batch dedupe-absorbed tenant={} accepted={} duplicates={}",
                     tenantId, total, total - persistedCount);
         }
         return new IngestAcceptedResponse(total, receivedAt);
+    }
+
+    /**
+     * Returns {@code true} when the hot-path dedupe layer has
+     * already seen this {@code (tenantId, idempotencyKey)} pair
+     * within its TTL window. Returns {@code false} when the header
+     * is absent or blank, the dedupe bean is not wired in
+     * ({@code cortex.ingest.dedupe.enabled=false}), or the key is
+     * freshly claimed by this very call (in which case the caller
+     * MUST proceed with persistence).
+     *
+     * @param tenantId       resolved tenant id
+     * @param idempotencyKey raw {@code Idempotency-Key} header value
+     *                       (may be {@code null} or blank)
+     * @return {@code true} only when the call is a recognised replay
+     */
+    private boolean isHotPathHit(final String tenantId, final String idempotencyKey) {
+        if (this.dedupeService.isEmpty()) {
+            return false;
+        }
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return false;
+        }
+        return !this.dedupeService.get().claim(tenantId, idempotencyKey);
     }
 
     /**

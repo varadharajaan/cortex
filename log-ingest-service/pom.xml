@@ -82,6 +82,20 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jdbc</artifactId>
         </dependency>
+
+        <!-- Redis (D3 / P4.2 hot-path dedupe): SETNX + TTL on the
+             Idempotency-Key request header gives a hot-path replay
+             short-circuit in front of the cold-path UNIQUE backstop
+             on raw_logs. The starter auto-configures a Lettuce
+             RedisConnectionFactory + StringRedisTemplate; Lettuce is
+             lazy on connection so the bean wiring does not require a
+             live Redis at boot. See
+             io.cortex.ingest.dedupe.IdempotencyDedupeService. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>

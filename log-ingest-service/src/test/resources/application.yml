@@ -37,6 +37,14 @@ eureka:
     fetch-registry: false
 
 cortex:
+  ingest:
+    # Hot-path dedupe OFF by default for slice / IT tests so that
+    # adding spring-boot-starter-data-redis does not require every IT
+    # to spin up a Redis container. The dedicated IdempotencyDedupeIT
+    # (later commit in the P4.2 chain) opts back in via
+    # @TestPropertySource / @DynamicPropertySource.
+    dedupe:
+      enabled: false
   security:
     service-jwt:
       required: false

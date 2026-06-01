@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cortex.agent.LogEntry;
 import io.cortex.agent.LogLevel;
+import io.cortex.ingest.dedupe.IdempotencyDedupeService;
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.persistence.RawLog;
@@ -19,6 +20,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -68,7 +70,8 @@ class IngestServiceImplTest {
     @BeforeEach
     void initService() {
         this.repository = Mockito.mock(RawLogRepository.class);
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper());
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
+                Optional.empty());
     }
 
     /**
@@ -124,6 +127,68 @@ class IngestServiceImplTest {
 
         assertThatThrownBy(() -> this.service.acceptBatch(request, TENANT, null))
                 .isSameAs(ex);
+    }
+
+    /**
+     * When the dedupe service is wired and reports a hot-path hit
+     * (replay within TTL), {@link IngestServiceImpl#acceptBatch}
+     * MUST short-circuit before touching the repository and still
+     * return a {@code receivedCount} equal to
+     * {@code entries.size()}.
+     */
+    @Test
+    void hotPathHitShortCircuitsPersistence() {
+        final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
+        when(dedupe.claim(TENANT, "idem-1")).thenReturn(false);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
+                Optional.of(dedupe));
+
+        final IngestBatchRequest request = singleEntryBatch("entry-hot-path");
+        final IngestAcceptedResponse response =
+                this.service.acceptBatch(request, TENANT, "idem-1");
+
+        assertThat(response.receivedCount()).isEqualTo(1);
+        verify(this.repository, Mockito.never()).save(any(RawLog.class));
+        verify(dedupe).claim(TENANT, "idem-1");
+    }
+
+    /**
+     * When the dedupe service claims the key successfully (fresh
+     * batch), persistence MUST run normally and the repository
+     * sees one save per entry.
+     */
+    @Test
+    void hotPathMissProceedsWithPersistence() {
+        final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
+        when(dedupe.claim(TENANT, "idem-2")).thenReturn(true);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
+                Optional.of(dedupe));
+
+        final IngestBatchRequest request = singleEntryBatch("entry-fresh");
+        final IngestAcceptedResponse response =
+                this.service.acceptBatch(request, TENANT, "idem-2");
+
+        assertThat(response.receivedCount()).isEqualTo(1);
+        verify(this.repository, times(1)).save(any(RawLog.class));
+        verify(dedupe).claim(TENANT, "idem-2");
+    }
+
+    /**
+     * The hot-path layer MUST be skipped entirely when the
+     * {@code Idempotency-Key} header is absent; persistence falls
+     * through to the cold-path UNIQUE backstop with no Redis call.
+     */
+    @Test
+    void hotPathSkippedWhenIdempotencyKeyAbsent() {
+        final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
+                Optional.of(dedupe));
+
+        final IngestBatchRequest request = singleEntryBatch("entry-no-idem");
+        this.service.acceptBatch(request, TENANT, null);
+
+        verify(this.repository, times(1)).save(any(RawLog.class));
+        Mockito.verifyNoInteractions(dedupe);
     }
 
     /**

@@ -26,6 +26,16 @@ spring:
     hikari:
       maximum-pool-size: 10
       pool-name: cortex-ingest-pool
+  # ----- Redis (D3 / P4.2 hot-path dedupe). Lettuce is lazy on
+  # connection so this block does NOT force a TCP handshake at boot;
+  # the first SETNX inside IdempotencyDedupeService opens the
+  # connection. Override REDIS_HOST / REDIS_PORT in non-dev profiles.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+      connect-timeout: 2s
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -93,6 +103,15 @@ eureka:
 #             type: PKCS12
 
 cortex:
+  ingest:
+    # Hot-path dedupe via Redis SETNX on the Idempotency-Key header
+    # (D3 / plan.md row P4.2 / spec Sec 5.3). Cold-path
+    # UNIQUE (tenant_id, event_id) on raw_logs is always active and
+    # acts as the durable backstop when the hot path is disabled or
+    # Redis is unreachable (the service fails open).
+    dedupe:
+      enabled: ${CORTEX_INGEST_DEDUPE_ENABLED:true}
+      ttl: ${CORTEX_INGEST_DEDUPE_TTL:PT24H}
   security:
     # When true, every request to /api/** MUST carry a valid
     # X-Cortex-Service-JWT header (presence-only in P4.0; full parse +
