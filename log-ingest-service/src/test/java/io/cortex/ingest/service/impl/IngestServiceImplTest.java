@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.relational.core.conversion.DbAction;
@@ -189,6 +190,54 @@ class IngestServiceImplTest {
 
         verify(this.repository, times(1)).save(any(RawLog.class));
         Mockito.verifyNoInteractions(dedupe);
+    }
+
+    /**
+     * The PII contained in {@code entry.message()} MUST be masked
+     * by {@link io.cortex.agent.pii.PiiMasker} BEFORE the row is
+     * handed to the repository (D4 / spec Sec 5.3 / LD4
+     * second-layer mask). Captures the saved {@link RawLog} and
+     * asserts the persisted message is the masked output, not the
+     * original.
+     */
+    @Test
+    void piiInMessageIsMaskedBeforePersistence() {
+        final IngestBatchRequest request =
+                singleEntryBatch("user alice@example.com just logged in");
+        this.service.acceptBatch(request, TENANT, null);
+
+        final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
+        verify(this.repository).save(captor.capture());
+        assertThat(captor.getValue().message())
+                .isEqualTo("user <email> just logged in");
+    }
+
+    /**
+     * Two entries with DIFFERENT PII that masks to the SAME token
+     * (e.g. {@code alice@example.com} and {@code bob@example.com}
+     * both become {@code <email>}) MUST still receive DISTINCT
+     * {@code event_id}s, because the event-id hash is computed
+     * against the ORIGINAL message; otherwise the cold-path UNIQUE
+     * constraint would falsely dedupe the second entry.
+     */
+    @Test
+    void eventIdComputedAgainstOriginalMessageNotMasked() {
+        final LogEntry alice = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO, "cortex-it", "user alice@example.com", Map.of());
+        final LogEntry bob = new LogEntry(
+                Instant.parse("2026-06-01T11:00:00Z"),
+                LogLevel.INFO, "cortex-it", "user bob@example.com", Map.of());
+        final IngestBatchRequest request = new IngestBatchRequest(List.of(alice, bob));
+
+        this.service.acceptBatch(request, TENANT, null);
+
+        final ArgumentCaptor<RawLog> captor = ArgumentCaptor.forClass(RawLog.class);
+        verify(this.repository, times(2)).save(captor.capture());
+        final List<RawLog> saved = captor.getAllValues();
+        assertThat(saved.get(0).eventId()).isNotEqualTo(saved.get(1).eventId());
+        assertThat(saved.get(0).message()).isEqualTo("user <email>");
+        assertThat(saved.get(1).message()).isEqualTo("user <email>");
     }
 
     /**

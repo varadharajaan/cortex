@@ -3,6 +3,8 @@ package io.cortex.ingest.service.impl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cortex.agent.LogEntry;
+import io.cortex.agent.pii.MaskResult;
+import io.cortex.agent.pii.PiiMasker;
 import io.cortex.ingest.dedupe.IdempotencyDedupeService;
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
@@ -124,19 +126,57 @@ public class IngestServiceImpl implements IngestService {
                     tenantId, total);
             return new IngestAcceptedResponse(total, receivedAt);
         }
-        final Instant receivedAtInstant = receivedAt.toInstant();
+        this.persistBatchWithMasking(request, tenantId, idempotencyKey,
+                receivedAt.toInstant(), total);
+        return new IngestAcceptedResponse(total, receivedAt);
+    }
+
+    /**
+     * Iterates the batch, computing each {@code event_id} against
+     * the ORIGINAL message (so dedupe is not fooled by
+     * post-masking collisions like
+     * {@code alice@x.com -> <email> <- bob@x.com}), then applies
+     * {@link PiiMasker#mask(String)} BEFORE persistence so the row
+     * stored in {@code raw_logs.message} is already masked
+     * (D4 / spec Sec 5.3 / LD4 second-layer mask).
+     *
+     * <p>Per-batch totals are surfaced at INFO when non-zero:
+     * {@code pii-masked} counts PII substitutions across all
+     * entries, {@code dedupe-absorbed} counts cold-path duplicates
+     * silently swallowed by the
+     * {@code UNIQUE (tenant_id, event_id)} constraint.</p>
+     *
+     * @param request           validated inbound batch
+     * @param tenantId          resolved tenant id
+     * @param idempotencyKey    raw {@code Idempotency-Key} header
+     *                          value (may be {@code null})
+     * @param receivedAtInstant batch acceptance timestamp
+     * @param total             {@code request.entries().size()};
+     *                          pre-computed by the caller
+     */
+    private void persistBatchWithMasking(final IngestBatchRequest request,
+                                         final String tenantId,
+                                         final String idempotencyKey,
+                                         final Instant receivedAtInstant,
+                                         final int total) {
         int persistedCount = 0;
+        int piiAppliedTotal = 0;
         for (final LogEntry entry : request.entries()) {
             final String eventId = this.computeEventId(tenantId, entry);
+            final MaskResult masked = PiiMasker.mask(entry.message());
+            piiAppliedTotal += masked.appliedCount();
             final RawLog raw = this.toRawLog(entry, tenantId, eventId, idempotencyKey,
-                    receivedAtInstant);
+                    receivedAtInstant, masked.text());
             persistedCount += this.saveAbsorbingDuplicate(raw, tenantId, eventId);
+        }
+        if (piiAppliedTotal > 0) {
+            LOG.info("ingest-batch pii-masked tenant={} appliedCount={}",
+                    tenantId, piiAppliedTotal);
         }
         if (persistedCount < total) {
             LOG.info("ingest-batch dedupe-absorbed tenant={} accepted={} duplicates={}",
                     tenantId, total, total - persistedCount);
         }
-        return new IngestAcceptedResponse(total, receivedAt);
     }
 
     /**
@@ -205,22 +245,31 @@ public class IngestServiceImpl implements IngestService {
 
     /**
      * Maps a validated {@link LogEntry} to a new {@link RawLog}
-     * insert aggregate. Extracted from {@link #acceptBatch} to keep
-     * that loop under the 30-line Checkstyle ceiling.
+     * insert aggregate. Extracted from
+     * {@link #persistBatchWithMasking} to keep that loop under the
+     * 30-line Checkstyle ceiling.
+     *
+     * <p>The {@code message} parameter is the
+     * {@link PiiMasker}-masked output, not {@code entry.message()};
+     * see {@code persistBatchWithMasking} for why the original is
+     * still used for the {@code event_id} hash.</p>
      *
      * @param entry             validated inbound entry
      * @param tenantId          resolved tenant id
      * @param eventId           pre-computed SHA-256 hex event id
-     * @param idempotencyKey    raw {@code Idempotency-Key} header value
-     *                          (may be {@code null})
+     * @param idempotencyKey    raw {@code Idempotency-Key} header
+     *                          value (may be {@code null})
      * @param receivedAtInstant batch acceptance timestamp
-     * @return new {@link RawLog} ready for {@code repository.save(...)}
+     * @param message           PII-masked message to persist
+     * @return new {@link RawLog} ready for
+     *         {@code repository.save(...)}
      */
     private RawLog toRawLog(final LogEntry entry,
                             final String tenantId,
                             final String eventId,
                             final String idempotencyKey,
-                            final Instant receivedAtInstant) {
+                            final Instant receivedAtInstant,
+                            final String message) {
         return new RawLog(
                 null,
                 tenantId,
@@ -228,7 +277,7 @@ public class IngestServiceImpl implements IngestService {
                 entry.timestamp(),
                 entry.level().name(),
                 entry.service(),
-                entry.message(),
+                message,
                 entry.labels(),
                 idempotencyKey,
                 receivedAtInstant);
