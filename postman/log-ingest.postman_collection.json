@@ -427,8 +427,8 @@
         "header": [
           { "key": "Content-Type", "value": "application/json" },
           { "key": "Accept", "value": "application/json" },
-          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
-          { "key": "X-Cortex-Service-JWT", "value": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ0aWQiOiJwNC0zLWp3dC1wb3N0bWFuLXRlbmFudCJ9." }
+          { "key": "X-Tenant-Id", "value": "bogus-not-a-real-tenant" },
+          { "key": "X-Cortex-Service-JWT", "value": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ0aWQiOiJjb3J0ZXgtZGV2In0." }
         ],
         "body": {
           "mode": "raw",
