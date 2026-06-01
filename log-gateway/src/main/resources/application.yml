@@ -13,7 +13,7 @@ spring:
     default-property-inclusion: non_null
   ai:
     # Spring AI 1.0.0 Ollama starter (B20.1, P3.3 / ADR-0018). The base
-    # URL points at WireMock (port 8081) in dev/test smoke and at a real
+    # URL points at WireMock (port 8094) in dev/test smoke and at a real
     # Ollama (or Azure OpenAI under prod profile) elsewhere. Auto-pull is
     # OFF so a dev without a local model gets a deterministic 503 from
     # the gateway instead of a 10-minute model download on first request.
@@ -27,7 +27,7 @@ spring:
           temperature: ${SPRING_AI_OLLAMA_CHAT_TEMPERATURE:0.2}
 
 server:
-  port: 8080
+  port: 8090
   shutdown: graceful
   error:
     include-message: never

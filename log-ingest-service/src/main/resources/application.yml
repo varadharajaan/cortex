@@ -32,7 +32,7 @@ spring:
     locations: classpath:db/migration
 
 server:
-  port: 8091
+  port: 8092
   shutdown: graceful
   error:
     include-message: never

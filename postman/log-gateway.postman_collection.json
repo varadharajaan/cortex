@@ -2,7 +2,7 @@
   "info": {
     "name": "CORTEX :: log-gateway",
     "_postman_id": "c0a1f3b0-0000-4000-8000-c0a1f3b0e001",
-    "description": "Postman collection for the CORTEX log-gateway service. Mirrors `scripts/smoke-p3-1.ps1` (Part 21 Levels 1-6) for every check expressible over HTTP. Folder order matters: Auth runs first to populate `jwt` + `refresh_token` + `consumed_refresh_token`, then Health, Admin, Error Scenarios.\n\nEnvironments:\n- `log-gateway.postman_environment_local.json` (http://localhost:8080)\n- `log-gateway.postman_environment_staging.json`\n- `log-gateway.postman_environment_prod.json`\n\nSee `postman/README.md` for run instructions (Newman CLI).",
+    "description": "Postman collection for the CORTEX log-gateway service. Mirrors `scripts/smoke-p3-1.ps1` (Part 21 Levels 1-6) for every check expressible over HTTP. Folder order matters: Auth runs first to populate `jwt` + `refresh_token` + `consumed_refresh_token`, then Health, Admin, Error Scenarios.\n\nEnvironments:\n- `log-gateway.postman_environment_local.json` (http://localhost:8090)\n- `log-gateway.postman_environment_staging.json`\n- `log-gateway.postman_environment_prod.json`\n\nSee `postman/README.md` for run instructions (Newman CLI).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {

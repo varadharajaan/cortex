@@ -47,9 +47,9 @@ red.
 Sanity checks:
 
 ```bash
-curl -s http://localhost:8080/api/v1/health | jq
-curl -s http://localhost:8080/actuator/health | jq
-open http://localhost:8080/swagger-ui.html
+curl -s http://localhost:8090/api/v1/health | jq
+curl -s http://localhost:8090/actuator/health | jq
+open http://localhost:8090/swagger-ui.html
 ```
 
 ## Configuration
@@ -62,7 +62,7 @@ in production code - typed properties only (rule A6.1).
 |-----------------------------|--------------|------------------------------------|
 | `cortex.gateway.service`    | `log-gateway`| Logical service name in logs/metrics |
 | `cortex.gateway.environment`| `local`      | Deployment label (local/dev/staging/prod) |
-| `server.port`               | `8080`       | HTTP listen port                   |
+| `server.port`               | `8090`       | HTTP listen port                   |
 | `management.endpoints.web.exposure.include` | `health,info,metrics,prometheus` | Actuator surface |
 
 ### Profiles
