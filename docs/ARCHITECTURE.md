@@ -71,12 +71,17 @@ high-confidence anomalies are detected.
 | Module                   | Purpose                                                 | Port (local) |
 | ------------------------ | ------------------------------------------------------- | ------------ |
 | `log-agent-lib`          | Thin Java client SDK. Buffer, retry, gzip, sign.        | n/a (lib)    |
-| `log-gateway`            | Edge. Auth (JWT + API key), rate limit, multi-tenant.   | 8080         |
-| `log-ingest-service`     | Receives logs (REST), validates, publishes to bus.      | 8081         |
+| `log-gateway`            | Edge. Auth (JWT + API key), rate limit, multi-tenant.   | 8090         |
+| `log-ingest-service`     | Receives logs (REST), validates, publishes to bus.      | 8092         |
+| `log-echo-service`       | Throwaway downstream stub for gateway smoke tests (ADR-0016). | 8093 |
 | `log-processor-service`  | Consumes bus, AI enrichment (Spring AI), pushes onward. | 8082         |
 | `log-remediation-service`| Detects high-confidence anomalies; runs Ansible.        | 8083         |
 | `log-indexer-service`    | Persists to Postgres + Loki + Quickwit. Owns Quickwit.  | 8084         |
 | `log-monitoring-service` | SLO, alerting, OTel collection, Grafana datasource.     | 8085         |
+| `eureka-server`          | Local-dev service registry (ADR-0016). K8s uses Service DNS in prod. | 8761 |
+| `wiremock` (smoke only)  | Stubs the Ollama `/api/chat` upstream for P3.3 NL→LogQL tests (ADR-0018). | 8094 (host) |
+| `postgres` (smoke only)  | Local Postgres 16 for `log-ingest-service` Flyway baseline. | 5432 |
+| `redis` (smoke only)     | Bucket4j + Lettuce backend for distributed rate limiting (B5.1). | 6379 |
 
 All modules share the parent POM (`cortex-parent`) and inherit the same
 quality gates (Checkstyle, SpotBugs, JaCoCo, OWASP, Enforcer).

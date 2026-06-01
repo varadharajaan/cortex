@@ -55,7 +55,7 @@ OpenAI via `spring.profiles.active=prod` and a different starter artifact in
 a later sub-phase (out of scope for P3.3 -- locked here as the intended path).
 
 The smoke compose at `infra/local/docker-compose.smoke.yml` already runs
-WireMock on host port `8081`; we add a stub mapping
+WireMock on host port `8094`; we add a stub mapping
 `infra/local/wiremock/mappings/ollama-chat-happy.json` (and two more for the
 schema-miss and refusal paths) so the smoke script gets deterministic
 responses.

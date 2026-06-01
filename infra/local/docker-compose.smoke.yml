@@ -64,7 +64,7 @@ services:
     image: wiremock/wiremock:3.10.0
     container_name: cortex-smoke-wiremock
     ports:
-      - "8081:8080"
+      - "8094:8080"
     command:
       - --port=8080
       - --verbose

@@ -40,9 +40,9 @@ The service registers with Eureka at
 ## Verify
 
 ```powershell
-Invoke-RestMethod http://localhost:8090/actuator/health
+Invoke-RestMethod http://localhost:8093/actuator/health
 # {status: UP, ...}
 
-Invoke-RestMethod http://localhost:8090/echo/ping
+Invoke-RestMethod http://localhost:8093/echo/ping
 # upstream=log-echo-service, path=/echo/ping, method=GET, headers={...}
 ```

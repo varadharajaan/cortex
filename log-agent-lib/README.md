@@ -269,7 +269,7 @@ Once P3 is up:
 docker compose -f infra/docker/docker-compose.yml up -d log-gateway
 ```
 
-Then point the SDK at `http://localhost:8080/ingest` and watch the
+Then point the SDK at `http://localhost:8090/ingest` and watch the
 gateway logs.
 
 ---

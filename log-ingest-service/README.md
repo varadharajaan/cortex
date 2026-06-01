@@ -22,7 +22,7 @@ HTTP client that speaks the `LogEntry` contract.
 
 | Property                                  | Default                                        | Notes                                                                 |
 |-------------------------------------------|------------------------------------------------|-----------------------------------------------------------------------|
-| `server.port`                             | `8091`                                         | Module port (D8)                                                      |
+| `server.port`                             | `8092`                                         | Module port (D8)                                                      |
 | `spring.application.name`                 | `log-ingest-service`                           | Eureka application id                                                 |
 | `spring.datasource.url`                   | `jdbc:postgresql://localhost:5432/cortex_ingest` | Override via `CORTEX_INGEST_DB_URL`                                   |
 | `spring.datasource.username`              | `cortex_ingest`                                | Override via `CORTEX_INGEST_DB_USERNAME`                              |
@@ -66,7 +66,7 @@ docker compose -f infra\local\docker-compose.smoke.yml up -d postgres redis
     -Dspring-boot.run.fork=false -B
 
 # 4. Probe:
-Invoke-WebRequest http://localhost:8091/actuator/health
+Invoke-WebRequest http://localhost:8092/actuator/health
 $body = @{ entries = @(@{
     timestamp = (Get-Date).ToUniversalTime().ToString("o");
     level = "INFO";
@@ -74,7 +74,7 @@ $body = @{ entries = @(@{
     message = "hello"
     labels = @{ tenant = "cortex-dev" }
 }) } | ConvertTo-Json -Depth 4
-Invoke-RestMethod -Method Post -Uri http://localhost:8091/api/v1/ingest/batch `
+Invoke-RestMethod -Method Post -Uri http://localhost:8092/api/v1/ingest/batch `
     -ContentType application/json -Body $body
 ```
 

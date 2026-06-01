@@ -125,7 +125,7 @@ Negative / Open:
   registry is LOCAL ONLY and is replaced by Kubernetes `Service`
   DNS in prod.
 - Adds two ports to the local-dev surface (8761 Eureka, the
-  echo-service's 8090).
+  echo-service's 8093).
 
 Re-evaluation triggers:
 
