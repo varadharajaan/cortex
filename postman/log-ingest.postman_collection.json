@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e040",
-    "name": "log-ingest-service (P4.1 validate + persist raw)",
-    "description": "Smoke contract for log-ingest-service. P4.0 introduced POST /api/v1/ingest/batch returning 202 with no business logic. P4.1 lights up the persistence path: X-Tenant-Id is required, every batch entry is persisted to raw_logs as a row, server-computed event_id (SHA-256 of tenantId|service|ts.epochMicros|message|sortedLabelsJson) gives the UNIQUE (tenant_id, event_id) constraint a stable key, and the labels map roundtrips through Postgres JSONB. Cold-path duplicates are absorbed silently. Hot-path dedupe (Redis SETNX) + masking land in P4.2.",
+    "name": "log-ingest-service (P4.2 dedupe + mask)",
+    "description": "Smoke contract for log-ingest-service. P4.0 introduced POST /api/v1/ingest/batch returning 202. P4.1 lit up the persistence path with server-computed event_id + UNIQUE (tenant_id, event_id) cold-path dedupe + JSONB roundtrip. P4.2 layers Redis SETNX hot-path dedupe on the Idempotency-Key header, server-side PiiMasker (second layer after the agent), and publishes cortex.ingest.dedupe.hits + cortex.ingest.mask.applied Micrometer counters to /actuator/prometheus.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -252,6 +252,134 @@
               "pm.test('status 202', function () { pm.response.to.have.status(202); });",
               "const body = pm.response.json();",
               "pm.test('receivedCount echoes batch size on dedupe', function () { pm.expect(body.receivedCount).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.2 ingest/batch with Idempotency-Key first send -> 202 receivedCount=1",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
+          { "key": "Idempotency-Key", "value": "newman-p4-2-hot-key" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T10:00:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-2 hot-dedupe target\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount echoes batch size', function () { pm.expect(body.receivedCount).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.2 ingest/batch with same Idempotency-Key replay -> 202 hot-path absorbed",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
+          { "key": "Idempotency-Key", "value": "newman-p4-2-hot-key" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T10:00:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-2 hot-dedupe target\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount echoes batch size on replay', function () { pm.expect(body.receivedCount).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.2 ingest/batch with PII -> 202 + mask-applied counter increments",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T10:05:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"user alice@example.com paid via card 4111111111111111 token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.2 actuator/prometheus exposes dedupe + mask counters",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/actuator/prometheus",
+          "host": ["{{base_url}}"],
+          "path": ["actuator", "prometheus"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.text();",
+              "pm.test('cortex_ingest_dedupe_hits_total exposed', function () { pm.expect(body).to.include('cortex_ingest_dedupe_hits_total'); });",
+              "pm.test('cortex_ingest_dedupe_hits_total tagged path=hot', function () { pm.expect(body).to.match(/cortex_ingest_dedupe_hits_total\\{[^}]*path=\"hot\"[^}]*\\}\\s+[0-9.]+/); });",
+              "pm.test('cortex_ingest_mask_applied_total exposed', function () { pm.expect(body).to.include('cortex_ingest_mask_applied_total'); });"
             ]
           }
         }

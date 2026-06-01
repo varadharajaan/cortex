@@ -29,8 +29,9 @@ import org.springframework.data.relational.core.mapping.Table;
  * @param level          severity name (TRACE / DEBUG / INFO / WARN /
  *                       ERROR)
  * @param service        logical service name from the inbound entry
- * @param message        raw human-readable message (PII masking
- *                       lands in P4.2)
+ * @param message        human-readable message AFTER the server-side
+ *                       {@link io.cortex.agent.pii.PiiMasker}
+ *                       second-layer mask (P4.2 / D4 / spec Sec 5.3)
  * @param labels         flat string-string label map persisted as
  *                       JSONB; never {@code null}
  * @param idempotencyKey verbatim {@code Idempotency-Key} header from
