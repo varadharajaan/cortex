@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.exception.GlobalExceptionHandler;
+import io.cortex.ingest.security.ServiceJwtClaimExtractor;
 import io.cortex.ingest.security.ServiceJwtProperties;
 import io.cortex.ingest.service.IngestService;
 import io.cortex.ingest.tenant.TenantResolver;
@@ -43,6 +44,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @WebMvcTest(IngestController.class)
 @Import({IngestControllerTest.TestBeans.class,
         TenantResolver.class,
+        ServiceJwtClaimExtractor.class,
         GlobalExceptionHandler.class})
 class IngestControllerTest {
 
@@ -62,7 +64,7 @@ class IngestControllerTest {
     @Test
     void postBatchReturnsAccepted() throws Exception {
         when(this.ingestService.acceptBatch(
-                any(IngestBatchRequest.class), eq("cortex-dev"), isNull()))
+                any(IngestBatchRequest.class), eq("cortex-dev"), isNull(), any()))
                 .thenReturn(new IngestAcceptedResponse(
                         1,
                         OffsetDateTime.of(2026, 5, 31, 12, 0, 0, 0, ZoneOffset.UTC)));
@@ -99,7 +101,7 @@ class IngestControllerTest {
     @Test
     void postBatchForwardsIdempotencyKey() throws Exception {
         when(this.ingestService.acceptBatch(
-                any(IngestBatchRequest.class), eq("cortex-dev"), eq("idem-42")))
+                any(IngestBatchRequest.class), eq("cortex-dev"), eq("idem-42"), any()))
                 .thenReturn(new IngestAcceptedResponse(
                         1,
                         OffsetDateTime.of(2026, 5, 31, 12, 0, 0, 0, ZoneOffset.UTC)));
@@ -125,7 +127,7 @@ class IngestControllerTest {
                 .andExpect(status().isAccepted());
 
         verify(this.ingestService).acceptBatch(
-                any(IngestBatchRequest.class), eq("cortex-dev"), eq("idem-42"));
+                any(IngestBatchRequest.class), eq("cortex-dev"), eq("idem-42"), any());
     }
 
     /**
@@ -155,7 +157,7 @@ class IngestControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode", equalTo("VALIDATION_FAILED")))
                 .andExpect(jsonPath("$.detail",
-                        equalTo("X-Tenant-Id header is required")));
+                        equalTo("X-Tenant-Id header is required when no service JWT is present")));
     }
 
     /**

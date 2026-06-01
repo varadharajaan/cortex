@@ -8,6 +8,8 @@ import io.cortex.agent.pii.PiiMasker;
 import io.cortex.ingest.dedupe.IdempotencyDedupeService;
 import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
+import io.cortex.ingest.enrichment.EnrichmentService;
+import io.cortex.ingest.enrichment.LabelNormalizer;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
 import io.cortex.ingest.service.IngestService;
@@ -99,6 +101,14 @@ public class IngestServiceImpl implements IngestService {
     private final Optional<IdempotencyDedupeService> dedupeService;
 
     /**
+     * Server-side enrichment orchestrator (P4.3); applied per
+     * entry before {@code event_id} hashing so the dedupe key is
+     * stable for clients that vary only in label casing or
+     * whitespace.
+     */
+    private final EnrichmentService enrichmentService;
+
+    /**
      * Counter incremented once per ENTRY absorbed by the hot-path
      * dedupe (Redis SETNX rejected the batch). Tagged
      * {@code path=hot}.
@@ -122,34 +132,38 @@ public class IngestServiceImpl implements IngestService {
     /**
      * Constructs the persisting service implementation.
      *
-     * @param clock         clock used for the acceptance timestamp;
-     *                      must not be {@code null}
-     * @param repository    raw-logs JDBC repository; must not be
-     *                      {@code null}
-     * @param objectMapper  shared Jackson encoder used to
-     *                      canonicalise the {@code labels} map for
-     *                      the event-id pre-image; must not be
-     *                      {@code null}
-     * @param dedupeService optional hot-path dedupe (D3); empty when
-     *                      the bean is disabled or not on the
-     *                      classpath
-     * @param meterRegistry Micrometer registry; must not be
-     *                      {@code null}. The dedupe (hot / cold)
-     *                      and mask counters are registered eagerly
-     *                      at construction so they appear in the
-     *                      {@code /actuator/prometheus} scrape even
-     *                      before the first batch arrives (P4.2 /
-     *                      ADR-0023)
+     * @param clock             clock used for the acceptance timestamp;
+     *                          must not be {@code null}
+     * @param repository        raw-logs JDBC repository; must not be
+     *                          {@code null}
+     * @param objectMapper      shared Jackson encoder used to
+     *                          canonicalise the {@code labels} map for
+     *                          the event-id pre-image; must not be
+     *                          {@code null}
+     * @param dedupeService     optional hot-path dedupe (D3); empty when
+     *                          the bean is disabled or not on the
+     *                          classpath
+     * @param enrichmentService server-side enrichment orchestrator
+     *                          (P4.3); must not be {@code null}
+     * @param meterRegistry     Micrometer registry; must not be
+     *                          {@code null}. The dedupe (hot / cold)
+     *                          and mask counters are registered eagerly
+     *                          at construction so they appear in the
+     *                          {@code /actuator/prometheus} scrape even
+     *                          before the first batch arrives (P4.2 /
+     *                          ADR-0023)
      */
     public IngestServiceImpl(final Clock clock,
                              final RawLogRepository repository,
                              final ObjectMapper objectMapper,
                              final Optional<IdempotencyDedupeService> dedupeService,
+                             final EnrichmentService enrichmentService,
                              final MeterRegistry meterRegistry) {
         this.clock = clock;
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.dedupeService = dedupeService;
+        this.enrichmentService = enrichmentService;
         this.dedupeHotCounter = Counter.builder(METRIC_DEDUPE_HITS)
                 .description("Entries absorbed by ingest dedupe, tagged hot or cold path")
                 .tag("path", "hot")
@@ -166,7 +180,8 @@ public class IngestServiceImpl implements IngestService {
     @Override
     public IngestAcceptedResponse acceptBatch(final IngestBatchRequest request,
                                               final String tenantId,
-                                              final String idempotencyKey) {
+                                              final String idempotencyKey,
+                                              final String correlationId) {
         final OffsetDateTime receivedAt = OffsetDateTime.now(this.clock);
         final int total = request.entries().size();
         if (this.isHotPathHit(tenantId, idempotencyKey)) {
@@ -175,57 +190,87 @@ public class IngestServiceImpl implements IngestService {
                     tenantId, total);
             return new IngestAcceptedResponse(total, receivedAt);
         }
-        this.persistBatchWithMasking(request, tenantId, idempotencyKey,
-                receivedAt.toInstant(), total);
+        this.persistBatchWithMasking(request,
+                new BatchContext(tenantId, idempotencyKey, correlationId,
+                        receivedAt.toInstant()),
+                total);
         return new IngestAcceptedResponse(total, receivedAt);
+    }
+
+    /**
+     * Per-batch context bundle so downstream private helpers stay
+     * under the project's 6-parameter Checkstyle ceiling.
+     *
+     * @param tenantId          resolved tenant id
+     * @param idempotencyKey    raw {@code Idempotency-Key} header
+     *                          value (may be {@code null})
+     * @param correlationId     resolved correlation / trace id
+     * @param receivedAtInstant batch acceptance timestamp
+     */
+    private record BatchContext(String tenantId,
+                                String idempotencyKey,
+                                String correlationId,
+                                Instant receivedAtInstant) {
     }
 
     /**
      * Iterates the batch, computing each {@code event_id} against
      * the ORIGINAL message (so dedupe is not fooled by
      * post-masking collisions like
-     * {@code alice@x.com -> <email> <- bob@x.com}), then applies
-     * {@link PiiMasker#mask(String)} BEFORE persistence so the row
-     * stored in {@code raw_logs.message} is already masked
-     * (D4 / spec Sec 5.3 / LD4 second-layer mask).
+     * {@code alice@x.com -> <email> <- bob@x.com}) and the
+     * NORMALISED inbound labels (so dedupe survives clients that
+     * vary only in label casing). Server-stamped labels
+     * ({@code tenant}, {@code trace_id}, {@code geo_country}) are
+     * intentionally EXCLUDED from the hash so a fresh
+     * per-request {@code trace_id} does not break cold-path
+     * dedupe; they are persisted via the
+     * {@link EnrichmentService#enrich enriched} labels map.
+     *
+     * <p>{@link PiiMasker#mask(String)} is then applied BEFORE
+     * persistence so the row stored in {@code raw_logs.message}
+     * is already masked (D4 / spec Sec 5.3 / LD4 second-layer
+     * mask).</p>
      *
      * <p>Per-batch totals are surfaced at INFO when non-zero:
      * {@code pii-masked} counts PII substitutions across all
-     * entries, {@code dedupe-absorbed} counts cold-path duplicates
-     * silently swallowed by the
+     * entries, {@code dedupe-absorbed} counts cold-path
+     * duplicates silently swallowed by the
      * {@code UNIQUE (tenant_id, event_id)} constraint.</p>
      *
-     * @param request           validated inbound batch
-     * @param tenantId          resolved tenant id
-     * @param idempotencyKey    raw {@code Idempotency-Key} header
-     *                          value (may be {@code null})
-     * @param receivedAtInstant batch acceptance timestamp
-     * @param total             {@code request.entries().size()};
-     *                          pre-computed by the caller
+     * @param request validated inbound batch
+     * @param ctx     per-batch context (tenant id, idempotency
+     *                key, correlation id, acceptance timestamp)
+     * @param total   {@code request.entries().size()}; pre-computed
+     *                by the caller
      */
     private void persistBatchWithMasking(final IngestBatchRequest request,
-                                         final String tenantId,
-                                         final String idempotencyKey,
-                                         final Instant receivedAtInstant,
+                                         final BatchContext ctx,
                                          final int total) {
         int persistedCount = 0;
         int piiAppliedTotal = 0;
         for (final LogEntry entry : request.entries()) {
-            final String eventId = this.computeEventId(tenantId, entry);
+            final Map<String, String> normalisedLabels =
+                    LabelNormalizer.normalize(entry.labels());
+            final String eventId = this.computeEventId(
+                    ctx.tenantId(), entry, normalisedLabels);
+            final Map<String, String> enrichedLabels =
+                    this.enrichmentService.enrich(
+                            entry, ctx.tenantId(), ctx.correlationId());
             final MaskResult masked = PiiMasker.mask(entry.message());
             piiAppliedTotal += masked.appliedCount();
-            final RawLog raw = this.toRawLog(entry, tenantId, eventId, idempotencyKey,
-                    receivedAtInstant, masked.text());
-            persistedCount += this.saveAbsorbingDuplicate(raw, tenantId, eventId);
+            final RawLog raw = this.toRawLog(
+                    entry, ctx, eventId, masked.text(), enrichedLabels);
+            persistedCount += this.saveAbsorbingDuplicate(
+                    raw, ctx.tenantId(), eventId);
         }
         if (piiAppliedTotal > 0) {
             this.maskAppliedCounter.increment(piiAppliedTotal);
             LOG.info("ingest-batch pii-masked tenant={} appliedCount={}",
-                    tenantId, piiAppliedTotal);
+                    ctx.tenantId(), piiAppliedTotal);
         }
         if (persistedCount < total) {
             LOG.info("ingest-batch dedupe-absorbed tenant={} accepted={} duplicates={}",
-                    tenantId, total, total - persistedCount);
+                    ctx.tenantId(), total, total - persistedCount);
         }
     }
 
@@ -306,33 +351,34 @@ public class IngestServiceImpl implements IngestService {
      * see {@code persistBatchWithMasking} for why the original is
      * still used for the {@code event_id} hash.</p>
      *
-     * @param entry             validated inbound entry
-     * @param tenantId          resolved tenant id
-     * @param eventId           pre-computed SHA-256 hex event id
-     * @param idempotencyKey    raw {@code Idempotency-Key} header
-     *                          value (may be {@code null})
-     * @param receivedAtInstant batch acceptance timestamp
-     * @param message           PII-masked message to persist
+     * @param entry          validated inbound entry
+     * @param ctx            per-batch context (tenant id,
+     *                       idempotency key, correlation id,
+     *                       acceptance timestamp)
+     * @param eventId        pre-computed SHA-256 hex event id
+     * @param message        PII-masked message to persist
+     * @param enrichedLabels normalised + server-stamped labels
+     *                       to persist into
+     *                       {@code raw_logs.labels} (P4.3)
      * @return new {@link RawLog} ready for
      *         {@code repository.save(...)}
      */
     private RawLog toRawLog(final LogEntry entry,
-                            final String tenantId,
+                            final BatchContext ctx,
                             final String eventId,
-                            final String idempotencyKey,
-                            final Instant receivedAtInstant,
-                            final String message) {
+                            final String message,
+                            final Map<String, String> enrichedLabels) {
         return new RawLog(
                 null,
-                tenantId,
+                ctx.tenantId(),
                 eventId,
                 entry.timestamp(),
                 entry.level().name(),
                 entry.service(),
                 message,
-                entry.labels(),
-                idempotencyKey,
-                receivedAtInstant);
+                enrichedLabels,
+                ctx.idempotencyKey(),
+                ctx.receivedAtInstant());
     }
 
     /**
@@ -340,15 +386,25 @@ public class IngestServiceImpl implements IngestService {
      *
      * <p>The pre-image concatenates {@code tenantId}, {@code service},
      * the event timestamp in epoch microseconds, {@code message}, and
-     * a canonical (sorted-key) JSON encoding of the labels. SHA-256
-     * collapses the pre-image to a stable 64-char hex digest matching
-     * the {@code raw_logs.event_id VARCHAR(64)} column width.</p>
+     * a canonical (sorted-key) JSON encoding of the
+     * NORMALISED inbound labels. Server-stamped labels
+     * ({@code tenant}, {@code trace_id}, {@code geo_country}) are
+     * intentionally excluded from the pre-image so dedupe is not
+     * sensitive to a fresh-minted {@code trace_id} on each retry
+     * (P4.3). SHA-256 collapses the pre-image to a stable 64-char
+     * hex digest matching the {@code raw_logs.event_id
+     * VARCHAR(64)} column width.</p>
      *
-     * @param tenantId resolved tenant id; must not be {@code null}
-     * @param entry    inbound log entry; must not be {@code null}
+     * @param tenantId         resolved tenant id; must not be {@code null}
+     * @param entry            inbound log entry; must not be {@code null}
+     * @param normalisedLabels labels post-normalisation
+     *                         (lowercased + trimmed); must not be
+     *                         {@code null}
      * @return 64-char lowercase SHA-256 hex digest
      */
-    private String computeEventId(final String tenantId, final LogEntry entry) {
+    private String computeEventId(final String tenantId,
+                                  final LogEntry entry,
+                                  final Map<String, String> normalisedLabels) {
         final Instant ts = entry.timestamp();
         final long micros = ts.getEpochSecond() * MICROS_PER_SECOND
                 + ts.getNano() / NANOS_PER_MICRO;
@@ -358,7 +414,7 @@ public class IngestServiceImpl implements IngestService {
                 entry.service(),
                 Long.toString(micros),
                 entry.message(),
-                this.canonicaliseLabels(entry.labels()));
+                this.canonicaliseLabels(normalisedLabels));
         return sha256Hex(preimage);
     }
 

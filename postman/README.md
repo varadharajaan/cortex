@@ -12,7 +12,7 @@ file per deployment target.
 | `log-gateway.postman_environment_local.json`      | Local dev (`http://localhost:8090`).              |
 | `log-gateway.postman_environment_staging.json`    | Staging cluster.                                  |
 | `log-gateway.postman_environment_prod.json`       | Production cluster.                               |
-| `log-ingest.postman_collection.json`              | Ingest happy-path + RFC 7807 error contract + P4.1 multi-tenant/jsonb labels + P4.2 Redis SETNX hot-path dedupe (Idempotency-Key) + server-side PII masking + Prometheus counter scrape. |
+| `log-ingest.postman_collection.json`              | Ingest happy-path + RFC 7807 error contract + P4.1 multi-tenant/jsonb labels + P4.2 Redis SETNX hot-path dedupe (Idempotency-Key) + server-side PII masking + Prometheus counter scrape + P4.3 server-side enrichment (correlation-id, JWT tid, label normalization, geo_country stub). |
 | `log-ingest.postman_environment_local.json`       | Local dev (`http://localhost:8092`).              |
 
 Additional services land here as P4-P8 progress.
@@ -118,7 +118,7 @@ Every environment file defines:
 
 Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh_token` for the later folders. Run with `--bail` to fail fast on the first regression. The Discovery + LogsRoute + SearchRoute folders all require the throwaway `log-echo-service` stub + the standalone Eureka registry to be running (see `scripts/smoke-p3-0b.ps1` and `scripts/smoke-p3-4.ps1`); skip those folders when running Newman against a deployment that does not include `log-echo-service`. The NlQuery folder requires WireMock running on `:8094` with the `infra/local/wiremock/mappings/` stubs mounted AND the gateway booted with `SPRING_AI_OLLAMA_BASE_URL=http://localhost:8094`; the sub-bucket-exhaustion 429 case is covered by `scripts/smoke-p3-3.ps1` only because it needs deterministic Redis state. The AuthLogin sub-bucket exhaustion case (`@RateLimitFeature` on `/api/v1/auth/login`, P3.4 / ADR-0021) is likewise covered only by `scripts/smoke-p3-4.ps1` because Newman would otherwise lock the `admin` principal's login bucket for the rest of the run. Reset `cortex:rl:nlq:*` + `cortex:rl:auth:*` keys in Redis between the smoke and the newman run so the NlQuery + Auth folders start with full buckets. The RateLimit folder MUST run LAST because its 429 test floods ~110 requests against `/echo/ping` to exhaust the principal-keyed Bucket4j counter in Redis; any subsequent authenticated, non-excluded request would also see 429 until the 1-minute refill window elapses. The RateLimit folder requires a live Redis (see `scripts/smoke-p3-2.ps1` and `infra/local/docker-compose.smoke.yml`); skip it when running Newman against a deployment where `cortex.gateway.rate-limit.enabled=false`.
 
-### log-ingest collection (P4.2, 12 requests / 30 assertions)
+### log-ingest collection (P4.3, 16 requests / 38 assertions)
 
 | # | Request                                                                                | Purpose                                                                                                          |
 |---|----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
@@ -134,6 +134,10 @@ Folder order matters: Auth populates `jwt` + `refresh_token` + `consumed_refresh
 |10 | POST `/api/v1/ingest/batch` (P4.2, SAME `Idempotency-Key` replay)                      | 202 absorbed by hot path; `cortex.ingest.dedupe.hits{path=hot}` increments (D3 contract).                        |
 |11 | POST `/api/v1/ingest/batch` (P4.2, PII in `message`)                                   | 202; persisted row has `message` rewritten with mask tokens (`<EMAIL>`, `<PHONE>`, etc.); D4 server-side leg.    |
 |12 | GET  `/actuator/prometheus`                                                            | 200 + scrape contains `cortex_ingest_dedupe_hits_total` (with `path` tag) + `cortex_ingest_mask_applied_total`. |
+|13 | POST `/api/v1/ingest/batch` (P4.3, `X-Correlation-Id`)                                 | 202 + `receivedCount=1`; correlation header propagates to `labels.trace_id` on the persisted row (DB-asserted by `scripts/smoke-p4-3.ps1` step 04, LD23 mirror). |
+|14 | POST `/api/v1/ingest/batch` (P4.3, JWT `tid` claim + `X-Tenant-Id`)                    | 202 + `receivedCount=1`; JWT `tid` wins -- persisted row `labels.tenant` matches the JWT claim, header is ignored (ADR-0024 D2; DB-asserted by smoke-p4-3.ps1 step 06).    |
+|15 | POST `/api/v1/ingest/batch` (P4.3, mixed-case + padded label keys)                     | 202 + `receivedCount=1`; persisted row collapses `Env` -> `env` and trims `"  Region  "` -> `region: eu-west` (ADR-0024 D4; DB-asserted by smoke-p4-3.ps1 step 08). |
+|16 | POST `/api/v1/ingest/batch` (P4.3, geo stub)                                           | 202 + `receivedCount=1`; persisted row has `labels.geo_country = unknown` and `received_at` populated by server (ADR-0024 D6; DB-asserted by smoke-p4-3.ps1 step 09). |
 
 Just import and run: open Postman, import `log-ingest.postman_collection.json` and `log-ingest.postman_environment_local.json`, pick the `log-ingest-service :: local` environment, boot the service with `mvnw -pl log-ingest-service spring-boot:run` (requires Postgres on :5432 and Redis on :6379 from `infra/local/docker-compose.smoke.yml`), and hit "Run collection". Headless equivalent:
 
@@ -144,7 +148,7 @@ newman run postman/log-ingest.postman_collection.json \
        --reporter-junit-export target/newman/log-ingest-junit.xml
 ```
 
-Mirror in `scripts/smoke-p4-0.ps1` / `scripts/smoke-p4-1.ps1` / `scripts/smoke-p4-2.ps1` (LD23 / Part 26.2 closed-loop rule): every HTTP-observable assertion in the collection above has a matching assertion in the per-phase smoke script (and vice versa). Items 2-5 mirror smoke-p4-0; items 6-8 mirror smoke-p4-1; items 9-12 mirror smoke-p4-2. The smoke-only assertions (DB row-count baselines, `redis-cli GET`, run-log ERROR grep, eureka registry scrape) are intentionally not in Newman because they are not HTTP-observable from the service boundary.
+Mirror in `scripts/smoke-p4-0.ps1` / `scripts/smoke-p4-1.ps1` / `scripts/smoke-p4-2.ps1` / `scripts/smoke-p4-3.ps1` (LD23 / Part 26.2 closed-loop rule): every HTTP-observable assertion in the collection above has a matching assertion in the per-phase smoke script (and vice versa). Items 2-5 mirror smoke-p4-0; items 6-8 mirror smoke-p4-1; items 9-12 mirror smoke-p4-2; items 13-16 mirror smoke-p4-3. The smoke-only assertions (DB row-count baselines, `redis-cli GET`, `labels::text` JSON inspection, run-log ERROR grep, eureka registry scrape) are intentionally not in Newman because they are not HTTP-observable from the service boundary.
 
 ## Rules anchor
 

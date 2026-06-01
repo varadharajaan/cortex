@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e040",
-    "name": "log-ingest-service (P4.2 dedupe + mask)",
-    "description": "Smoke contract for log-ingest-service. P4.0 introduced POST /api/v1/ingest/batch returning 202. P4.1 lit up the persistence path with server-computed event_id + UNIQUE (tenant_id, event_id) cold-path dedupe + JSONB roundtrip. P4.2 layers Redis SETNX hot-path dedupe on the Idempotency-Key header, server-side PiiMasker (second layer after the agent), and publishes cortex.ingest.dedupe.hits + cortex.ingest.mask.applied Micrometer counters to /actuator/prometheus.",
+    "name": "log-ingest-service (P4.3 enrich)",
+    "description": "Smoke contract for log-ingest-service. P4.0 introduced POST /api/v1/ingest/batch returning 202. P4.1 lit up the persistence path with server-computed event_id + UNIQUE (tenant_id, event_id) cold-path dedupe + JSONB roundtrip. P4.2 layered Redis SETNX hot-path dedupe on the Idempotency-Key header, server-side PiiMasker (second layer after the agent), and publishes cortex.ingest.dedupe.hits + cortex.ingest.mask.applied Micrometer counters to /actuator/prometheus. P4.3 adds server-side enrichment: X-Request-Id / X-Correlation-Id propagation onto labels.trace_id, JWT tid claim resolution (precedence over X-Tenant-Id), label normalization (lowercase keys, trim values, last-write-wins), and a geo_country stub label that is always present (ADR-0024).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -380,6 +380,144 @@
               "pm.test('cortex_ingest_dedupe_hits_total exposed', function () { pm.expect(body).to.include('cortex_ingest_dedupe_hits_total'); });",
               "pm.test('cortex_ingest_dedupe_hits_total tagged path=hot', function () { pm.expect(body).to.match(/cortex_ingest_dedupe_hits_total\\{[^}]*path=\"hot\"[^}]*\\}\\s+[0-9.]+/); });",
               "pm.test('cortex_ingest_mask_applied_total exposed', function () { pm.expect(body).to.include('cortex_ingest_mask_applied_total'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.3 ingest/batch X-Correlation-Id propagation -> 202 + receivedCount=1",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
+          { "key": "X-Correlation-Id", "value": "newman-p4-3-corr-001" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T11:01:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-3 newman corr propagation\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });",
+              "pm.test('receivedAt present', function () { pm.expect(body.receivedAt).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.3 ingest/batch JWT tid claim resolves tenant (X-Tenant-Id ignored) -> 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" },
+          { "key": "X-Cortex-Service-JWT", "value": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ0aWQiOiJwNC0zLWp3dC1wb3N0bWFuLXRlbmFudCJ9." }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T11:03:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-3 newman jwt-tid wins\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });",
+              "// Persisted-row assertion that labels.tenant == JWT tid is covered by scripts/smoke-p4-3.ps1 step 06 (LD23 mirror)."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.3 ingest/batch label normalization (mixed-case + padded) -> 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T11:05:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-3 newman label normalize\",\n      \"labels\": { \"Env\": \"newman\", \"  Region  \": \"  eu-west  \" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });",
+              "// Persisted-row assertion (labels.env collapsed lowercase, labels.region trimmed) is covered by scripts/smoke-p4-3.ps1 step 08 (LD23 mirror)."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "P4.3 ingest/batch geo_country stub stamped on persisted row -> 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" },
+          { "key": "X-Tenant-Id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-02T11:06:00Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman\",\n      \"message\": \"p4-3 newman geo stub\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ingest/batch",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ingest", "batch"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });",
+              "// Persisted-row assertion (labels.geo_country == 'unknown', received_at not null) is covered by scripts/smoke-p4-3.ps1 step 09 (LD23 mirror)."
             ]
           }
         }
