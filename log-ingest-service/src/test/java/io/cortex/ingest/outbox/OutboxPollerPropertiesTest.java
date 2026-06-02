@@ -67,4 +67,51 @@ class OutboxPollerPropertiesTest {
 
         assertThat(props.nextBackoff(1)).isEqualTo(Duration.ofMillis(500));
     }
+
+    /**
+     * P4.4c retry-exhausted boundary (ADR-0027 D2): the row hits
+     * the DLQ path when the uncapped exponential backoff for the
+     * supplied attempt count would reach or exceed
+     * {@code backoffMaxMs}.
+     */
+    @Test
+    void isRetryExhaustedFlipsTrueAtBackoffCap() {
+        final OutboxPollerProperties.PollerProps props =
+                new OutboxPollerProperties.PollerProps(true, 1_000L, 100, 250L, 4_000L);
+
+        // 250 * 2^(n-1) values: 250, 500, 1000, 2000, 4000, 8000, ...
+        assertThat(props.isRetryExhausted(1)).isFalse();
+        assertThat(props.isRetryExhausted(2)).isFalse();
+        assertThat(props.isRetryExhausted(3)).isFalse();
+        assertThat(props.isRetryExhausted(4)).isFalse();
+        assertThat(props.isRetryExhausted(5)).isTrue();
+        assertThat(props.isRetryExhausted(6)).isTrue();
+        assertThat(props.isRetryExhausted(1_000)).isTrue();
+    }
+
+    /**
+     * When {@code backoffMaxMs < backoffInitialMs} the very first
+     * failure is retry-exhausted (the row has no valid retry slot
+     * below the cap), so the DLQ branch fires immediately.
+     */
+    @Test
+    void isRetryExhaustedFlipsTrueOnFirstAttemptWhenCapBelowInitial() {
+        final OutboxPollerProperties.PollerProps props =
+                new OutboxPollerProperties.PollerProps(true, 100L, 100, 1_000L, 1L);
+
+        assertThat(props.isRetryExhausted(1)).isTrue();
+    }
+
+    /**
+     * Pathological attempt counts do not overflow the shift; the
+     * predicate returns {@code true} for any saturating shift.
+     */
+    @Test
+    void isRetryExhaustedHandlesOverflow() {
+        final OutboxPollerProperties.PollerProps props =
+                new OutboxPollerProperties.PollerProps(true, 100L, 100, 1_000L, 60_000L);
+
+        assertThat(props.isRetryExhausted(Long.SIZE)).isTrue();
+        assertThat(props.isRetryExhausted(Integer.MAX_VALUE)).isTrue();
+    }
 }

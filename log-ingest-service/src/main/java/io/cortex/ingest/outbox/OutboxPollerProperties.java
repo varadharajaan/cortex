@@ -61,6 +61,39 @@ public record OutboxPollerProperties(
             final long capped = Math.min(doubled, Math.max(this.backoffMaxMs, base));
             return Duration.ofMillis(capped);
         }
+
+        /**
+         * Returns {@code true} when the uncapped exponential backoff
+         * for {@code attempts} has reached or exceeded
+         * {@link #backoffMaxMs}, i.e. the row has hit the retry
+         * ceiling and the P4.4c DLQ branch (ADR-0027 D2) should
+         * take over instead of rescheduling another retry.
+         *
+         * <p>Decision boundary lives here (rather than in
+         * {@link OutboxPoller}) so the test surface can exercise the
+         * math in isolation and the ADR-D2 contract is enforced by
+         * the configuration root, not by the caller.</p>
+         *
+         * @param attempts attempt count for the failed publish (1
+         *                 after the first failure, 2 after the
+         *                 second, etc.)
+         * @return {@code true} when the row should be DLQ'd; {@code
+         *         false} when {@link #nextBackoff(int)} should be
+         *         used to reschedule another retry
+         */
+        public boolean isRetryExhausted(final int attempts) {
+            final long base = Math.max(this.backoffInitialMs, 1L);
+            final long cap = Math.max(this.backoffMaxMs, base);
+            final int shift = Math.max(0, attempts - 1);
+            if (shift >= Long.SIZE - 1) {
+                return true;
+            }
+            final long uncapped = base << shift;
+            if (uncapped < 0L) {
+                return true;
+            }
+            return uncapped >= cap;
+        }
     }
 
     /**

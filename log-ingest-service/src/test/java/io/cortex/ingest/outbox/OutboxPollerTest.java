@@ -6,40 +6,46 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.cloudevents.jackson.JsonFormat;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.support.SendResult;
 
 /**
- * Unit tests for {@link OutboxPoller} (P4.4b / ADR-0026).
+ * Unit tests for {@link OutboxPoller} (P4.4b / ADR-0026 +
+ * P4.4c / ADR-0027).
  *
- * <p>Mocks the {@link OutboxRepository} and {@link KafkaTemplate}
- * so the test runs without Postgres or Kafka. Verifies the three
- * boundary cases of the per-row publish loop:</p>
+ * <p>Mocks {@link OutboxRepository} and {@link OutboxEventPublisher}
+ * so the test runs without Postgres or Kafka. Covers the four
+ * branches of the per-row publish loop:</p>
  *
  * <ul>
  *   <li>Master switch OFF skips the fetch entirely.</li>
- *   <li>Successful send marks the row PUBLISHED.</li>
- *   <li>Broker exception (sync throw OR failed future) bumps
- *       attempts, computes exponential backoff, persists a
- *       truncated error string, and leaves the row PENDING.</li>
+ *   <li>Successful send marks the row PUBLISHED and bumps the
+ *       {@value OutboxMetrics#METRIC_PUBLISHED} counter tagged with
+ *       {@code (topic, tenant_id)}.</li>
+ *   <li>Publish exception with a row that has NOT yet hit the
+ *       backoff cap: row stays PENDING, attempts++,
+ *       {@value OutboxMetrics#METRIC_FAILED} counter bumped with
+ *       {@code (topic, tenant_id, reason)} tags.</li>
+ *   <li>Publish exception with a row that DID hit the backoff cap
+ *       (P4.4c retry-exhausted boundary per ADR-0027 D2): row
+ *       routed to DLQ via {@code publishDlq}, flipped to DEAD,
+ *       {@value OutboxMetrics#METRIC_DLQ} counter bumped.</li>
  * </ul>
  */
 class OutboxPollerTest {
@@ -53,12 +59,14 @@ class OutboxPollerTest {
     /** Fixed wall-clock so backoff math is deterministic. */
     private static final Instant NOW = Instant.parse("2026-06-02T12:00:00Z");
 
+    /** Sample tenant id shared across rows + counter-tag lookups. */
+    private static final String TENANT = "cortex-dev";
+
     /** Mocked outbox repository. */
     private OutboxRepository repository;
 
-    /** Mocked Kafka producer template. */
-    @SuppressWarnings("unchecked")
-    private KafkaTemplate<byte[], byte[]> kafkaTemplate;
+    /** Mocked publisher seam (Kafka impl is exercised separately in its own test). */
+    private OutboxEventPublisher publisher;
 
     /** Real envelope builder; the test verifies its output passes through. */
     private CloudEventEnvelopeBuilder envelopeBuilder;
@@ -68,6 +76,9 @@ class OutboxPollerTest {
 
     /** Real Micrometer registry; counters verified via {@code .counter(...).count()}. */
     private MeterRegistry meterRegistry;
+
+    /** Tagged-counter helper backed by {@link #meterRegistry}. */
+    private OutboxMetrics metrics;
 
     /** SUT - recreated per test. */
     private OutboxPoller poller;
@@ -79,28 +90,28 @@ class OutboxPollerTest {
 
     /** Resets mocks and rewires the SUT before each test. */
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void initPoller() {
         this.repository = Mockito.mock(OutboxRepository.class);
-        this.kafkaTemplate = Mockito.mock(KafkaTemplate.class);
+        this.publisher = Mockito.mock(OutboxEventPublisher.class);
         this.properties = new OutboxPollerProperties(
                 new OutboxPollerProperties.PollerProps(true, 1_000L, 100, 250L, 60_000L),
                 new OutboxPollerProperties.CloudEventProps(SOURCE, TYPE));
         this.envelopeBuilder = new CloudEventEnvelopeBuilder(
                 this.properties, Clock.fixed(NOW, ZoneOffset.UTC));
         this.meterRegistry = new SimpleMeterRegistry();
+        this.metrics = new OutboxMetrics(this.meterRegistry);
         this.poller = new OutboxPoller(
                 this.repository,
                 this.envelopeBuilder,
-                this.kafkaTemplate,
+                this.publisher,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 this.properties,
-                this.meterRegistry);
+                this.metrics);
     }
 
     /**
      * Disabled master switch short-circuits before any repository
-     * or broker calls.
+     * or publisher calls.
      */
     @Test
     void disabledSwitchSkipsFetchAndPublish() {
@@ -110,23 +121,22 @@ class OutboxPollerTest {
         this.poller = new OutboxPoller(
                 this.repository,
                 this.envelopeBuilder,
-                this.kafkaTemplate,
+                this.publisher,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 this.properties,
-                this.meterRegistry);
+                this.metrics);
 
         this.poller.tick();
 
         verifyNoInteractions(this.repository);
-        verifyNoInteractions(this.kafkaTemplate);
+        verifyNoInteractions(this.publisher);
     }
 
     /**
-     * Empty due-list does NOT call {@code KafkaTemplate.send} and
+     * Empty due-list does NOT call {@code publisher.publish} and
      * returns zero from {@link OutboxPoller#drainOnce()}.
      */
     @Test
-    @SuppressWarnings("unchecked")
     void noDueRowsSkipsSend() {
         when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
                 .thenReturn(List.of());
@@ -134,22 +144,20 @@ class OutboxPollerTest {
         final int processed = this.poller.drainOnce();
 
         assertThat(processed).isZero();
-        verify(this.kafkaTemplate, never()).send(any(ProducerRecord.class));
+        verifyNoInteractions(this.publisher);
     }
 
     /**
      * Successful send marks the row PUBLISHED and bumps the
-     * {@code cortex.ingest.outbox.published} counter.
+     * {@value OutboxMetrics#METRIC_PUBLISHED} counter tagged with
+     * {@code (topic, tenant_id)}.
      */
     @Test
-    @SuppressWarnings("unchecked")
     void successfulSendMarksRowPublished() {
         final OutboxEvent row = pendingRow(1L);
         when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
                 .thenReturn(List.of(row));
-        final SendResult<byte[], byte[]> ack = mock(SendResult.class);
-        when(this.kafkaTemplate.send(any(ProducerRecord.class)))
-                .thenReturn(CompletableFuture.completedFuture(ack));
+        doNothing().when(this.publisher).publish(eq(row), any(byte[].class), anyString());
 
         final int processed = this.poller.drainOnce();
 
@@ -157,28 +165,29 @@ class OutboxPollerTest {
         verify(this.repository).markPublished(eq(1L), eq(NOW));
         verify(this.repository, never())
                 .markFailureAndReschedule(anyLong(), anyInt(), any(), anyString());
-        assertThat(this.meterRegistry.counter(OutboxPoller.METRIC_PUBLISHED).count())
-                .isEqualTo(1.0d);
+        verify(this.repository, never()).markDead(anyLong(), anyInt(), anyString());
+        assertThat(publishedCount()).isEqualTo(1.0d);
     }
 
     /**
-     * A failed future (e.g. broker NACK) is treated as a publish
-     * failure: the row is rescheduled, NOT marked PUBLISHED, and
-     * the failed-counter is bumped once.
+     * A non-exhausted publish failure bumps attempts, reschedules
+     * the row, and increments the
+     * {@value OutboxMetrics#METRIC_FAILED} counter with the
+     * mapped reason. Row stays PENDING.
      */
     @Test
-    @SuppressWarnings("unchecked")
-    void failedFutureReschedulesRow() {
+    void publishFailureNotYetExhaustedReschedulesRow() {
         final OutboxEvent row = pendingRow(2L);
         when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
                 .thenReturn(List.of(row));
-        final CompletableFuture<SendResult<byte[], byte[]>> failed =
-                CompletableFuture.failedFuture(new RuntimeException("broker-nack"));
-        when(this.kafkaTemplate.send(any(ProducerRecord.class))).thenReturn(failed);
+        doThrow(new IllegalStateException("kafka send failed: TimeoutException",
+                new java.util.concurrent.TimeoutException("ack-timeout")))
+                .when(this.publisher).publish(eq(row), any(byte[].class), anyString());
 
         this.poller.drainOnce();
 
         verify(this.repository, never()).markPublished(anyLong(), any());
+        verify(this.repository, never()).markDead(anyLong(), anyInt(), anyString());
         final ArgumentCaptor<Integer> attemptsCap = ArgumentCaptor.forClass(Integer.class);
         final ArgumentCaptor<Instant> nextCap = ArgumentCaptor.forClass(Instant.class);
         final ArgumentCaptor<String> errCap = ArgumentCaptor.forClass(String.class);
@@ -186,48 +195,76 @@ class OutboxPollerTest {
                 eq(2L), attemptsCap.capture(), nextCap.capture(), errCap.capture());
         assertThat(attemptsCap.getValue()).isEqualTo(1);
         assertThat(nextCap.getValue()).isEqualTo(NOW.plusMillis(250L));
-        assertThat(errCap.getValue()).contains("broker-nack");
-        assertThat(this.meterRegistry.counter(OutboxPoller.METRIC_FAILED).count())
-                .isEqualTo(1.0d);
+        assertThat(errCap.getValue()).contains("kafka send failed");
+        assertThat(failedCount(FailureReason.KAFKA_TIMEOUT)).isEqualTo(1.0d);
+        assertThat(dlqCount(FailureReason.KAFKA_TIMEOUT)).isZero();
     }
 
     /**
-     * A synchronous broker exception is caught, formatted as
-     * {@code <ClassName>: <message>}, persisted into
-     * {@code last_error}, and the row is rescheduled with
-     * exponential backoff based on its prior {@code attempts}
-     * count.
+     * A publish failure on a row whose next backoff would hit the
+     * cap routes the row to the DLQ, flips status to DEAD, and
+     * bumps BOTH the failed counter (per-attempt) and the dlq
+     * counter (terminal). The row's prior attempt count puts the
+     * uncapped backoff at or above {@code backoff-max-ms}.
      */
     @Test
-    @SuppressWarnings("unchecked")
-    void brokerExceptionReschedulesWithExponentialBackoff() {
-        final OutboxEvent row = new OutboxEvent(
-                3L,
-                "cortex-dev",
-                "evt-3",
-                "{}",
-                OutboxStatus.PENDING.name(),
-                2,
-                NOW.minusSeconds(5),
-                "previous-failure",
-                NOW.minusSeconds(10),
-                null);
+    void publishFailureRetryExhaustedRoutesRowToDlqAndMarksDead() {
+        // attempts=9 -> shift=8 -> 250 * 256 = 64_000ms > 60_000ms cap, so
+        // after this failure (newAttempts=9) the backoff is exhausted.
+        // Wait -- isRetryExhausted runs on newAttempts (which is row.attempts()+1).
+        // We want isRetryExhausted(newAttempts) to fire on this row's failure.
+        // shift = newAttempts - 1; uncapped = 250 << shift.
+        // For newAttempts=9 -> shift=8 -> uncapped=64_000 >= 60_000 cap -> true.
+        // So pass row.attempts()=8 (newAttempts becomes 9).
+        final OutboxEvent row = pendingRowWithAttempts(42L, 8);
         when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
                 .thenReturn(List.of(row));
-        when(this.kafkaTemplate.send(any(ProducerRecord.class)))
-                .thenThrow(new RuntimeException("broker-down"));
+        doThrow(new IllegalStateException("kafka send failed: ExecutionException",
+                new java.util.concurrent.ExecutionException(
+                        new RuntimeException("broker-nack"))))
+                .when(this.publisher).publish(eq(row), any(byte[].class), anyString());
+        doNothing().when(this.publisher).publishDlq(
+                eq(row), any(byte[].class), anyString(),
+                eq(OutboxPoller.DEFAULT_TOPIC), eq(FailureReason.KAFKA_EXECUTE));
 
         this.poller.drainOnce();
 
-        final ArgumentCaptor<Integer> attemptsCap = ArgumentCaptor.forClass(Integer.class);
-        final ArgumentCaptor<Instant> nextCap = ArgumentCaptor.forClass(Instant.class);
+        verify(this.repository, never()).markPublished(anyLong(), any());
+        verify(this.repository, never())
+                .markFailureAndReschedule(anyLong(), anyInt(), any(), anyString());
+        verify(this.repository).markDead(eq(42L), eq(9), anyString());
+        assertThat(failedCount(FailureReason.KAFKA_EXECUTE)).isEqualTo(1.0d);
+        assertThat(dlqCount(FailureReason.KAFKA_EXECUTE)).isEqualTo(1.0d);
+    }
+
+    /**
+     * If the DLQ publish itself fails the row is kept PENDING with
+     * bumped attempts so the next tick retries the full path; the
+     * DLQ counter MUST NOT increment (no record landed on DLQ).
+     */
+    @Test
+    void publishFailureWithFailingDlqLeavesRowPendingAndSkipsDlqCounter() {
+        final OutboxEvent row = pendingRowWithAttempts(99L, 8);
+        when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
+                .thenReturn(List.of(row));
+        doThrow(new IllegalStateException("kafka send failed: TimeoutException",
+                new java.util.concurrent.TimeoutException("ack-timeout")))
+                .when(this.publisher).publish(eq(row), any(byte[].class), anyString());
+        doThrow(new IllegalStateException("dlq broker down"))
+                .when(this.publisher).publishDlq(
+                        eq(row), any(byte[].class), anyString(),
+                        eq(OutboxPoller.DEFAULT_TOPIC),
+                        eq(FailureReason.KAFKA_TIMEOUT));
+
+        this.poller.drainOnce();
+
+        verify(this.repository, never()).markDead(anyLong(), anyInt(), anyString());
         final ArgumentCaptor<String> errCap = ArgumentCaptor.forClass(String.class);
         verify(this.repository).markFailureAndReschedule(
-                eq(3L), attemptsCap.capture(), nextCap.capture(), errCap.capture());
-        assertThat(attemptsCap.getValue()).isEqualTo(3);
-        // attempts=3 -> shift=2 -> 250 * 4 = 1000ms
-        assertThat(nextCap.getValue()).isEqualTo(NOW.plusMillis(1_000L));
-        assertThat(errCap.getValue()).isEqualTo("RuntimeException: broker-down");
+                eq(99L), eq(9), any(), errCap.capture());
+        assertThat(errCap.getValue()).startsWith("dlq-failed:");
+        assertThat(failedCount(FailureReason.KAFKA_TIMEOUT)).isEqualTo(1.0d);
+        assertThat(dlqCount(FailureReason.KAFKA_TIMEOUT)).isZero();
     }
 
     /**
@@ -235,17 +272,16 @@ class OutboxPollerTest {
      * each one's outcome is independent.
      */
     @Test
-    @SuppressWarnings("unchecked")
     void mixedBatchProcessesEachRowIndependently() {
         final OutboxEvent ok = pendingRow(10L);
         final OutboxEvent bad = pendingRow(11L);
         when(this.repository.findPendingDueForPublish(eq(NOW), anyInt()))
                 .thenReturn(List.of(ok, bad));
-        final SendResult<byte[], byte[]> ack = mock(SendResult.class);
-        when(this.kafkaTemplate.send(any(ProducerRecord.class)))
-                .thenReturn(CompletableFuture.completedFuture(ack))
-                .thenReturn(CompletableFuture.failedFuture(
-                        new RuntimeException("bad-row")));
+        doNothing().when(this.publisher).publish(eq(ok), any(byte[].class), anyString());
+        doThrow(new IllegalStateException("kafka send failed: ExecutionException",
+                new java.util.concurrent.ExecutionException(
+                        new RuntimeException("bad-row"))))
+                .when(this.publisher).publish(eq(bad), any(byte[].class), anyString());
 
         final int processed = this.poller.drainOnce();
 
@@ -253,26 +289,82 @@ class OutboxPollerTest {
         verify(this.repository).markPublished(eq(10L), eq(NOW));
         verify(this.repository).markFailureAndReschedule(
                 eq(11L), eq(1), eq(NOW.plusMillis(250L)), anyString());
-        assertThat(this.meterRegistry.counter(OutboxPoller.METRIC_PUBLISHED).count())
-                .isEqualTo(1.0d);
-        assertThat(this.meterRegistry.counter(OutboxPoller.METRIC_FAILED).count())
-                .isEqualTo(1.0d);
+        assertThat(publishedCount()).isEqualTo(1.0d);
+        assertThat(failedCount(FailureReason.KAFKA_EXECUTE)).isEqualTo(1.0d);
+    }
+
+    /**
+     * Reads the {@value OutboxMetrics#METRIC_PUBLISHED} counter
+     * tagged {@code (topic = DEFAULT_TOPIC, tenant_id = TENANT)}.
+     *
+     * @return total count for the tagged published counter
+     */
+    private double publishedCount() {
+        return this.meterRegistry.counter(
+                OutboxMetrics.METRIC_PUBLISHED,
+                OutboxMetrics.TAG_TOPIC, OutboxPoller.DEFAULT_TOPIC,
+                OutboxMetrics.TAG_TENANT, TENANT).count();
+    }
+
+    /**
+     * Reads the {@value OutboxMetrics#METRIC_FAILED} counter tagged
+     * {@code (topic = DEFAULT_TOPIC, tenant_id = TENANT, reason)}.
+     *
+     * @param reason failure-reason tag value
+     * @return total count for the tagged failed counter
+     */
+    private double failedCount(final String reason) {
+        return this.meterRegistry.counter(
+                OutboxMetrics.METRIC_FAILED,
+                OutboxMetrics.TAG_TOPIC, OutboxPoller.DEFAULT_TOPIC,
+                OutboxMetrics.TAG_TENANT, TENANT,
+                OutboxMetrics.TAG_REASON, reason).count();
+    }
+
+    /**
+     * Reads the {@value OutboxMetrics#METRIC_DLQ} counter tagged
+     * {@code (topic = DLQ_TOPIC, tenant_id = TENANT, reason)}.
+     *
+     * @param reason failure-reason tag value
+     * @return total count for the tagged dlq counter
+     */
+    private double dlqCount(final String reason) {
+        return this.meterRegistry.counter(
+                OutboxMetrics.METRIC_DLQ,
+                OutboxMetrics.TAG_TOPIC, KafkaOutboxPublisher.DLQ_TOPIC,
+                OutboxMetrics.TAG_TENANT, TENANT,
+                OutboxMetrics.TAG_REASON, reason).count();
     }
 
     /**
      * Builds a fresh PENDING outbox row with the supplied id for a happy-path test.
      *
      * @param id row identifier to embed in the synthetic outbox event
-     * @return a fresh PENDING OutboxEvent
+     * @return a fresh PENDING OutboxEvent (attempts=0)
      */
     private static OutboxEvent pendingRow(final long id) {
+        return pendingRowWithAttempts(id, 0);
+    }
+
+    /**
+     * Builds a PENDING outbox row with the supplied attempts count
+     * so the retry-exhausted branch can be exercised on the FIRST
+     * call to {@link OutboxPoller#drainOnce} without a multi-tick
+     * setup. CloudEvent header content-type is hard-coded to
+     * {@code application/cloudevents+json} via {@link JsonFormat}.
+     *
+     * @param id       row identifier
+     * @param attempts prior attempts count (newAttempts will be {@code attempts + 1})
+     * @return a PENDING OutboxEvent matching the supplied attempts
+     */
+    private static OutboxEvent pendingRowWithAttempts(final long id, final int attempts) {
         return new OutboxEvent(
                 id,
-                "cortex-dev",
+                TENANT,
                 "evt-" + id,
-                "{\"hello\":\"world\"}",
+                "{\"hello\":\"world\",\"contentType\":\"" + JsonFormat.CONTENT_TYPE + "\"}",
                 OutboxStatus.PENDING.name(),
-                0,
+                attempts,
                 NOW,
                 null,
                 NOW,

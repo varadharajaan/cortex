@@ -149,3 +149,19 @@ infra/helm/charts/**/*.tgz
 
 # local detached-process PID registry (LD25 / LD45 / Part 26.1)
 /pids.json
+
+# LD86 + LD90 root-level scratch ban — utilities under /scripts/, PR/issue bodies
+# under /logs/local/<phase>/. These patterns are a belt-and-braces guard so an
+# accidental Set-Content / Move-Item leaving an artefact at the repo root cannot
+# slip into a commit. Reviewed in Part 26.11.
+/_*.ps1
+/_*.psm1
+/_*.txt
+/_*.md
+/PR_*.md
+/PR-*.md
+/pr-*.md
+/PROMPT_*.md
+/SCRATCH_*.md
+/SCRATCH_*.txt
+/scratch_*.ps1

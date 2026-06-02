@@ -41,16 +41,19 @@ spring:
     baseline-on-migrate: true
     locations: classpath:db/migration
 
-  # ----- Kafka producer (P4.4b / ADR-0026) --------------------------------
+  # ----- Kafka producer (P4.4b / ADR-0026 + P4.4c / ADR-0027) -------------
   # OutboxPoller publishes CloudEvent 1.0 structured-mode JSON envelopes
-  # to topic `cortex.logs.events.v1` via Spring Kafka's KafkaTemplate
-  # directly. Producer details (acks=all, idempotence, retries, zstd)
-  # are configured in code (KafkaConfig). SCSt outbound binding was
-  # prototyped but silently dropped messages between the bound channel
-  # subscriber and the producer network thread; binder-portability for
-  # outbound publishing is deferred to P4.4c when Service Bus comes
-  # online (ADR-0027) and an OutboxEventPublisher interface is introduced.
-  # Auto-create handled by the broker in local-dev
+  # to topic `cortex.logs.events.v1` (production) and
+  # `cortex.logs.events.v1.dlq` (P4.4c retry-exhausted DLQ) via Spring
+  # Kafka's KafkaTemplate behind the `OutboxEventPublisher` seam.
+  # Producer details (acks=all, idempotence, retries, zstd) are
+  # configured in code (KafkaConfig). The publisher choice is gated by
+  # `cortex.outbox.publisher` below (kafka by default; servicebus stub
+  # parks publish attempts until the P10 infra phase wires the real
+  # connector). SCSt outbound binding was prototyped at P4.4b but
+  # silently dropped messages between the bound channel subscriber and
+  # the producer network thread (LD79 / ADR-0026 D2). Auto-create
+  # handled by the broker in local-dev
   # (KAFKA_AUTO_CREATE_TOPICS_ENABLE=true on the smoke compose stack);
   # explicit topic provisioning + retention tuning is a P10 infra story.
   kafka:
@@ -153,6 +156,17 @@ cortex:
       cloudevent:
         source: ${CORTEX_INGEST_OUTBOX_CE_SOURCE:/cortex/log-ingest-service}
         type: ${CORTEX_INGEST_OUTBOX_CE_TYPE:io.cortex.logs.event.v1}
+  # ----- Outbox publisher binder gate (P4.4c / ADR-0027 D5) ---------------
+  # Selects which `OutboxEventPublisher` bean is wired by the
+  # @ConditionalOnProperty gates on `KafkaOutboxPublisher` and
+  # `ServiceBusOutboxPublisher`. The Kafka publisher is the default
+  # (`matchIfMissing=true`); set to `servicebus` to wire the Azure
+  # Service Bus stub (which throws UnsupportedOperationException on
+  # every publish until the P10 infra phase lands the real connector).
+  # The DLQ topic is fixed at `cortex.logs.events.v1.dlq` per
+  # ADR-0027 D1 (separate topic, NOT an in-table dead-letter column).
+  outbox:
+    publisher: ${CORTEX_OUTBOX_PUBLISHER:kafka}
   security:
     # When true, every request to /api/** MUST carry a valid
     # X-Cortex-Service-JWT header (presence-only in P4.0; full parse +

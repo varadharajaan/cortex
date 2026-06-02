@@ -6,9 +6,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Lightweight enum smoke test for {@link OutboxStatus} (P4.4a /
- * ADR-0025). Pins the three lifecycle values and the
- * {@link Enum#name()} contract that the V3 Flyway
- * {@code CHECK ... IN ('PENDING','PUBLISHED','FAILED')} relies on.
+ * ADR-0025 + P4.4c / ADR-0027). Pins the four lifecycle values
+ * and the {@link Enum#name()} contract that the V4 Flyway
+ * {@code CHECK ... IN ('PENDING','PUBLISHED','FAILED','DEAD')}
+ * relies on.
  */
 class OutboxStatusTest {
 
@@ -19,8 +20,8 @@ class OutboxStatusTest {
 
     /** Pins enum cardinality so a stray value is caught at build time. */
     @Test
-    void hasExactlyThreeLifecycleStates() {
-        assertThat(OutboxStatus.values()).hasSize(3);
+    void hasExactlyFourLifecycleStates() {
+        assertThat(OutboxStatus.values()).hasSize(4);
     }
 
     /**
@@ -33,5 +34,6 @@ class OutboxStatusTest {
         assertThat(OutboxStatus.PENDING.name()).isEqualTo("PENDING");
         assertThat(OutboxStatus.PUBLISHED.name()).isEqualTo("PUBLISHED");
         assertThat(OutboxStatus.FAILED.name()).isEqualTo("FAILED");
+        assertThat(OutboxStatus.DEAD.name()).isEqualTo("DEAD");
     }
 }

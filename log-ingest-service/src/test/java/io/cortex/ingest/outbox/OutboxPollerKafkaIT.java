@@ -5,7 +5,9 @@ import static org.awaitility.Awaitility.await;
 
 import io.cloudevents.CloudEvent;
 import io.cloudevents.kafka.CloudEventDeserializer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -16,11 +18,14 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -103,6 +108,12 @@ class OutboxPollerKafkaIT {
 
     /** Poller bean exercised end-to-end. */
     @Autowired private OutboxPoller poller;
+
+    /** Production CloudEvent envelope builder; reused by the DLQ scenario. */
+    @Autowired private CloudEventEnvelopeBuilder envelopeBuilder;
+
+    /** Production Spring Kafka producer template; reused by the DLQ scenario. */
+    @Autowired private KafkaTemplate<byte[], byte[]> kafkaTemplate;
 
     /** Default constructor used by JUnit. */
     OutboxPollerKafkaIT() {
@@ -222,5 +233,194 @@ class OutboxPollerKafkaIT {
     @SuppressWarnings("unused")
     private static Map<String, ?> dummyDiagnostic() {
         return Map.of("topic", TOPIC, "broker", kafka.getBootstrapServers());
+    }
+
+    /**
+     * Inserts a PENDING row, wraps the production publisher in a
+     * poison shim that throws on every {@code publish(...)} call but
+     * delegates {@code publishDlq(...)} to the real Kafka path,
+     * configures a {@code backoff-max-ms < backoff-initial-ms}
+     * tree so {@link OutboxPollerProperties.PollerProps#isRetryExhausted(int)}
+     * returns {@code true} on the first failure (P4.4c retry-exhausted
+     * boundary per ADR-0027 D2), drives a single drain cycle, and
+     * asserts:
+     *
+     * <ul>
+     *   <li>The source outbox row transitioned to {@link OutboxStatus#DEAD}.</li>
+     *   <li>A record landed on {@value KafkaOutboxPublisher#DLQ_TOPIC}
+     *       carrying the original tenant id as the key + the
+     *       {@code x-orig-topic} and {@code x-failure-reason}
+     *       headers documented in ADR-0027.</li>
+     *   <li>The {@value OutboxMetrics#METRIC_DLQ} counter was
+     *       incremented once with the {@code (topic, tenant_id,
+     *       reason)} tag triple.</li>
+     * </ul>
+     */
+    @Test
+    void poisonRowExhaustsRetriesAndPublishesToDlqWithFailureHeaders() {
+        final Instant createdAt = Instant.now().minus(Duration.ofMinutes(1));
+        final String eventId = "evt-it-dlq-" + System.nanoTime();
+        final String tenantId = "cortex-dev";
+        final String payload = "{\"eventId\":\"" + eventId + "\",\"poison\":true}";
+
+        try (KafkaConsumer<byte[], byte[]> dlqConsumer = newRawConsumer()) {
+            dlqConsumer.subscribe(List.of(KafkaOutboxPublisher.DLQ_TOPIC));
+            dlqConsumer.poll(Duration.ofSeconds(2));
+
+            final OutboxEvent saved = this.repository.save(OutboxEvent.pending(
+                    tenantId, eventId, payload, createdAt));
+
+            // Wrap the production Kafka path so PRODUCTION publishes throw
+            // but DLQ publishes still hit the live broker. The retry
+            // ceiling is also tightened so isRetryExhausted(1)==true on
+            // the first failure (uncapped=1000 >= cap=1).
+            final OutboxEventPublisher realPub =
+                    new KafkaOutboxPublisher(this.kafkaTemplate);
+            final OutboxEventPublisher poisonPub = new OutboxEventPublisher() {
+                @Override
+                public void publish(final OutboxEvent row,
+                                    final byte[] value,
+                                    final String contentType) {
+                    throw new IllegalStateException(
+                            "kafka send failed: TimeoutException",
+                            new java.util.concurrent.TimeoutException(
+                                    "simulated ack-timeout"));
+                }
+
+                @Override
+                public void publishDlq(final OutboxEvent row,
+                                       final byte[] value,
+                                       final String contentType,
+                                       final String origTopic,
+                                       final String reason) {
+                    realPub.publishDlq(row, value, contentType, origTopic, reason);
+                }
+            };
+            final OutboxPollerProperties exhaustedProps = new OutboxPollerProperties(
+                    new OutboxPollerProperties.PollerProps(
+                            true, 100L, 100, 1_000L, 1L),
+                    new OutboxPollerProperties.CloudEventProps(
+                            EVENT_SOURCE, EVENT_TYPE));
+            final SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
+            final OutboxMetrics localMetrics = new OutboxMetrics(localRegistry);
+            final OutboxPoller exhaustedPoller = new OutboxPoller(
+                    this.repository,
+                    this.envelopeBuilder,
+                    poisonPub,
+                    Clock.systemUTC(),
+                    exhaustedProps,
+                    localMetrics);
+
+            await().atMost(30, TimeUnit.SECONDS)
+                    .pollInterval(Duration.ofMillis(500))
+                    .ignoreExceptions()
+                    .untilAsserted(() -> {
+                        exhaustedPoller.drainOnce();
+                        final OutboxEvent reloaded =
+                                this.repository.findById(saved.id()).orElseThrow();
+                        assertThat(reloaded.status())
+                                .isEqualTo(OutboxStatus.DEAD.name());
+                    });
+
+            final List<ConsumerRecord<byte[], byte[]>> dlqRecords =
+                    drainRaw(dlqConsumer, Duration.ofSeconds(30));
+            assertThat(dlqRecords)
+                    .as("expected DLQ record on %s",
+                            KafkaOutboxPublisher.DLQ_TOPIC)
+                    .isNotEmpty();
+            final ConsumerRecord<byte[], byte[]> dlqRow = dlqRecords.stream()
+                    .filter(r -> tenantId.equals(keyAsString(r)))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "no DLQ record carried tenantId=" + tenantId));
+            assertThat(headerValue(dlqRow, KafkaOutboxPublisher.HEADER_ORIG_TOPIC))
+                    .isEqualTo(KafkaOutboxPublisher.PRODUCTION_TOPIC);
+            assertThat(headerValue(dlqRow, KafkaOutboxPublisher.HEADER_FAILURE_REASON))
+                    .isEqualTo(FailureReason.KAFKA_TIMEOUT);
+            assertThat(headerValue(dlqRow, KafkaOutboxPublisher.HEADER_CONTENT_TYPE))
+                    .startsWith("application/cloudevents+json");
+
+            assertThat(localRegistry.counter(
+                    OutboxMetrics.METRIC_DLQ,
+                    OutboxMetrics.TAG_TOPIC, KafkaOutboxPublisher.DLQ_TOPIC,
+                    OutboxMetrics.TAG_TENANT, tenantId,
+                    OutboxMetrics.TAG_REASON, FailureReason.KAFKA_TIMEOUT).count())
+                    .isEqualTo(1.0d);
+        }
+    }
+
+    /**
+     * Builds a one-shot KafkaConsumer wired with raw byte-array
+     * deserializers so the test can inspect headers + key bytes
+     * directly (the {@link CloudEventDeserializer} used by the
+     * happy-path scenario strips the headers we want to assert).
+     *
+     * @return a Kafka consumer bound to the broker on offset-earliest
+     */
+    private static KafkaConsumer<byte[], byte[]> newRawConsumer() {
+        final Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                kafka.getBootstrapServers());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG,
+                "outbox-dlq-it-" + System.nanoTime());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+                ByteArrayDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                ByteArrayDeserializer.class.getName());
+        return new KafkaConsumer<>(props);
+    }
+
+    /**
+     * Same poll-loop as {@link #drainTopic} but for the raw
+     * byte-array consumer used by the DLQ scenario.
+     *
+     * @param consumer subscribed Kafka consumer
+     * @param timeout  hard cap on the cumulative poll budget
+     * @return records pulled from the topic before the deadline
+     */
+    private static List<ConsumerRecord<byte[], byte[]>> drainRaw(
+            final KafkaConsumer<byte[], byte[]> consumer,
+            final Duration timeout) {
+        final java.util.ArrayList<ConsumerRecord<byte[], byte[]>> acc =
+                new java.util.ArrayList<>();
+        final long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            final ConsumerRecords<byte[], byte[]> batch =
+                    consumer.poll(Duration.ofMillis(500));
+            for (final ConsumerRecord<byte[], byte[]> r : batch) {
+                acc.add(r);
+            }
+            if (!acc.isEmpty()) {
+                return acc;
+            }
+        }
+        return acc;
+    }
+
+    /**
+     * Decodes a raw record key as UTF-8 (returns {@code ""} on null).
+     *
+     * @param record consumer record
+     * @return key bytes decoded as UTF-8
+     */
+    private static String keyAsString(final ConsumerRecord<byte[], byte[]> record) {
+        return record.key() == null
+                ? ""
+                : new String(record.key(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Fetches the first header value matching {@code name} as UTF-8.
+     *
+     * @param record consumer record
+     * @param name   header key
+     * @return header value decoded as UTF-8, or {@code ""} when absent
+     */
+    private static String headerValue(final ConsumerRecord<byte[], byte[]> record,
+                                      final String name) {
+        final Header h = record.headers().lastHeader(name);
+        return h == null ? "" : new String(h.value(), StandardCharsets.UTF_8);
     }
 }

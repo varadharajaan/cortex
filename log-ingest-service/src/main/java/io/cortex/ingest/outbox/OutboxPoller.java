@@ -4,64 +4,49 @@ import io.cloudevents.CloudEvent;
 import io.cloudevents.core.format.EventFormat;
 import io.cloudevents.core.provider.EventFormatProvider;
 import io.cloudevents.jackson.JsonFormat;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.header.internals.RecordHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Drains PENDING {@link OutboxEvent} rows to the Kafka topic
- * {@value #DEFAULT_TOPIC} as CloudEvent 1.0 structured-mode JSON
- * envelopes (P4.4b / ADR-0026 / B9.2 override O8).
+ * Drains PENDING {@link OutboxEvent} rows to the destination topic
+ * {@value KafkaOutboxPublisher#PRODUCTION_TOPIC} as CloudEvent 1.0
+ * structured-mode JSON envelopes (P4.4b / ADR-0026 + P4.4c /
+ * ADR-0027).
  *
- * <p>Publishes via {@link KafkaTemplate} directly (Spring Kafka
- * producer). SCSt's outbound binder path was prototyped but the
- * StreamBridge -> binder handler dispatch silently dropped the
- * message between the bound channel subscriber and the producer
- * network thread (no {@code PRODUCE} request ever reached the
- * broker). Synchronous {@code send(...).get(timeout)} on
- * KafkaTemplate gives deterministic delivery semantics: the row
- * is only flipped to PUBLISHED after the broker acknowledges per
- * the producer's {@code acks=all} setting. The SCSt binding
- * portability story moves to P4.4c when the Service Bus binder
- * lands (ADR-0027); at that point a thin
- * {@code OutboxEventPublisher} interface will be introduced.</p>
+ * <p>At P4.4b this class performed the {@link
+ * org.springframework.kafka.core.KafkaTemplate} send inline. At
+ * P4.4c the send moved behind the {@link OutboxEventPublisher} seam
+ * so the production publish + the DLQ publish can swap between
+ * Kafka and Azure Service Bus via the {@code cortex.outbox.publisher}
+ * property without touching this class (ADR-0027 D5). The poller
+ * still owns the row's lifecycle: success -> PUBLISHED, transient
+ * failure -> attempts++ with capped exponential backoff,
+ * retry-exhausted (ADR-0027 D2) -> DLQ publish + status DEAD.</p>
+ *
+ * <p>All three Micrometer counters
+ * ({@value OutboxMetrics#METRIC_PUBLISHED},
+ * {@value OutboxMetrics#METRIC_FAILED},
+ * {@value OutboxMetrics#METRIC_DLQ}) are written through
+ * {@link OutboxMetrics} so cardinality stays bounded by the
+ * {@code (topic, tenant_id, reason)} allowlist surface.</p>
  */
 @Component
 public class OutboxPoller {
 
-    /** Output Kafka topic; pinned by ADR-0026. */
-    public static final String DEFAULT_TOPIC = "cortex.logs.events.v1";
-
-    /** Micrometer counter for successfully published rows. */
-    public static final String METRIC_PUBLISHED = "cortex.ingest.outbox.published";
-
-    /** Micrometer counter for publish failures (per-attempt, NOT per-row). */
-    public static final String METRIC_FAILED = "cortex.ingest.outbox.failed";
-
-    /** Kafka record header carrying the CloudEvents content-type. */
-    public static final String HEADER_CONTENT_TYPE = "content-type";
+    /** Destination Kafka topic; pinned by ADR-0026. */
+    public static final String DEFAULT_TOPIC = KafkaOutboxPublisher.PRODUCTION_TOPIC;
 
     /** Slf4j logger. */
     private static final Logger LOG = LoggerFactory.getLogger(OutboxPoller.class);
 
     /** Maximum length of the {@code last_error} text persisted on failure. */
     private static final int LAST_ERROR_MAX_LEN = 1024;
-
-    /** Max seconds to await broker ack before timing out an attempt. */
-    private static final long SEND_TIMEOUT_SECONDS = 10L;
 
     /** CloudEvents structured-mode JSON encoder (application/cloudevents+json). */
     private static final EventFormat JSON_FORMAT =
@@ -73,8 +58,8 @@ public class OutboxPoller {
     /** CloudEvents envelope builder. */
     private final CloudEventEnvelopeBuilder envelopeBuilder;
 
-    /** Spring Kafka producer template (byte[] key + byte[] value). */
-    private final KafkaTemplate<byte[], byte[]> kafkaTemplate;
+    /** Publisher seam (Kafka by default; Service Bus when gated in). */
+    private final OutboxEventPublisher publisher;
 
     /** UTC clock for the per-tick {@code now}. */
     private final Clock clock;
@@ -82,41 +67,31 @@ public class OutboxPoller {
     /** Bound configuration tree. */
     private final OutboxPollerProperties properties;
 
-    /** Cached published-counter handle. */
-    private final Counter publishedCounter;
-
-    /** Cached failed-counter handle. */
-    private final Counter failedCounter;
+    /** Tagged-counter helper for the published / failed / dlq surface. */
+    private final OutboxMetrics metrics;
 
     /**
-     * Constructs the poller. Counters are registered eagerly so
-     * they appear in {@code /actuator/prometheus} before the first
-     * tick runs.
+     * Constructs the poller.
      *
      * @param repository      outbox row gateway
      * @param envelopeBuilder CloudEvents envelope builder
-     * @param kafkaTemplate   Spring Kafka producer template
+     * @param publisher       publisher seam (Kafka / Service Bus)
      * @param clock           UTC clock
      * @param properties      bound poller configuration
-     * @param meterRegistry   Micrometer registry
+     * @param metrics         tagged-counter helper
      */
     public OutboxPoller(final OutboxRepository repository,
                         final CloudEventEnvelopeBuilder envelopeBuilder,
-                        final KafkaTemplate<byte[], byte[]> kafkaTemplate,
+                        final OutboxEventPublisher publisher,
                         final Clock clock,
                         final OutboxPollerProperties properties,
-                        final MeterRegistry meterRegistry) {
+                        final OutboxMetrics metrics) {
         this.repository = repository;
         this.envelopeBuilder = envelopeBuilder;
-        this.kafkaTemplate = kafkaTemplate;
+        this.publisher = publisher;
         this.clock = clock;
         this.properties = properties;
-        this.publishedCounter = Counter.builder(METRIC_PUBLISHED)
-                .description("Outbox rows successfully published to Kafka")
-                .register(meterRegistry);
-        this.failedCounter = Counter.builder(METRIC_FAILED)
-                .description("Outbox publish attempts that failed and were rescheduled")
-                .register(meterRegistry);
+        this.metrics = metrics;
     }
 
     /** Scheduled tick; short-circuits when the master switch is off. */
@@ -156,62 +131,148 @@ public class OutboxPoller {
     }
 
     /**
-     * Publishes a single outbox row synchronously, blocking on the
-     * broker ack so the row is only marked PUBLISHED after delivery
-     * is confirmed.
+     * Publishes a single outbox row through the configured
+     * {@link OutboxEventPublisher} seam. Splits the publish into
+     * two stages so the failure-reason classification can
+     * distinguish an envelope-build poison from a broker-side
+     * transport error:
+     *
+     * <ol>
+     *   <li>Build + serialize the CloudEvent envelope. Any
+     *       exception here yields
+     *       {@code reason={@link FailureReason#OUTBOX_POISON}} and
+     *       the raw {@code outbox_events.payload} bytes are
+     *       forwarded to the DLQ branch when retries exhaust.</li>
+     *   <li>Hand the bytes to the publisher seam. Any exception
+     *       there is classified via {@link FailureReason#fromThrowable}
+     *       (timeout / interrupt / kafka.execute / unknown).</li>
+     * </ol>
      *
      * @param row PENDING row due for publish
-     * @return {@code true} when PUBLISHED; {@code false} when rescheduled
+     * @return {@code true} when the row reached PUBLISHED; {@code false} otherwise
      */
     private boolean publishOne(final OutboxEvent row) {
+        final byte[] envelopeBytes;
         try {
             final CloudEvent envelope = this.envelopeBuilder.toEnvelope(row);
-            final byte[] value = JSON_FORMAT.serialize(envelope);
-            final byte[] key = row.tenantId().getBytes(StandardCharsets.UTF_8);
-            final ProducerRecord<byte[], byte[]> record =
-                    new ProducerRecord<>(DEFAULT_TOPIC, null, key, value);
-            record.headers().add(new RecordHeader(HEADER_CONTENT_TYPE,
-                    JsonFormat.CONTENT_TYPE.getBytes(StandardCharsets.UTF_8)));
-            this.kafkaTemplate.send(record).get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            envelopeBytes = JSON_FORMAT.serialize(envelope);
+        } catch (RuntimeException ex) {
+            final byte[] rawPayload = row.payload() == null
+                    ? new byte[0]
+                    : row.payload().getBytes(StandardCharsets.UTF_8);
+            this.handleFailure(row, ex, FailureReason.OUTBOX_POISON, rawPayload);
+            LOG.warn("outbox-publish id={} eventId={} tenant={} envelope build failed attempts={} cause={}",
+                    row.id(), row.eventId(), row.tenantId(),
+                    row.attempts() + 1, ex.toString());
+            return false;
+        }
+
+        try {
+            this.publisher.publish(row, envelopeBytes, JsonFormat.CONTENT_TYPE);
             this.repository.markPublished(row.id(), this.clock.instant());
-            this.publishedCounter.increment();
+            this.metrics.incrementPublished(DEFAULT_TOPIC, row.tenantId());
             LOG.debug("outbox-publish id={} eventId={} tenant={} ok",
                     row.id(), row.eventId(), row.tenantId());
             return true;
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            this.recordFailure(row, formatLastError(ex));
-            return false;
-        } catch (ExecutionException | TimeoutException | RuntimeException ex) {
-            this.recordFailure(row, formatLastError(ex));
-            LOG.warn("outbox-publish id={} eventId={} tenant={} failed attempts={} cause={}",
+        } catch (RuntimeException ex) {
+            final String reason = FailureReason.fromThrowable(unwrap(ex));
+            this.handleFailure(row, ex, reason, envelopeBytes);
+            LOG.warn("outbox-publish id={} eventId={} tenant={} failed attempts={} reason={} cause={}",
                     row.id(), row.eventId(), row.tenantId(),
-                    row.attempts() + 1, ex.toString());
+                    row.attempts() + 1, reason, ex.toString());
             return false;
         }
     }
 
     /**
-     * Records a publish failure: bumps {@code attempts}, pushes
-     * {@code next_attempt_at}, persists a truncated error string.
+     * Translates a publish failure into the row's lifecycle update:
+     * always bumps {@code attempts} and the
+     * {@value OutboxMetrics#METRIC_FAILED} counter; routes to the
+     * DLQ + flips status to {@link OutboxStatus#DEAD} when
+     * {@link OutboxPollerProperties.PollerProps#isRetryExhausted(int)}
+     * returns true (ADR-0027 D2); otherwise reschedules the row
+     * with capped exponential backoff.
      *
-     * @param row       failed row
-     * @param lastError short error description
+     * <p>If the DLQ publish itself fails, the row is left at
+     * {@link OutboxStatus#PENDING} with bumped {@code attempts} so
+     * the next tick retries the entire publish path. The
+     * {@value OutboxMetrics#METRIC_DLQ} counter is NOT incremented
+     * in that case (no record actually landed on the DLQ topic).</p>
+     *
+     * @param row           failed row
+     * @param ex            originating exception
+     * @param reason        short {@link FailureReason} category
+     * @param envelopeBytes envelope bytes (or raw payload bytes
+     *                      when the envelope build itself failed)
+     *                      to forward on the DLQ record
      */
-    private void recordFailure(final OutboxEvent row, final String lastError) {
-        final int attempts = row.attempts() + 1;
-        final Instant nextAt = this.clock.instant()
-                .plus(this.properties.poller().nextBackoff(attempts));
-        final String truncated;
-        if (lastError == null) {
-            truncated = "";
-        } else if (lastError.length() > LAST_ERROR_MAX_LEN) {
-            truncated = lastError.substring(0, LAST_ERROR_MAX_LEN);
-        } else {
-            truncated = lastError;
+    private void handleFailure(final OutboxEvent row,
+                               final Throwable ex,
+                               final String reason,
+                               final byte[] envelopeBytes) {
+        final int newAttempts = row.attempts() + 1;
+        final String truncated = truncate(formatLastError(ex));
+        this.metrics.incrementFailed(DEFAULT_TOPIC, row.tenantId(), reason);
+
+        if (!this.properties.poller().isRetryExhausted(newAttempts)) {
+            final Instant nextAt = this.clock.instant()
+                    .plus(this.properties.poller().nextBackoff(newAttempts));
+            this.repository.markFailureAndReschedule(
+                    row.id(), newAttempts, nextAt, truncated);
+            return;
         }
-        this.repository.markFailureAndReschedule(row.id(), attempts, nextAt, truncated);
-        this.failedCounter.increment();
+
+        try {
+            this.publisher.publishDlq(row, envelopeBytes, JsonFormat.CONTENT_TYPE,
+                    DEFAULT_TOPIC, reason);
+            this.repository.markDead(row.id(), newAttempts, truncated);
+            this.metrics.incrementDlq(
+                    KafkaOutboxPublisher.DLQ_TOPIC, row.tenantId(), reason);
+            LOG.warn("outbox-dlq id={} eventId={} tenant={} attempts={} reason={} routed",
+                    row.id(), row.eventId(), row.tenantId(), newAttempts, reason);
+        } catch (RuntimeException dlqEx) {
+            final Instant nextAt = this.clock.instant()
+                    .plus(this.properties.poller().nextBackoff(newAttempts));
+            final String dlqError = truncate("dlq-failed: " + formatLastError(dlqEx));
+            this.repository.markFailureAndReschedule(
+                    row.id(), newAttempts, nextAt, dlqError);
+            LOG.warn("outbox-dlq id={} eventId={} tenant={} attempts={} DLQ publish FAILED cause={}; row stays PENDING",
+                    row.id(), row.eventId(), row.tenantId(), newAttempts, dlqEx.toString());
+        }
+    }
+
+    /**
+     * Unwraps a wrapped exception so {@link FailureReason#fromThrowable}
+     * sees the originating cause (e.g. a {@code TimeoutException}
+     * wrapped in {@code IllegalStateException} by
+     * {@link KafkaOutboxPublisher}).
+     *
+     * @param ex exception observed at the call site
+     * @return cause if present, otherwise {@code ex}
+     */
+    private static Throwable unwrap(final Throwable ex) {
+        if (ex == null) {
+            return null;
+        }
+        final Throwable cause = ex.getCause();
+        return cause == null ? ex : cause;
+    }
+
+    /**
+     * Truncates the {@code lastError} string to the column ceiling
+     * so a misbehaving stack trace cannot blow up the row width.
+     *
+     * @param text candidate text
+     * @return text capped at {@value #LAST_ERROR_MAX_LEN} chars
+     */
+    private static String truncate(final String text) {
+        if (text == null) {
+            return "";
+        }
+        if (text.length() <= LAST_ERROR_MAX_LEN) {
+            return text;
+        }
+        return text.substring(0, LAST_ERROR_MAX_LEN);
     }
 
     /**

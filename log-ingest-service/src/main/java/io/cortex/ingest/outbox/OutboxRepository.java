@@ -88,4 +88,32 @@ public interface OutboxRepository extends CrudRepository<OutboxEvent, Long> {
                                  @Param("attempts") int attempts,
                                  @Param("nextAttemptAt") Instant nextAttemptAt,
                                  @Param("lastError") String lastError);
+
+    /**
+     * Marks the row terminal-{@link OutboxStatus#DEAD} after the
+     * P4.4c retry-exhausted handler routed it to the DLQ topic
+     * (ADR-0027 D2). Does not stamp {@code published_at} -- the row
+     * was never successfully published to the production topic, only
+     * dead-lettered. Leaves {@code next_attempt_at} alone since the
+     * poller's partial index excludes non-PENDING rows; the column
+     * is retained for operator audit.
+     *
+     * @param id        surrogate primary key of the row
+     * @param attempts  attempts count at the moment the row was
+     *                  routed to DLQ (poller's last value)
+     * @param lastError short error description truncated to the
+     *                  column ceiling by the caller (the same string
+     *                  that would have been persisted by
+     *                  {@link #markFailureAndReschedule})
+     * @return rows affected; expected to be {@code 1}
+     */
+    @Modifying
+    @Query("UPDATE outbox_events "
+            + "SET status = 'DEAD', "
+            + "    attempts = :attempts, "
+            + "    last_error = :lastError "
+            + "WHERE id = :id")
+    int markDead(@Param("id") Long id,
+                 @Param("attempts") int attempts,
+                 @Param("lastError") String lastError);
 }
