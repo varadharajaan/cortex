@@ -134,6 +134,15 @@ infra/helm/charts/**/*.tgz
 
 # also same for this pattern *output.txt, which is a common name for test outputs and logs.
 **/*output.txt
+
+# Part 26.10.4 — centralized logs / probe artifacts must not leak to repo root.
+# Catches ad-hoc probe / boot-trace files like wiremock-probes.txt, eureka-boot.txt,
+# kafka-probe.txt, schema-registry-boot.txt, etc.
+**/*-probes.txt
+**/*-probe.txt
+**/*-boot.txt
+**/*-boot.trace.txt
+
 # local one-shot issue/PR body templates
 .issue-*.md
 .pr-*.md
