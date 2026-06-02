@@ -10,8 +10,8 @@ import io.cortex.ingest.dto.request.IngestBatchRequest;
 import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.enrichment.EnrichmentService;
 import io.cortex.ingest.enrichment.LabelNormalizer;
+import io.cortex.ingest.outbox.RawLogTransactionalWriter;
 import io.cortex.ingest.persistence.RawLog;
-import io.cortex.ingest.persistence.RawLogRepository;
 import io.cortex.ingest.service.IngestService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -51,11 +51,17 @@ import org.springframework.stereotype.Service;
  * {@code receivedCount}, giving callers PUT-style idempotency
  * without an explicit Idempotency-Key today.</p>
  *
- * <p>Persistence is intentionally NOT wrapped in a single
+ * <p>Persistence is intentionally NOT wrapped in a single batch-wide
  * {@code @Transactional} boundary so that one duplicate row does
- * not roll back the rest of the batch. Each {@link
- * RawLogRepository#save(Object)} call runs in its own auto-commit
- * transaction; {@link DuplicateKeyException} is caught per row.</p>
+ * not roll back the rest of the batch. Each row pair (raw_logs +
+ * outbox_events) is committed by
+ * {@link RawLogTransactionalWriter#writeRawLogAndOutbox} inside a
+ * per-row {@code REQUIRES_NEW} transaction so the sibling outbox
+ * row commits atomically with the raw_logs row (strict rule B10.1
+ * / ADR-0025 / P4.4a). {@link DuplicateKeyException} raised by the
+ * raw_logs INSERT rolls back BOTH rows of the failing pair so the
+ * outbox cannot publish a duplicate; the exception is caught here
+ * and the loop continues.</p>
  */
 @Service
 public class IngestServiceImpl implements IngestService {
@@ -87,8 +93,8 @@ public class IngestServiceImpl implements IngestService {
     /** Clock used for the acceptance timestamp; injected so tests can pin it. */
     private final Clock clock;
 
-    /** Spring Data JDBC gateway to the {@code raw_logs} table. */
-    private final RawLogRepository repository;
+    /** Per-row transactional writer commits raw_logs + outbox atomically (P4.4a). */
+    private final RawLogTransactionalWriter writer;
 
     /** Jackson encoder used to canonicalise labels for the event-id hash. */
     private final ObjectMapper objectMapper;
@@ -134,7 +140,12 @@ public class IngestServiceImpl implements IngestService {
      *
      * @param clock             clock used for the acceptance timestamp;
      *                          must not be {@code null}
-     * @param repository        raw-logs JDBC repository; must not be
+     * @param writer            per-row transactional writer that
+     *                          commits the raw_logs + outbox pair in
+     *                          the same REQUIRES_NEW tx (P4.4a /
+     *                          strict rule B10.1); owns the
+     *                          {@code raw_logs} repository and the
+     *                          outbox factory; must not be
      *                          {@code null}
      * @param objectMapper      shared Jackson encoder used to
      *                          canonicalise the {@code labels} map for
@@ -154,13 +165,13 @@ public class IngestServiceImpl implements IngestService {
      *                          ADR-0023)
      */
     public IngestServiceImpl(final Clock clock,
-                             final RawLogRepository repository,
+                             final RawLogTransactionalWriter writer,
                              final ObjectMapper objectMapper,
                              final Optional<IdempotencyDedupeService> dedupeService,
                              final EnrichmentService enrichmentService,
                              final MeterRegistry meterRegistry) {
         this.clock = clock;
-        this.repository = repository;
+        this.writer = writer;
         this.objectMapper = objectMapper;
         this.dedupeService = dedupeService;
         this.enrichmentService = enrichmentService;
@@ -299,21 +310,25 @@ public class IngestServiceImpl implements IngestService {
     }
 
     /**
-     * Persists one row, absorbing the cold-path duplicate signalled
-     * by the {@code UNIQUE (tenant_id, event_id)} constraint.
+     * Persists one raw_logs row and its sibling outbox_events row in
+     * the same per-row {@code REQUIRES_NEW} transaction (P4.4a /
+     * ADR-0025), absorbing the cold-path duplicate signalled by the
+     * {@code UNIQUE (tenant_id, event_id)} constraint.
      *
-     * <p>Spring Data JDBC wraps the underlying
-     * {@link DuplicateKeyException} in a
+     * <p>On duplicate the entire pair-INSERT rolls back so the outbox
+     * does not publish a duplicate. Spring Data JDBC wraps the
+     * underlying {@link DuplicateKeyException} in a
      * {@link DbActionExecutionException}; both shapes are unwrapped
      * here so dedupe is uniform regardless of which path the
      * relational module takes. Any other
      * {@link DbActionExecutionException} cause is rethrown so the
      * caller sees the real DB error.</p>
      *
-     * @param raw      aggregate to insert
+     * @param raw      raw_logs aggregate to insert; the sibling
+     *                 outbox row is built inside the writer
      * @param tenantId tenant id (logged on dedupe)
      * @param eventId  computed event id (logged on dedupe)
-     * @return {@code 1} if the row was inserted, {@code 0} if a
+     * @return {@code 1} if the pair was inserted, {@code 0} if a
      *         duplicate was absorbed
      * @throws DbActionExecutionException if the wrapped cause is not
      *                                    a {@link DuplicateKeyException}
@@ -322,7 +337,7 @@ public class IngestServiceImpl implements IngestService {
                                        final String tenantId,
                                        final String eventId) {
         try {
-            this.repository.save(raw);
+            this.writer.writeRawLogAndOutbox(raw);
             return 1;
         } catch (DuplicateKeyException dup) {
             this.dedupeColdCounter.increment();

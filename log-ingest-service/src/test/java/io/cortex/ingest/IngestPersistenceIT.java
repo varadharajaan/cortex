@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import io.cortex.agent.LogEntry;
 import io.cortex.ingest.enrichment.GeoEnricher;
+import io.cortex.ingest.outbox.OutboxRepository;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
 import java.util.Map;
@@ -51,6 +52,16 @@ class IngestPersistenceIT {
     /** Repository used to assert physical row deltas in {@code raw_logs}. */
     @Autowired private RawLogRepository repository;
 
+    /**
+     * Repository used to assert {@code outbox_events} row deltas
+     * track {@code raw_logs} row deltas in lock-step (P4.4a /
+     * ADR-0025 / strict rule B10.1). Every successful raw_logs
+     * INSERT MUST produce exactly one PENDING outbox row in the
+     * same per-row REQUIRES_NEW transaction; cold-path dedupe
+     * MUST roll back BOTH rows so the outbox cannot drift.
+     */
+    @Autowired private OutboxRepository outboxRepository;
+
     /** Default constructor used by JUnit. */
     IngestPersistenceIT() {
         // no state
@@ -65,6 +76,7 @@ class IngestPersistenceIT {
     @Test
     void postBatchPersistsRows() throws Exception {
         final long before = this.repository.count();
+        final long outboxBefore = this.outboxRepository.count();
         final String body = """
                 {
                   "entries": [
@@ -92,6 +104,9 @@ class IngestPersistenceIT {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.receivedCount").value(2));
         assertThat(this.repository.count()).isEqualTo(before + 2);
+        assertThat(this.outboxRepository.count())
+                .as("outbox row count must match raw_logs delta (P4.4a)")
+                .isEqualTo(outboxBefore + 2);
     }
 
     /**
@@ -123,6 +138,7 @@ class IngestPersistenceIT {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.receivedCount").value(1));
         final long afterFirst = this.repository.count();
+        final long outboxAfterFirst = this.outboxRepository.count();
 
         this.mvc.perform(post("/api/v1/ingest/batch")
                         .header("X-Tenant-Id", "cortex-dev")
@@ -131,6 +147,9 @@ class IngestPersistenceIT {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.receivedCount").value(1));
         assertThat(this.repository.count()).isEqualTo(afterFirst);
+        assertThat(this.outboxRepository.count())
+                .as("cold-path dedupe must roll back BOTH raw_logs and outbox (P4.4a)")
+                .isEqualTo(outboxAfterFirst);
     }
 
     /**
@@ -143,6 +162,7 @@ class IngestPersistenceIT {
     @Test
     void postWithoutTenantHeaderPersistsNothing() throws Exception {
         final long before = this.repository.count();
+        final long outboxBefore = this.outboxRepository.count();
         final String body = """
                 {
                   "entries": [
@@ -162,6 +182,9 @@ class IngestPersistenceIT {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         assertThat(this.repository.count()).isEqualTo(before);
+        assertThat(this.outboxRepository.count())
+                .as("rejected request must not leak an outbox row (P4.4a)")
+                .isEqualTo(outboxBefore);
     }
 
     /**
