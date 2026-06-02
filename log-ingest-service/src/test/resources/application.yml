@@ -45,6 +45,22 @@ cortex:
     # @TestPropertySource / @DynamicPropertySource.
     dedupe:
       enabled: false
+    # P4.4b / ADR-0026: the SCSt Kafka outbox poller is OFF by
+    # default for slice / IT tests so that adding the binder does
+    # not require every IT to spin up a Kafka container. The
+    # dedicated OutboxPollerKafkaIT opts back in via
+    # @DynamicPropertySource and points the binder at a Testcontainers
+    # KafkaContainer.
+    outbox:
+      poller:
+        enabled: false
+      # cloudevent block must be bound (even when the poller is off)
+      # because @ConfigurationProperties records leave the nested
+      # CloudEventProps null otherwise, which would NPE the moment
+      # OutboxPollerKafkaIT enables the poller via DynamicPropertySource.
+      cloudevent:
+        source: "/cortex/log-ingest-service"
+        type: "io.cortex.logs.event.v1"
   security:
     service-jwt:
       required: false

@@ -116,6 +116,48 @@
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
+        <!-- P4.4b / ADR-0026: Spring Cloud Stream + Kafka binder for
+             the outbox -> CloudEvents publisher. The SCSt Kafka binder
+             pulls in spring-kafka transitively and registers a
+             KafkaMessageChannelBinder so StreamBridge.send("cortexLogs
+             EventsV1-out-0", ce) routes to the configured destination
+             topic `cortex.logs.events.v1`. Topic auto-creation in
+             local-dev is handled by the broker (compose env
+             KAFKA_AUTO_CREATE_TOPICS_ENABLE=true). -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-stream-kafka</artifactId>
+        </dependency>
+
+        <!-- P4.4b / ADR-0026 + O8 (B9.2 override): CloudEvents 1.0
+             JSON envelope. cloudevents-core gives the CloudEvent /
+             CloudEventBuilder API; cloudevents-spring is required by
+             CloudEventHttpMessageConverter and the SCSt converter
+             integration that maps Message<CloudEvent> to broker
+             payloads. Versions inherited from cloudevents-bom in the
+             parent dependencyManagement. -->
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-spring</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-kafka</artifactId>
+        </dependency>
+        <!-- P4.4b: structured-mode JSON encoder used by OutboxPoller
+             to serialize the envelope into the Kafka record value
+             so SCSt's default ByteArraySerializer can ship it
+             verbatim. NOT pulled transitively by cloudevents-spring
+             4.0.x. -->
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-json-jackson</artifactId>
+        </dependency>
+
         <!-- OpenAPI / Swagger UI (Part 19). -->
         <dependency>
             <groupId>org.springdoc</groupId>
@@ -181,6 +223,34 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P4.4b / ADR-0026: Testcontainers Kafka for the
+             KafkaOutboxPublisherIT end-to-end test (POST batch ->
+             KafkaConsumer probe asserts CloudEvent envelope on
+             cortex.logs.events.v1). Version inherited from
+             testcontainers-bom. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P4.4b: spring-kafka-test gives EmbeddedKafkaBroker +
+             KafkaTestUtils for the OutboxPoller IT consumer probe. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P4.4b: Awaitility for the OutboxPollerKafkaIT eventually-
+             consistent poll loop (Postgres row flip -> Kafka envelope
+             landing). Version inherited from the Spring Boot BOM. -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
 
