@@ -25,26 +25,59 @@ P1) for the 19-phase roadmap (P0 - P18).
 ## Architecture (one-screen)
 
 ```
-   Edge          Ingest                 Process                  Storage / Search
-+--------+   +-------------+     +-------------------+      +-------------------+
-|        |-->| log-gateway |---->| log-ingest        |----> | Postgres (GIN)    |
-| agents |   | (JWT/APIKey)|     | (validate, dedupe,|      | Loki (hot+warm)   |
-|        |   +-------------+     |  enrich, queue)   |      | MinIO/Azure Blob  |
-+--------+         |             +-------------------+      | Quickwit (fulltxt)|
-                   v                       |                +-------------------+
-                +--------+                 v                          ^
-                |  REST  |       +-------------------+                |
-                | GraphQL|       | log-processor     |----------------+
-                +--------+       | (parse, anomaly,  |
-                                 |  NL->LogQL via AI)|
-                                 +-------------------+
-                                          |
-                                          v
-                                 +-------------------+
-                                 | log-remediation   |---> Slack/PagerDuty/Jira
-                                 |  + log-monitoring |
-                                 |  + log-indexer    |
-                                 +-------------------+
+   Tenants 1..M  (each runs N agents; agents bundle log-agent-lib's Logback appender)
+        |                                                  ^
+        | push: HTTPS + JWT/APIKey + X-Tenant-Id           | query: REST + GraphQL (users / ops)
+        v                                                  |
+     +-------------------------------------------------------+
+     | log-gateway  (JWT/APIKey, rate-limit, NL->LogQL)[E][M]|
+     +-------------------------------------------------------+
+              |
+              v
+   +----------------------+   +----------------+   +----------------------+   +-------------------+
+   | log-ingest    [E][M] |-->| Kafka          |-->| log-processor  [E][M]|-->| Postgres (GIN)    |
+   | (validate, dedupe,   |   |  cortex.logs   |   | (parse, anomaly,     |   | Loki (hot+warm)   |
+   |  enrich,             |   |   .events.v1   |   |  NL->LogQL via AI)   |   | MinIO/Azure Blob  |
+   |  outbox tx)          |   |    + .dlq      |   +----------------------+   | Quickwit (fulltxt)|
+   +----------------------+   | (CloudEvents   |              |               +-------------------+
+            ^                 |    1.0)        |              v                         ^
+            |                 +----------------+   +----------------------+   +-------------------+
+            |                                      | log-remediation[E][M]|   | log-indexer [E][M]|
+            |                                      | (playbooks, alert    |   | (Quickwit writer, |
+            |                                      |  routing)            |   |  retention, cold) |
+            |                                      +----------------------+   +-------------------+
+            |                                               |
+            |                                               v
+            |                                     Slack / PagerDuty / Jira
+            |
+            |  compile-time dep -- consumed by every Spring Boot service box above
+            |
+   +-------------------+
+   | log-agent-lib     |
+   | shared SDK:       |
+   | + contracts (DTOs, IngestBatchRequest, CloudEvent envelope)
+   | + Logback appender (X-Request-Id MDC, batched HTTPS push)
+   | + PiiMasker (mask-before-hash, deterministic event_id)
+   +-------------------+
+
+
+   Control plane (wired into every Spring Boot service tagged [E] / [M] above)
+
+   register / heartbeat / lb:// discovery               scrape /actuator/prometheus + /actuator/health
+            ^   ^   ^   ^   ^                                       |   |   |   |   |
+            |   |   |   |   |                                       v   v   v   v   v
+            |   |   |   |   |                                       |   |   |   |   |
+   +---------------------------+                          +---------------------------------+
+   | Eureka :8761  [E]         |                          | log-monitoring  [M]             |
+   | service registry; every   |                          | OTel + Micrometer scrape (15s); |
+   | Spring Boot service hosts |                          | SLO eval (ingest p99, dedupe    |
+   | a Spring Cloud Discovery  |                          | miss, outbox lag); Grafana      |
+   | client and registers here |                          | dashboards; health rollups      |
+   +---------------------------+                          +---------------------------------+
+            ^   ^   ^   ^   ^                                       |   |   |   |   |
+            |   |   |   |   |                                       v   v   v   v   v
+           gw  ing prc rem idx                                     gw  ing prc rem idx
+   (gw=log-gateway, ing=log-ingest, prc=log-processor, rem=log-remediation, idx=log-indexer)
 ```
 
 ### Services
