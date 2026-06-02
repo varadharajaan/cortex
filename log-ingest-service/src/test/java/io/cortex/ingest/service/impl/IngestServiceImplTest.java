@@ -16,6 +16,10 @@ import io.cortex.ingest.dto.response.IngestAcceptedResponse;
 import io.cortex.ingest.enrichment.EnrichmentProperties;
 import io.cortex.ingest.enrichment.EnrichmentService;
 import io.cortex.ingest.enrichment.GeoEnricher;
+import io.cortex.ingest.outbox.OutboxEvent;
+import io.cortex.ingest.outbox.OutboxEventFactory;
+import io.cortex.ingest.outbox.OutboxRepository;
+import io.cortex.ingest.outbox.RawLogTransactionalWriter;
 import io.cortex.ingest.persistence.RawLog;
 import io.cortex.ingest.persistence.RawLogRepository;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -67,6 +71,25 @@ class IngestServiceImplTest {
     /** Mocked repository. */
     private RawLogRepository repository;
 
+    /** Mocked outbox repository (P4.4a). */
+    private OutboxRepository outboxRepository;
+
+    /**
+     * Real outbox factory built around the shared Jackson encoder;
+     * exercises the same serialisation path as production.
+     */
+    private OutboxEventFactory outboxEventFactory;
+
+    /**
+     * Real transactional writer wrapped around the mocked
+     * repositories. The {@code @Transactional} annotation is inert
+     * outside Spring so the writer simply forwards the two saves;
+     * this lets the existing {@code verify(repository).save(...)}
+     * assertions stay intact while the new {@code outboxRepository}
+     * also participates.
+     */
+    private RawLogTransactionalWriter writer;
+
     /** In-memory Micrometer registry; recreated per test for clean counter values. */
     private MeterRegistry registry;
 
@@ -85,11 +108,15 @@ class IngestServiceImplTest {
     @BeforeEach
     void initService() {
         this.repository = Mockito.mock(RawLogRepository.class);
+        this.outboxRepository = Mockito.mock(OutboxRepository.class);
+        this.outboxEventFactory = new OutboxEventFactory(new ObjectMapper());
+        this.writer = new RawLogTransactionalWriter(
+                this.repository, this.outboxRepository, this.outboxEventFactory);
         this.registry = new SimpleMeterRegistry();
         this.enrichment = new EnrichmentService(
                 new GeoEnricher(new EnrichmentProperties(null)));
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.empty(), this.enrichment, this.registry);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.writer,
+                new ObjectMapper(), Optional.empty(), this.enrichment, this.registry);
     }
 
     /**
@@ -158,8 +185,8 @@ class IngestServiceImplTest {
     void hotPathHitShortCircuitsPersistence() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-1")).thenReturn(false);
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.enrichment, this.registry);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.writer,
+                new ObjectMapper(), Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-hot-path");
         final IngestAcceptedResponse response =
@@ -179,8 +206,8 @@ class IngestServiceImplTest {
     void hotPathMissProceedsWithPersistence() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-2")).thenReturn(true);
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.enrichment, this.registry);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.writer,
+                new ObjectMapper(), Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-fresh");
         final IngestAcceptedResponse response =
@@ -199,8 +226,8 @@ class IngestServiceImplTest {
     @Test
     void hotPathSkippedWhenIdempotencyKeyAbsent() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.enrichment, this.registry);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.writer,
+                new ObjectMapper(), Optional.of(dedupe), this.enrichment, this.registry);
 
         final IngestBatchRequest request = singleEntryBatch("entry-no-idem");
         this.service.acceptBatch(request, TENANT, null, CORRELATION);
@@ -267,8 +294,8 @@ class IngestServiceImplTest {
     void hotPathHitIncrementsHotDedupeCounterByEntryCount() {
         final IdempotencyDedupeService dedupe = Mockito.mock(IdempotencyDedupeService.class);
         when(dedupe.claim(TENANT, "idem-metric-hot")).thenReturn(false);
-        this.service = new IngestServiceImpl(FIXED_CLOCK, this.repository, new ObjectMapper(),
-                Optional.of(dedupe), this.enrichment, this.registry);
+        this.service = new IngestServiceImpl(FIXED_CLOCK, this.writer,
+                new ObjectMapper(), Optional.of(dedupe), this.enrichment, this.registry);
 
         final LogEntry one = new LogEntry(
                 Instant.parse("2026-06-01T11:00:00Z"),
@@ -366,6 +393,53 @@ class IngestServiceImplTest {
         verify(this.repository, times(2)).save(captor.capture());
         assertThat(captor.getAllValues().get(0).eventId())
                 .isEqualTo(captor.getAllValues().get(1).eventId());
+    }
+
+    /**
+     * P4.4a / ADR-0025 / strict rule B10.1: every successful
+     * raw_logs INSERT MUST persist a sibling outbox_events row in
+     * the same per-row REQUIRES_NEW transaction. The captured
+     * outbox row MUST carry the same {@code (tenant_id, event_id)}
+     * as the raw_logs row, status {@code PENDING}, zero attempts,
+     * and a non-blank JSON payload.
+     */
+    @Test
+    void outboxRowSavedAlongsideRawLog() {
+        final IngestBatchRequest request = singleEntryBatch("entry-outbox");
+        this.service.acceptBatch(request, TENANT, null, CORRELATION);
+
+        final ArgumentCaptor<RawLog> rawCaptor = ArgumentCaptor.forClass(RawLog.class);
+        final ArgumentCaptor<OutboxEvent> outboxCaptor =
+                ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(this.repository, times(1)).save(rawCaptor.capture());
+        verify(this.outboxRepository, times(1)).save(outboxCaptor.capture());
+        final RawLog raw = rawCaptor.getValue();
+        final OutboxEvent outbox = outboxCaptor.getValue();
+        assertThat(outbox.tenantId()).isEqualTo(raw.tenantId());
+        assertThat(outbox.eventId()).isEqualTo(raw.eventId());
+        assertThat(outbox.status()).isEqualTo("PENDING");
+        assertThat(outbox.attempts()).isZero();
+        assertThat(outbox.payload()).contains(raw.eventId());
+        assertThat(outbox.payload()).contains(TENANT);
+    }
+
+    /**
+     * P4.4a / ADR-0025: when the cold-path UNIQUE constraint
+     * absorbs a raw_logs INSERT (DuplicateKeyException), the
+     * outbox MUST NOT be written. Without the per-row
+     * REQUIRES_NEW boundary the writer's first save throws, so
+     * the second save is never invoked and the outbox stays
+     * consistent with raw_logs.
+     */
+    @Test
+    void outboxNotSavedWhenColdPathDuplicateAbsorbed() {
+        when(this.repository.save(any(RawLog.class)))
+                .thenThrow(new DuplicateKeyException("uk vio"));
+
+        this.service.acceptBatch(singleEntryBatch("entry-dup"), TENANT, null, CORRELATION);
+
+        verify(this.repository, times(1)).save(any(RawLog.class));
+        Mockito.verifyNoInteractions(this.outboxRepository);
     }
 
     /**
