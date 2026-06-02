@@ -2,15 +2,33 @@
 # CORTEX log-ingest-service - dev profile (rule A6.1, 15.2).
 # Full health detail, debug-level CORTEX logs, faster Eureka registration.
 # Uses the smoke-compose Postgres on localhost:5432.
+# P4.4b / ADR-0026: Kafka binder points at the smoke-compose Kafka on
+# localhost:9092; topics auto-created server-side. Outbox poller fires
+# every 250ms in dev for snappier smoke turnaround.
 # ---------------------------------------------------------------------------
+
+spring:
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${CORTEX_KAFKA_BROKERS:localhost:9092}
 
 management:
   endpoint:
     health:
       show-details: always
 
+cortex:
+  ingest:
+    outbox:
+      poller:
+        fixed-delay-ms: 250
+
 logging:
   level:
     io.cortex: DEBUG
     com.netflix.discovery: INFO
     org.flywaydb: INFO
+    org.springframework.cloud.stream: INFO
+    org.apache.kafka: WARN

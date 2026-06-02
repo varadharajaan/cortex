@@ -41,6 +41,21 @@ spring:
     baseline-on-migrate: true
     locations: classpath:db/migration
 
+  # ----- Kafka producer (P4.4b / ADR-0026) --------------------------------
+  # OutboxPoller publishes CloudEvent 1.0 structured-mode JSON envelopes
+  # to topic `cortex.logs.events.v1` via Spring Kafka's KafkaTemplate
+  # directly. Producer details (acks=all, idempotence, retries, zstd)
+  # are configured in code (KafkaConfig). SCSt outbound binding was
+  # prototyped but silently dropped messages between the bound channel
+  # subscriber and the producer network thread; binder-portability for
+  # outbound publishing is deferred to P4.4c when Service Bus comes
+  # online (ADR-0027) and an OutboxEventPublisher interface is introduced.
+  # Auto-create handled by the broker in local-dev
+  # (KAFKA_AUTO_CREATE_TOPICS_ENABLE=true on the smoke compose stack);
+  # explicit topic provisioning + retention tuning is a P10 infra story.
+  kafka:
+    bootstrap-servers: ${CORTEX_KAFKA_BROKERS:localhost:9092}
+
 server:
   port: 8092
   shutdown: graceful
@@ -120,6 +135,24 @@ cortex:
     enrichment:
       geo:
         fixed-country: ${CORTEX_INGEST_GEO_FIXED_COUNTRY:unknown}
+    # Outbox poller (P4.4b / ADR-0026). Drains PENDING rows from
+    # `outbox_events` into the Kafka topic `cortex.logs.events.v1` as
+    # CloudEvent 1.0 structured-mode JSON envelopes via Spring Kafka's
+    # KafkaTemplate directly (see comment above `spring.kafka` for why
+    # SCSt outbound was skipped at P4.4b). Poll cadence + batch size
+    # are env-overridable so prod can tune without a redeploy. Backoff
+    # cap pins the longest stretch a failing row can wait between
+    # retry attempts.
+    outbox:
+      poller:
+        enabled: ${CORTEX_INGEST_OUTBOX_POLLER_ENABLED:true}
+        fixed-delay-ms: ${CORTEX_INGEST_OUTBOX_POLLER_DELAY_MS:1000}
+        batch-size: ${CORTEX_INGEST_OUTBOX_POLLER_BATCH:100}
+        backoff-initial-ms: ${CORTEX_INGEST_OUTBOX_POLLER_BACKOFF_INITIAL_MS:1000}
+        backoff-max-ms: ${CORTEX_INGEST_OUTBOX_POLLER_BACKOFF_MAX_MS:300000}
+      cloudevent:
+        source: ${CORTEX_INGEST_OUTBOX_CE_SOURCE:/cortex/log-ingest-service}
+        type: ${CORTEX_INGEST_OUTBOX_CE_TYPE:io.cortex.logs.event.v1}
   security:
     # When true, every request to /api/** MUST carry a valid
     # X-Cortex-Service-JWT header (presence-only in P4.0; full parse +

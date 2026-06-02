@@ -2,6 +2,7 @@ package io.cortex.ingest;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Spring Boot entrypoint for the CORTEX log-ingest-service (P4).
@@ -22,8 +23,14 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * (see {@link io.cortex.ingest.security.ServiceJwtFilter} and the
  * {@code cortex.security.mtls.*} / {@code cortex.security.service-jwt.*}
  * configuration blocks in {@code application.yml}).</p>
+ *
+ * <p>P4.4b / ADR-0026: {@link EnableScheduling} activates the
+ * {@code @Scheduled} hooks used by {@code OutboxPoller} to drain
+ * {@code outbox_events} PENDING rows into the SCSt Kafka binding
+ * {@code cortexLogsEventsV1-out-0} -> {@code cortex.logs.events.v1}.</p>
  */
 @SpringBootApplication
+@EnableScheduling
 public class CortexIngestApplication {
 
     /**

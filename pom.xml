@@ -138,6 +138,11 @@
         <opentelemetry.version>1.43.0</opentelemetry.version>
         <micrometer.version>1.13.6</micrometer.version>
         <quickwit-client.version>0.8.0</quickwit-client.version>
+        <!-- CloudEvents 1.0 envelope library, used by P4.4b
+             (log-ingest-service outbox publisher / ADR-0026).
+             cloudevents-bom manages cloudevents-core, cloudevents-api,
+             cloudevents-spring, cloudevents-kafka. -->
+        <cloudevents.version>4.0.1</cloudevents.version>
         <!-- Pinned to resolve transitive convergence between
              spring-cloud-starter-netflix-eureka-client paths
              (eureka-core->guava 33.0.0-jre vs netflix-eventbus->guava 14.0.1).
@@ -233,6 +238,17 @@
                 <groupId>io.opentelemetry</groupId>
                 <artifactId>opentelemetry-bom</artifactId>
                 <version>${opentelemetry.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- CloudEvents BOM (P4.4b / ADR-0026). Manages
+                 cloudevents-core / cloudevents-api / cloudevents-spring /
+                 cloudevents-kafka with a single version pin. -->
+            <dependency>
+                <groupId>io.cloudevents</groupId>
+                <artifactId>cloudevents-bom</artifactId>
+                <version>${cloudevents.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
