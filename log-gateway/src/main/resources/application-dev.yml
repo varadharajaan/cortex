@@ -29,6 +29,17 @@ management:
     health:
       show-details: always
 
+# Pin the dev-profile Eureka instance advertisement to loopback. The host
+# may have multiple NICs (WiFi + corporate VPN tunnel); without this the
+# auto-detected non-loopback IP is non-deterministic and the gateway can
+# end up calling lb://log-ingest-service at an IP it cannot route to.
+# Loopback is safe here because every Spring Boot app runs on the same
+# developer machine in the dev profile. Staging / prod use K8s Service
+# DNS instead of Eureka entirely, so this override is dev-only.
+eureka:
+  instance:
+    ip-address: 127.0.0.1
+
 logging:
   level:
     io.cortex: DEBUG
