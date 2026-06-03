@@ -18,10 +18,14 @@ Quickwit full-text), and Kubernetes-native deployment.
 [![Spring Cloud](https://img.shields.io/badge/Spring%20Cloud-2023.0.x-green)](https://spring.io/projects/spring-cloud)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
 
-**Phase progress**: P0 .. P4 SHIPPED. Latest P4 sub-phase: P4.4c DLQ +
-Service Bus binder profile + outbox counters (PR #63, `9891f3c`, 2026-06-02).
-P4 epic closed by P4.5 (PR #65, `21b25b9`, 2026-06-03). **Next: P5
-(`log-processor-service`).**
+**Phase progress**: P0 .. P5 SHIPPED (through P5.2). P5.2 Spring AI 1.0
+anomaly classifier (PR #73, `e92efaf`, 2026-06-03). P5.1 parser + schema
+validator + DLQ publisher (PR #70, `65e2ab8`, 2026-06-03). Multi-NIC Eureka
+loopback fix (PR #71, `f8146a9`, 2026-06-03). P5.0a closer follow-ups
+(PR #68, `a8e539c`, 2026-06-03). P5.0 `log-processor-service` scaffold +
+Kafka consumer + classifier SPI + metrics (PR #67, `068a3f8`, 2026-06-03).
+P4 epic closed by P4.5 (PR #65, `2af00d1`, 2026-06-03). **Next: P5.3
+anomaly fan-out + remediation hook (within the P5 epic).**
 
 See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 [docs/adr/INDEX.md](docs/adr/INDEX.md) for the ADR directory.
@@ -41,6 +45,16 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
   (ADR-0026) with exponential backoff + DLQ fan-out after retry
   exhaustion (ADR-0027). Counters exposed at `/actuator/prometheus` as
   `cortex.ingest.outbox.{published,failed,dlq}_total`.
+- **log-processor-service** :8095 -- direct `@KafkaListener` consumer
+  with manual offset commit (ADR-0028, LD79); CloudEvents 1.0 envelope
+  parse + JSON-schema validation; Spring AI 1.0 GA anomaly classifier
+  (`spring-ai-starter-model-ollama`) with WireMock-stubbed Ollama on
+  `:8094` for deterministic smoke (ADR-0029); DLQ fan-out to
+  `cortex.logs.events.v1.dlq`; counters
+  `cortex.processor.events.{consumed,parsed,classified,dlq_replay}_total`
+  (the `classified_total` is tagged `outcome=anomaly|normal|error|skipped`).
+  Actuator-only HTTP surface; pipeline activation flows through the
+  Kafka topic `cortex.logs.events.v1`.
 - **eureka-server** :8761 -- service registry; every Spring Boot service
   registers and discovers via `lb://`.
 - **log-echo-service** :8093 -- thin echo backstop used by gateway smokes
@@ -117,7 +131,7 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 | `log-gateway`                | Spring Cloud Gateway MVC, JWT/API-key auth, Bucket4j rate limit, NL->LogQL | P3 |
 | `log-echo-service`           | Thin echo backstop for end-to-end gateway smokes (standalone Maven project) | P3.0b |
 | `log-ingest-service`         | Validate, dedupe, mask PII, enrich, persist + transactional outbox -> Kafka | P4.0..P4.4c |
-| `log-processor-service`      | Parse, classify, AI anomaly detection                  | P5 (next) |
+| `log-processor-service`      | Direct `@KafkaListener` consumer with manual offset commit (ADR-0028), CloudEvents 1.0 envelope parse + JSON-schema validation, Spring AI 1.0 anomaly classifier (ADR-0029), DLQ publisher | P5.0..P5.2 SHIPPED |
 | `log-remediation-service`    | Auto-healing playbooks, alert routing                  | P6 |
 | `log-indexer-service`        | Quickwit indexing, retention, cold-tier moves          | P7 |
 | `log-monitoring-service`     | Health, metrics, dashboards, SLO tracking              | P8 |
@@ -156,7 +170,7 @@ docker compose -f infra/docker/docker-compose.yml up -d   # added in P10
 ├── log-agent-lib/             # Shared SDK (P2)
 ├── log-gateway/               # Edge gateway (P3)
 ├── log-ingest-service/        # Ingest pipeline (P4.0..P4.4c SHIPPED)
-├── log-processor-service/     # AI processing (P5, next)
+├── log-processor-service/     # AI processing (P5.0..P5.2 SHIPPED; P5.3 next)
 ├── log-remediation-service/   # Self-healing (P6)
 ├── log-indexer-service/       # Quickwit owner (P7)
 ├── log-monitoring-service/    # Observability (P8)
@@ -178,6 +192,7 @@ docker compose -f infra/docker/docker-compose.yml up -d   # added in P10
 │   ├── smoke-p3-*.ps1         # Per-sub-phase gateway smokes
 │   ├── smoke-p4-*.ps1         # Per-sub-phase ingest smokes
 │   ├── p4-4b/, p4-4c/, p4-5/  # Sub-phase boot + triangle gate scripts
+│   ├── p5-0/, p5-1/, p5-2/, p5-2a/  # Processor boot + smoke + Newman scripts
 │   └── lib/RunLog.psm1        # Get-CortexLogPath helpers (LD50)
 ├── .github/
 │   ├── workflows/             # CI/CD (P14)
