@@ -14,9 +14,9 @@ import org.junit.jupiter.api.Test;
  */
 class JsonCodecTest {
 
-    /** A serialized batch is a JSON array of entry objects. */
+    /** A serialized batch is the ingest envelope {@code {"entries":[...]}}. */
     @Test
-    void encodesBatchAsJsonArray() {
+    void encodesBatchAsIngestEnvelope() {
         final JsonCodec codec = new JsonCodec();
         final LogEntry entry = new LogEntry(
                 Instant.parse("2026-01-02T03:04:05Z"),
@@ -25,7 +25,7 @@ class JsonCodecTest {
                 "hello",
                 java.util.Map.of("k", "v"));
         final String json = new String(codec.encodeBatch(List.of(entry)), StandardCharsets.UTF_8);
-        assertThat(json).startsWith("[").endsWith("]");
+        assertThat(json).startsWith("{\"entries\":[").endsWith("]}");
         assertThat(json).contains("\"service\":\"svc\"");
         assertThat(json).contains("\"message\":\"hello\"");
         assertThat(json).contains("\"level\":\"INFO\"");
@@ -47,11 +47,11 @@ class JsonCodecTest {
         assertThat(json).doesNotContain("1767322445");
     }
 
-    /** Empty batches produce an empty JSON array. */
+    /** Empty batches produce an envelope with an empty array. */
     @Test
-    void emptyBatchProducesEmptyArray() {
+    void emptyBatchProducesEmptyEnvelope() {
         final JsonCodec codec = new JsonCodec();
         final String json = new String(codec.encodeBatch(List.of()), StandardCharsets.UTF_8);
-        assertThat(json).isEqualTo("[]");
+        assertThat(json).isEqualTo("{\"entries\":[]}");
     }
 }

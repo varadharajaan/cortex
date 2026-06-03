@@ -1,5 +1,6 @@
 package io.cortex.gateway.config;
 
+import static org.springframework.cloud.gateway.server.mvc.filter.BeforeFilterFunctions.rewritePath;
 import static org.springframework.cloud.gateway.server.mvc.filter.LoadBalancerFilterFunctions.lb;
 import static org.springframework.cloud.gateway.server.mvc.handler.GatewayRouterFunctions.route;
 import static org.springframework.cloud.gateway.server.mvc.handler.HandlerFunctions.http;
@@ -50,11 +51,15 @@ public class GatewayRoutesConfig {
     }
 
     /**
-     * P3.4 logs proxy route: forwards {@code /api/v1/logs/**} through
-     * the load balancer to {@code log-echo-service} for now
-     * (placeholder until P4 brings up the real log ingest service).
-     * Auth + the global {@code RateLimitFilter} apply because the path
-     * matches {@link io.cortex.gateway.config.SecurityConfig}'s
+     * Logs proxy route: forwards {@code /api/v1/logs/**} through the
+     * load balancer to {@code log-ingest-service} (P4.x flip from the
+     * earlier P3.4 echo placeholder). The public path is rewritten to
+     * the ingest service's internal path {@code /api/v1/ingest/**}
+     * before forwarding because {@link io.cortex.ingest.controller.IngestController}
+     * is mapped at {@code /api/v1/ingest/batch}, not
+     * {@code /api/v1/logs/batch}. Auth + the global
+     * {@code RateLimitFilter} apply because the path matches
+     * {@link io.cortex.gateway.config.SecurityConfig}'s
      * {@code anyRequest().authenticated()} rule and the
      * {@code OncePerRequestFilter} chain.
      *
@@ -64,7 +69,8 @@ public class GatewayRoutesConfig {
     public RouterFunction<ServerResponse> logsServiceRoute() {
         return route("logs-service")
                 .route(path("/api/v1/logs/**"), http())
-                .filter(lb("log-echo-service"))
+                .before(rewritePath("/api/v1/logs/(?<segment>.*)", "/api/v1/ingest/${segment}"))
+                .filter(lb("log-ingest-service"))
                 .build();
     }
 

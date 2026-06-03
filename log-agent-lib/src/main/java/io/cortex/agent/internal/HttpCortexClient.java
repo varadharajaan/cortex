@@ -114,6 +114,10 @@ public final class HttpCortexClient implements CortexClient {
         if (this.apiKey != null && !this.apiKey.isBlank()) {
             builder.header("Authorization", "Bearer " + this.apiKey);
         }
+        final String tenantId = this.options.tenantId();
+        if (tenantId != null && !tenantId.isBlank()) {
+            builder.header("X-Tenant-Id", tenantId);
+        }
         return builder.build();
     }
 

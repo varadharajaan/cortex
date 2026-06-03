@@ -41,7 +41,8 @@ spring:
       missing-topics-fatal: false
 
 server:
-  port: 8093
+  # 8093 is owned by log-echo-service; co-exist with the full local stack.
+  port: 8095
   shutdown: graceful
   error:
     include-message: never
