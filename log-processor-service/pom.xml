@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-processor-service - parse, classify, AI anomaly, fan-out to
+  Loki + Quickwit for the CORTEX processing path (P5 epic).
+
+  P5.0 (this commit) is the SCAFFOLD + first production code path:
+  module compiles, context loads, Kafka consumer for
+  `cortex.logs.events.v1` is wired via @KafkaListener (direct
+  Spring for Apache Kafka, per LD79 + ADR-0026 symmetry with the
+  P4.4b producer pivot), AnomalyClassifier SPI is in place with a
+  NoopAnomalyClassifier default, three Micrometer counters publish
+  to /actuator/prometheus, Eureka client registers, actuator
+  liveness/readiness probes wired.
+
+  Real features arrive in P5.1..P5.4:
+  - P5.1 parser + schema enforcement
+  - P5.2 Spring AI 1.0 classifier
+  - P5.3 Loki + Quickwit fan-out sinks
+  - P5.4 cortex.anomalies.v1 outbox + DLQ publish for P6
+
+  Endpoint surface (P5.0):
+      GET  /actuator/health        - K8s probes
+      GET  /actuator/health/liveness
+      GET  /actuator/health/readiness
+      GET  /actuator/prometheus
+
+  Registers with Eureka at http://localhost:8761/eureka/ as
+  application-id = "log-processor-service".
+
+  Per LD79 / ADR-0026: this module uses direct spring-kafka
+  @KafkaListener for the consumer rather than Spring Cloud Stream
+  inbound binding. Symmetric with the P4.4b KafkaTemplate direct
+  producer + smaller dependency surface + manual offset commit
+  semantics under our direct control (ADR-0028 D3).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-processor-service</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-processor-service</name>
+    <description>
+        CORTEX log-processor-service - parse, classify, AI anomaly,
+        fan-out to Loki + Quickwit. P5.0 ships the scaffold + Kafka
+        consumer skeleton + AnomalyClassifier SPI stub + Micrometer
+        counters; P5.1..P5.4 fill in parser, Spring AI classifier,
+        fan-out sinks, and cortex.anomalies.v1 publisher.
+    </description>
+
+    <properties>
+        <!-- P5.0 scaffold + first-code: JaCoCo plugin is activated in
+             the build/plugins block below so Surefire's @{argLine}
+             placeholder is populated (otherwise Surefire passes the
+             literal "@{argLine}" to the forked JVM and crashes).
+             Coverage thresholds are intentionally relaxed to 0/0 at
+             P5.0 because the AnomalyClassifier SPI + ProcessorMetrics
+             + the no-op default + the @SpringBootTest context-loads
+             are covered by unit tests, but full LogEventConsumer +
+             branch coverage on the consumer ack / decode-failure
+             paths arrives in P5.1 alongside Testcontainers Kafka IT.
+             P5.1 flips both gates back to the parent default 0.80 /
+             0.80 (LD3 / Rule 12.5 / 13.4). -->
+        <jacoco.line.coverage>0.0</jacoco.line.coverage>
+        <jacoco.branch.coverage>0.0</jacoco.branch.coverage>
+    </properties>
+
+    <dependencies>
+
+        <!-- Shared SDK + DTO contracts (LogEntry, LogLevel). -->
+        <dependency>
+            <groupId>io.cortex</groupId>
+            <artifactId>log-agent-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Boot core. No starter-web: processor exposes no
+             public HTTP surface in P5.0 (actuator is on the management
+             port via starter-actuator below). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Actuator endpoints are served over HTTP. starter-actuator
+             pulls a servlet engine transitively; we need starter-web
+             to drive it. Restricted to actuator-only via management
+             port (see application.yml `management.server.port`). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Eureka client (ADR-0016): registers with the local-dev
+             standalone registry at http://localhost:8761/eureka/. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- P5.0 / ADR-0028 D1: direct Spring for Apache Kafka
+             consumer (NOT Spring Cloud Stream binder) per LD79
+             symmetry with the P4.4b producer pivot. Spring Boot
+             autoconfigures KafkaListenerContainerFactory when
+             `spring.kafka.consumer.*` is present + @EnableKafka
+             marks a @Configuration class. @KafkaListener methods
+             then bind to topics with manual ack semantics. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- P5.0 / ADR-0028: CloudEvents 1.0 structured-mode JSON
+             decoder mirroring the P4.4b producer envelope (ADR-0026).
+             cloudevents-core gives CloudEvent + CloudEventBuilder;
+             cloudevents-json-jackson decodes the JSON bytes from the
+             Kafka record value back into a CloudEvent object that
+             our consumer hands to the AnomalyClassifier SPI. -->
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-json-jackson</artifactId>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry (Part 17). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P5.0: spring-kafka-test gives EmbeddedKafkaBroker +
+             KafkaTestUtils for the consumer context-loads test +
+             future @KafkaListener probe tests in P5.1+. Lightweight
+             in-JVM broker; no Testcontainers required for the
+             scaffold smoke. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      No @Mapper interfaces yet (scaffold-only). Drop the MapStruct
+      annotation processor + -A options, keep Lombok. Same LD12 / LD14
+      override pattern used by log-gateway / log-echo-service /
+      log-ingest-service.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Activate JaCoCo so the parent's prepare-agent execution
+                 fires and Surefire's @{argLine} placeholder is populated.
+                 Coverage thresholds are 0/0 at P5.0 per the property
+                 overrides above; P5.1 flips them back to the parent
+                 default 0.80 / 0.80. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>
