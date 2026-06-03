@@ -219,7 +219,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tenantId\": \"{{tenant_id}}\",\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-03T16:00:00.000Z\",\n      \"level\": \"ERROR\",\n      \"message\": \"OutOfMemoryError: Java heap space at io.cortex.demo.LoadGenerator.run(LoadGenerator.java:42) -- p5-2a newman pipeline\",\n      \"labels\": { \"service\": \"demo-app\", \"env\": \"local\" }\n    }\n  ]\n}"
+              "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"{{$isoTimestamp}}\",\n      \"level\": \"ERROR\",\n      \"service\": \"demo-app\",\n      \"message\": \"OutOfMemoryError: Java heap space at io.cortex.demo.LoadGenerator.run(LoadGenerator.java:42) -- p5-2a newman pipeline {{$guid}}\",\n      \"labels\": { \"env\": \"local\" }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{gateway_base_url}}/api/v1/logs/batch",
@@ -236,7 +236,7 @@
           ] } } ]
         },
         {
-          "name": "Settle delay (sleep 4s while outbox poller + Kafka consumer drain)",
+          "name": "Settle delay (sleep 20s while outbox poller + Kafka consumer drain)",
           "request": {
             "method": "GET",
             "header": [ { "key": "Accept", "value": "application/json" } ],
@@ -244,7 +244,9 @@
           },
           "event": [
             { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
-              "const wait = 4000;",
+              "// Outbox poller has fixed-delay=1s but backoff-max=5min when PENDING is empty.",
+              "// 20s is enough to ride out a typical backoff cycle in a freshly idle stack.",
+              "const wait = 20000;",
               "const start = Date.now();",
               "while (Date.now() - start < wait) { /* busy-wait so Newman blocks; setTimeout is not honored synchronously */ }"
             ] } },

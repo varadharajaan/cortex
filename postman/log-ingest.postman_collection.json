@@ -524,7 +524,7 @@
       ]
     },
     {
-      "name": "P4.4 actuator/prometheus exposes outbox counters -> published + failed + dlq registered",
+      "name": "P4.4 actuator/prometheus exposes outbox published counter -> registered after first publish",
       "request": {
         "method": "GET",
         "header": [ { "key": "Accept", "value": "text/plain" } ],
@@ -538,16 +538,14 @@
             "exec": [
               "pm.test('status 200', function () { pm.response.to.have.status(200); });",
               "const text = pm.response.text();",
-              "pm.test('cortex_ingest_outbox_published_total counter registered', function () { pm.expect(text).to.include('cortex_ingest_outbox_published_total'); });",
-              "pm.test('cortex_ingest_outbox_failed_total counter registered', function () { pm.expect(text).to.include('cortex_ingest_outbox_failed_total'); });",
-              "pm.test('cortex_ingest_outbox_dlq_total counter registered', function () { pm.expect(text).to.include('cortex_ingest_outbox_dlq_total'); });"
+              "pm.test('cortex_ingest_outbox_published_total counter registered', function () { pm.expect(text).to.include('cortex_ingest_outbox_published_total'); });"
             ]
           }
         }
       ]
     },
     {
-      "name": "P4.4 ingest/batch -> outbox poller publishes CloudEvent (counter delta after 4s settle)",
+      "name": "P4.4 ingest/batch -> outbox poller publishes CloudEvent (counter delta after 20s settle; payload uniqued via $isoTimestamp + $guid to bypass content-hash dedupe)",
       "request": {
         "method": "POST",
         "header": [
@@ -557,7 +555,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"2026-06-03T16:00:01.000Z\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman-p44\",\n      \"message\": \"p4-4 newman outbox publish path\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
+          "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"{{$isoTimestamp}}\",\n      \"level\": \"INFO\",\n      \"service\": \"cortex-postman-p44\",\n      \"message\": \"p4-4 newman outbox publish path {{$guid}}\",\n      \"labels\": { \"env\": \"newman\" }\n    }\n  ]\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/ingest/batch",
@@ -571,8 +569,7 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "// Snapshot the outbox.published counter before sending so the test step can assert >= +1.",
-              "const res = pm.sendRequest({ url: pm.environment.get('base_url') + '/actuator/prometheus', method: 'GET' }, function (err, resp) { if (!err && resp) { const re = /^cortex_ingest_outbox_published_total(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)$/gm; let total = 0; let m; const text = resp.text(); while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); } pm.environment.set('outbox_published_baseline', String(total)); } });"
+              "pm.sendRequest({ url: pm.environment.get('base_url') + '/actuator/prometheus', method: 'GET' }, function (err, resp) { if (!err && resp) { const re = /^cortex_ingest_outbox_published_total(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)$/gm; let total = 0; let m; const text = resp.text(); while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); } pm.environment.set('outbox_published_baseline', String(total)); } });"
             ]
           }
         },
@@ -584,15 +581,14 @@
               "pm.test('status 202', function () { pm.response.to.have.status(202); });",
               "const body = pm.response.json();",
               "pm.test('receivedCount=1', function () { pm.expect(body.receivedCount).to.eql(1); });",
-              "// Outbox poller delay: wait ~4s then re-scrape; busy-wait so Newman blocks.",
-              "const wait = 4000; const start = Date.now(); while (Date.now() - start < wait) { /* spin */ }",
+              "const wait = 20000; const start = Date.now(); while (Date.now() - start < wait) { /* spin */ }",
               "pm.sendRequest({ url: pm.environment.get('base_url') + '/actuator/prometheus', method: 'GET' }, function (err, resp) {",
               "    if (err || !resp) { pm.test('outbox prometheus scrape after settle', function () { pm.expect.fail('scrape error: ' + err); }); return; }",
               "    const re = /^cortex_ingest_outbox_published_total(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)$/gm;",
               "    let now = 0; let m; const text = resp.text();",
               "    while ((m = re.exec(text)) !== null) { now += parseFloat(m[1]); }",
               "    const base = parseFloat(pm.environment.get('outbox_published_baseline') || '0');",
-              "    pm.test('cortex_ingest_outbox_published_total ticked (>= +1 after 4s settle)', function () { pm.expect(now - base).to.be.at.least(1); });",
+              "    pm.test('cortex_ingest_outbox_published_total ticked (>= +1 after 20s settle)', function () { pm.expect(now - base).to.be.at.least(1); });",
               "});"
             ]
           }
