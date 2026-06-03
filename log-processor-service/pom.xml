@@ -58,23 +58,6 @@
         fan-out sinks, and cortex.anomalies.v1 publisher.
     </description>
 
-    <properties>
-        <!-- P5.0 scaffold + first-code: JaCoCo plugin is activated in
-             the build/plugins block below so Surefire's @{argLine}
-             placeholder is populated (otherwise Surefire passes the
-             literal "@{argLine}" to the forked JVM and crashes).
-             Coverage thresholds are intentionally relaxed to 0/0 at
-             P5.0 because the AnomalyClassifier SPI + ProcessorMetrics
-             + the no-op default + the @SpringBootTest context-loads
-             are covered by unit tests, but full LogEventConsumer +
-             branch coverage on the consumer ack / decode-failure
-             paths arrives in P5.1 alongside Testcontainers Kafka IT.
-             P5.1 flips both gates back to the parent default 0.80 /
-             0.80 (LD3 / Rule 12.5 / 13.4). -->
-        <jacoco.line.coverage>0.0</jacoco.line.coverage>
-        <jacoco.branch.coverage>0.0</jacoco.branch.coverage>
-    </properties>
-
     <dependencies>
 
         <!-- Shared SDK + DTO contracts (LogEntry, LogLevel). -->
@@ -188,6 +171,29 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- P5.1: Testcontainers Kafka 3.8.0 + JUnit 5 + Awaitility
+             for LogEventConsumerKafkaIT (real broker round-trip of
+             a CloudEvent through the parse + validate + DLQ
+             pipeline). Same shape as the P4.4b
+             OutboxPollerKafkaIT in log-ingest-service. Versions
+             flow from the parent testcontainers-bom + spring-boot
+             dependency-management. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit-junit5</artifactId>
@@ -223,14 +229,25 @@
                 </configuration>
             </plugin>
 
-            <!-- Activate JaCoCo so the parent's prepare-agent execution
-                 fires and Surefire's @{argLine} placeholder is populated.
-                 Coverage thresholds are 0/0 at P5.0 per the property
-                 overrides above; P5.1 flips them back to the parent
-                 default 0.80 / 0.80. -->
+            <!-- P5.0 scaffold activated JaCoCo so the parent's
+                 prepare-agent execution fires and Surefire's
+                 @{argLine} placeholder gets populated. P5.1 restores
+                 the parent default 0.80 / 0.80 line + branch gate by
+                 removing the relaxed property overrides (LD3 / Rule
+                 12.5 / 13.4). -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- P5.1: activate Failsafe so the *IT.java classes
+                 (LogEventConsumerKafkaIT) run during `verify`.
+                 Mirrors the log-ingest-service P4.1 + P4.4b pattern;
+                 without this plugin block, Failsafe stays dormant
+                 and the IT classes never execute. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
 
         </plugins>

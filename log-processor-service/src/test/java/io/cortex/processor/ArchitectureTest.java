@@ -9,13 +9,17 @@ import org.junit.jupiter.api.Test;
 import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 
 /**
- * ArchUnit layer-purity test for log-processor-service (P5.0).
+ * ArchUnit layer-purity test for log-processor-service (P5.0 / P5.1).
  *
  * <p>Enforces the SPI seam: the consume layer is allowed to depend
  * on the classify SPI interface ({@code AnomalyClassifier} +
  * {@code Classification}) but not on classify implementations
  * directly. Same pattern P4.0 used to lock the controller / service
  * / persistence layers in log-ingest-service.</p>
+ *
+ * <p>P5.1 adds the {@code parse} layer (CloudEvent decode + schema
+ * validation + DLQ failure-reason allowlist) and the {@code config}
+ * layer (Kafka producer wiring for the DLQ publisher).</p>
  *
  * <p>This is a layered-architecture contract, not a no-cycles
  * check: cycles already get caught by Maven's
@@ -35,14 +39,24 @@ class ArchitectureTest {
                 .layer("App").definedBy("io.cortex.processor")
                 .layer("Consume").definedBy("io.cortex.processor.consume..")
                 .layer("Classify").definedBy("io.cortex.processor.classify..")
+                .layer("Parse").definedBy("io.cortex.processor.parse..")
                 .layer("Metrics").definedBy("io.cortex.processor.metrics..")
+                .layer("Config").definedBy("io.cortex.processor.config..")
 
-                // Consume may call into the Classify SPI + Metrics.
+                // Consume orchestrates the parse + validate + classify
+                // pipeline; only App scans the @KafkaListener.
                 .whereLayer("Consume").mayOnlyBeAccessedByLayers("App")
                 // Classify is the SPI - accessed by Consume + tests.
                 .whereLayer("Classify").mayOnlyBeAccessedByLayers("App", "Consume")
+                // Parse carries the typed RawLogEvent referenced by the
+                // Classify SPI signature, so Classify reaches in.
+                .whereLayer("Parse")
+                .mayOnlyBeAccessedByLayers("App", "Consume", "Classify")
                 // Metrics is accessed by Consume.
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume");
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume")
+                // Config beans are wired by App; Consume @Autowires the
+                // KafkaTemplate produced here via DlqPublisher.
+                .whereLayer("Config").mayOnlyBeAccessedByLayers("App");
 
         layered.check(classes);
     }

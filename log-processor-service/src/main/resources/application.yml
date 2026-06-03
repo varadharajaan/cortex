@@ -84,6 +84,15 @@ cortex:
     # Topic this consumer listens to. CloudEvents 1.0 structured-mode
     # JSON envelopes produced by log-ingest-service per ADR-0026.
     topic: ${CORTEX_PROCESSOR_TOPIC:cortex.logs.events.v1}
+    # DLQ topic for consumer-side parse + validate failures (P5.1 /
+    # ADR-0027 contract mirror). DlqPublisher writes the original
+    # record bytes byte-for-byte with a `x-failure-reason` Kafka
+    # header set to `parse_error` or `schema_violation`. Topic is
+    # auto-created in local-dev (KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    # on the smoke compose stack); pre-create in staging / prod via
+    # the cluster Terraform module.
+    dlq:
+      topic: ${CORTEX_PROCESSOR_DLQ_TOPIC:cortex.logs.events.v1.dlq}
     # AnomalyClassifier SPI binder gate. Set to `spring-ai` in P5.2
     # when the Spring AI 1.0 classifier lands. Default `noop` returns
     # an empty classification (no anomaly) for every event so the

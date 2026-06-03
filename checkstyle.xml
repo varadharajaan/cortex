@@ -25,6 +25,13 @@
     <property name="severity" value="error"/>
     <property name="fileExtensions" value="java, properties, xml"/>
 
+    <!-- Honour @SuppressWarnings("checkstyle:checkname") on methods,
+         constructors, fields and types so genuine edge-cases (e.g.
+         record canonical constructors > 6 components) can opt out
+         in a localised, reviewable way without weakening the
+         project-wide gate. -->
+    <module name="SuppressWarningsFilter"/>
+
     <!-- ASCII only: forbid non-ASCII characters in source files. -->
     <module name="RegexpSingleline">
         <property name="format" value="[^\x00-\x7F]"/>
@@ -72,6 +79,11 @@
     </module>
 
     <module name="TreeWalker">
+
+        <!-- Companion to the top-level SuppressWarningsFilter: emits
+             tree events for every @SuppressWarnings annotation so the
+             filter can scope its suppression to the annotated element. -->
+        <module name="SuppressWarningsHolder"/>
 
         <!-- ============================================================ -->
         <!-- Javadoc enforcement (Rule 0.1.6)                              -->
