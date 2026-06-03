@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-processor-service - test classpath defaults (P5.2 / ADR-0029).
+#
+# Loaded with highest precedence under src/test/resources so unit
+# @SpringBootTest classes boot without env vars and without reaching
+# out to Eureka / Ollama / Azure OpenAI. Tests that need a Spring AI
+# ChatModel inject a Mockito-mocked one via @TestConfiguration
+# (mirror of the gateway P3.3 / ADR-0018 test pattern).
+#
+# The src/test/resources/application.yml fully shadows the src/main one
+# under Spring Boot. We therefore re-declare every placeholder the
+# production beans dereference (topic, dlq.topic, classifier sub-block)
+# so a bare @SpringBootTest(classes = CortexProcessorApplication.class)
+# bootstraps without external state.
+# ---------------------------------------------------------------------------
+
+# Eureka disabled at the property level so the test JVM does not
+# attempt to register with a registry that isn't running (ADR-0016).
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+spring:
+  application:
+    name: log-processor-service
+  # Kafka consumer placeholder defaults used by @KafkaListener on
+  # LogEventConsumer (groupId = "${spring.kafka.consumer.group-id}").
+  # Bootstrap servers are overridden by Testcontainers @DynamicPropertySource
+  # in LogEventConsumerKafkaIT. We must mirror the FULL main-yml
+  # kafka.consumer + kafka.listener blocks here because under Spring
+  # Boot src/test/resources/application.yml fully shadows the main one
+  # (LD100) -- otherwise auto-offset-reset defaults to latest and the
+  # IT consumer misses records that were published before it joined
+  # the (fresh) group.
+  kafka:
+    consumer:
+      group-id: cortex.processor.test
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      ack-mode: manual
+      missing-topics-fatal: false
+  # Disable Spring AI model autoconfig on the test classpath. The
+  # spring-ai-starter-model-ollama JAR is on the test classpath via
+  # the main module dependency, but tests must not open a real HTTP
+  # connection to Ollama. Any @SpringBootTest that needs a ChatModel
+  # supplies its own @TestConfiguration mock (same pattern as the
+  # gateway NlQueryIntegrationTest).
+  ai:
+    model:
+      chat: none
+      embedding: none
+
+# Production placeholder defaults required to wire DlqPublisher,
+# LogEventConsumer, NoopAnomalyClassifier, etc. in a full context
+# load. Values mirror application.yml defaults so tests stay
+# representative of dev.
+cortex:
+  processor:
+    topic: cortex.logs.events.v1
+    dlq:
+      topic: cortex.logs.events.v1.dlq
+    classifier:
+      provider: noop
+      model: mistral
+      temperature: 0.2
+      max-tokens: 256
+      confidence-threshold: 0.7
+      request-timeout: PT10S
+      prompt-template: classpath:/prompts/anomaly-classifier.st

@@ -1,5 +1,6 @@
 package io.cortex.processor.consume;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -16,6 +17,7 @@ import io.cortex.processor.parse.ParseException;
 import io.cortex.processor.parse.RawLogEvent;
 import io.cortex.processor.parse.SchemaValidator;
 import io.cortex.processor.parse.SchemaViolationException;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.Map;
@@ -25,17 +27,24 @@ import org.junit.jupiter.api.Test;
 import org.springframework.kafka.support.Acknowledgment;
 
 /**
- * Unit test for {@link LogEventConsumer} that exercises the three
- * pipeline branches without a real broker (P5.1).
+ * Unit test for {@link LogEventConsumer} that exercises every
+ * pipeline branch without a real broker (P5.1 + P5.2 classifier
+ * outcome counter assertions, ADR-0029 D5).
  *
  * <p>Branches covered:</p>
  * <ol>
- *   <li>happy path: parse + validate + classify succeed; metrics
- *       tick + ack</li>
- *   <li>parse failure: parser throws -> DLQ + ack +
- *       validator never invoked</li>
+ *   <li>happy path normal: parse + validate + classify (none) ->
+ *       outcome=normal counter ticks</li>
+ *   <li>happy path anomaly: parse + validate + classify (anomaly)
+ *       -> outcome=anomaly counter ticks + INFO log</li>
+ *   <li>classifier throws -> outcome=error counter ticks + ack
+ *       (consumer never loops on an LLM outage; ADR-0029 D4)</li>
+ *   <li>classifier returns null -> verdict treated as none ->
+ *       outcome=normal counter ticks</li>
+ *   <li>parse failure: parser throws -> DLQ + ack + validator never
+ *       invoked + zero classified ticks</li>
  *   <li>schema violation: validator throws -> DLQ + ack +
- *       classifier never invoked</li>
+ *       classifier never invoked + zero classified ticks</li>
  *   <li>null payload: skip + ack</li>
  * </ol>
  */
@@ -45,6 +54,7 @@ class LogEventConsumerTest {
     private SchemaValidator validator;
     private AnomalyClassifier classifier;
     private ProcessorMetrics metrics;
+    private MeterRegistry registry;
     private DlqPublisher dlqPublisher;
     private LogEventConsumer consumer;
 
@@ -54,15 +64,16 @@ class LogEventConsumerTest {
         this.parser = mock(LogEventParser.class);
         this.validator = mock(SchemaValidator.class);
         this.classifier = mock(AnomalyClassifier.class);
-        this.metrics = new ProcessorMetrics(new SimpleMeterRegistry());
+        this.registry = new SimpleMeterRegistry();
+        this.metrics = new ProcessorMetrics(this.registry);
         this.dlqPublisher = mock(DlqPublisher.class);
         this.consumer = new LogEventConsumer(this.parser, this.validator,
                 this.classifier, this.metrics, this.dlqPublisher);
     }
 
-    /** Happy path: parse + validate + classify, then ack. */
+    /** Happy path normal verdict: parse + validate + classify, tick outcome=normal, ack. */
     @Test
-    void happyPathParsesValidatesClassifiesAndAcks() {
+    void happyPathNormalTicksNormalOutcomeAndAcks() {
         final RawLogEvent event = sample();
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
         when(this.classifier.classify(event)).thenReturn(Classification.none());
@@ -74,9 +85,61 @@ class LogEventConsumerTest {
         verify(this.classifier).classify(event);
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isEqualTo(1.0d);
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isZero();
     }
 
-    /** Parser throws -> DLQ publish + ack + downstream skipped. */
+    /** Happy path anomaly verdict: tick outcome=anomaly + ack (publish path is P5.4). */
+    @Test
+    void anomalyVerdictTicksAnomalyOutcomeAndAcks() {
+        final RawLogEvent event = sample();
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event))
+                .thenReturn(new Classification(true, "HIGH", "spike"));
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        this.consumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(ack).acknowledge();
+        verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isEqualTo(1.0d);
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
+    }
+
+    /** Classifier throws: tick outcome=error, fall back, ack, do NOT loop. */
+    @Test
+    void classifierExceptionTicksErrorOutcomeAndAcks() {
+        final RawLogEvent event = sample();
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event))
+                .thenThrow(new RuntimeException("simulated llm outage"));
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        this.consumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(ack).acknowledge();
+        verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isEqualTo(1.0d);
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
+    }
+
+    /** Classifier returns null: defensive coerce to none() + tick outcome=normal + ack. */
+    @Test
+    void classifierNullVerdictTreatedAsNormal() {
+        final RawLogEvent event = sample();
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event)).thenReturn(null);
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        this.consumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(ack).acknowledge();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isEqualTo(1.0d);
+    }
+
+    /** Parser throws -> DLQ publish + ack + downstream skipped + zero classified ticks. */
     @Test
     void parseFailureRoutesToDlqAndAcks() {
         final ParseException ex = new ParseException("bad envelope",
@@ -91,9 +154,12 @@ class LogEventConsumerTest {
         verify(this.validator, never()).validate(any());
         verify(this.classifier, never()).classify(any());
         verify(ack).acknowledge();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isZero();
     }
 
-    /** Validator throws -> DLQ publish + ack + classifier skipped. */
+    /** Validator throws -> DLQ publish + ack + classifier skipped + zero classified ticks. */
     @Test
     void schemaViolationRoutesToDlqAndAcks() {
         final RawLogEvent event = sample();
@@ -109,6 +175,7 @@ class LogEventConsumerTest {
         verify(this.dlqPublisher).publish(record, FailureReason.SCHEMA_VIOLATION, ex);
         verify(this.classifier, never()).classify(any());
         verify(ack).acknowledge();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
     }
 
     /** Null payload short-circuits to ack without touching parser. */
@@ -120,9 +187,10 @@ class LogEventConsumerTest {
         verify(this.parser, never()).parse(any(byte[].class));
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
         verify(ack).acknowledge();
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
     }
 
-    /** Anomaly verdict still acks; publish path is P5.4 follow-up. */
+    /** Anomaly verdict is logged but the cortex.anomalies.v1 publish path is P5.4. */
     @Test
     void anomalyVerdictIsLoggedButNotPublishedYet() {
         final RawLogEvent event = sample();
@@ -134,27 +202,27 @@ class LogEventConsumerTest {
         this.consumer.onMessage(record(new byte[]{1}), ack);
 
         // P5.4 will add the cortex.anomalies.v1 publish path; for
-        // P5.1 we just ack to keep the consumer moving.
+        // P5.2 we just ack to keep the consumer moving.
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(eq(null), any(), any());
     }
 
-    /** Catch-all RuntimeException after validate is logged + acked. */
-    @Test
-    void postValidateRuntimeExceptionIsSwallowedAndAcked() {
-        final RawLogEvent event = sample();
-        when(this.parser.parse(any(byte[].class))).thenReturn(event);
-        when(this.classifier.classify(event))
-                .thenThrow(new RuntimeException("classifier exploded"));
-
-        final Acknowledgment ack = mock(Acknowledgment.class);
-        this.consumer.onMessage(record(new byte[]{1}), ack);
-
-        // Catch-all: log + ack so the consumer cannot loop on a
-        // classifier defect; verify by reaching ack despite the
-        // exception.
-        verify(ack).acknowledge();
-        verify(this.dlqPublisher, never()).publish(any(), any(), any());
+    /**
+     * Reads the classified counter for the supplied outcome tag from
+     * the test meter registry; returns {@code 0.0} when the counter
+     * is absent.
+     *
+     * @param outcome one of the ProcessorMetrics outcome constants
+     * @return current counter value
+     */
+    private double classifiedCount(final String outcome) {
+        try {
+            return this.registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
+                    .tag("outcome", outcome)
+                    .counter().count();
+        } catch (RuntimeException ex) {
+            return 0.0d;
+        }
     }
 
     /**

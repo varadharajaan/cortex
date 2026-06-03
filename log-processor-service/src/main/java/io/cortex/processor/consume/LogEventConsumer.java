@@ -135,17 +135,38 @@ public class LogEventConsumer {
         }
         try {
             this.metrics.incParsed();
-            final Classification verdict = this.classifier.classify(event);
+            Classification verdict;
+            try {
+                verdict = this.classifier.classify(event);
+                if (verdict == null) {
+                    verdict = Classification.none();
+                }
+            } catch (RuntimeException ex) {
+                // Classifier upstream (e.g. LLM call) failed. Tick
+                // the error outcome, fall back to no-anomaly, and
+                // keep the offset moving so a transient model outage
+                // does not stall the consumer (ADR-0029 D4).
+                LOG.warn("Classifier failed eventId={} -> outcome=error: {}",
+                        event.eventId(), ex.getMessage());
+                this.metrics.incClassified(ProcessorMetrics.OUTCOME_ERROR);
+                ack.acknowledge();
+                return;
+            }
             if (verdict.anomaly()) {
+                this.metrics.incClassified(ProcessorMetrics.OUTCOME_ANOMALY);
                 LOG.info("Anomaly classified eventId={} severity={} reason={}",
                         event.eventId(), verdict.severity(), verdict.reason());
                 // P5.4 will publish to cortex.anomalies.v1 here.
+            } else {
+                this.metrics.incClassified(ProcessorMetrics.OUTCOME_NORMAL);
             }
             ack.acknowledge();
         } catch (RuntimeException ex) {
-            // Classifier or downstream fan-out (P5.3) threw. Log + ack
-            // so the consumer cannot loop; P5.x may add a separate
-            // classifier-side DLQ path.
+            // Catch-all defence in depth: classifier-side path
+            // already handles its own RuntimeException above, so
+            // this branch only catches downstream defects (P5.3
+            // fan-out, future P5.4 publish path). Log + ack so the
+            // consumer cannot loop.
             LOG.error("Post-validate failure on {} partition={} offset={} eventId={}",
                     record.topic(), record.partition(), record.offset(),
                     event.eventId(), ex);

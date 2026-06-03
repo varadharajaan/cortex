@@ -93,11 +93,50 @@ cortex:
     # the cluster Terraform module.
     dlq:
       topic: ${CORTEX_PROCESSOR_DLQ_TOPIC:cortex.logs.events.v1.dlq}
-    # AnomalyClassifier SPI binder gate. Set to `spring-ai` in P5.2
-    # when the Spring AI 1.0 classifier lands. Default `noop` returns
-    # an empty classification (no anomaly) for every event so the
-    # P5.0 scaffold runs end-to-end without an LLM dependency.
-    classifier: ${CORTEX_PROCESSOR_CLASSIFIER:noop}
+    # AnomalyClassifier SPI configuration (P5.0 binder gate + P5.2
+    # / ADR-0029 typed properties).
+    #
+    # `provider` is the binder gate read by @ConditionalOnProperty on
+    #            each classifier impl:
+    #              noop      -> NoopAnomalyClassifier (default; returns
+    #                           Classification.none() for every event;
+    #                           zero LLM dependency)
+    #              spring-ai -> SpringAiAnomalyClassifier (Spring AI
+    #                           1.0 ChatClient routed through Ollama
+    #                           in dev or Azure OpenAI in prod per
+    #                           ADR-0006).
+    # The remaining keys bind to the ClassifierProperties record
+    # and are inert when provider=noop (the bean is not loaded so
+    # the values are never read).
+    classifier:
+      provider: ${CORTEX_PROCESSOR_CLASSIFIER:noop}
+      model: ${CORTEX_PROCESSOR_CLASSIFIER_MODEL:mistral}
+      temperature: ${CORTEX_PROCESSOR_CLASSIFIER_TEMPERATURE:0.2}
+      max-tokens: ${CORTEX_PROCESSOR_CLASSIFIER_MAX_TOKENS:256}
+      confidence-threshold: ${CORTEX_PROCESSOR_CLASSIFIER_CONFIDENCE_THRESHOLD:0.7}
+      request-timeout: ${CORTEX_PROCESSOR_CLASSIFIER_REQUEST_TIMEOUT:PT10S}
+      prompt-template: classpath:/prompts/anomaly-classifier.st
+
+# Spring AI 1.0.0 Ollama starter config (P5.2 / ADR-0029 D1; ADR-0006).
+# Inert when cortex.processor.classifier.provider=noop (the
+# OllamaHttpConfig bean is conditional on provider=spring-ai). For
+# dev / smoke runs point base-url at the local Ollama daemon (:11434)
+# or the WireMock-stubbed Ollama endpoint (:8094 in the cortex-smoke
+# compose stack). Production prefers Azure OpenAI per ADR-0006; the
+# swap is config-only (replace this block with `spring.ai.azure.openai.*`).
+spring.ai:
+  ollama:
+    base-url: ${SPRING_AI_OLLAMA_BASE_URL:http://localhost:11434}
+    chat:
+      options:
+        model: ${CORTEX_PROCESSOR_CLASSIFIER_MODEL:mistral}
+        temperature: ${CORTEX_PROCESSOR_CLASSIFIER_TEMPERATURE:0.2}
+    init:
+      # Never auto-pull the model at startup. Bootstrap is operator
+      # responsibility (local-dev: `ollama pull mistral`). Without
+      # this, a missing model would block boot for 30+ seconds while
+      # the starter shells out to the daemon to fetch ~4 GB.
+      pull-model-strategy: never
 
 logging:
   level:

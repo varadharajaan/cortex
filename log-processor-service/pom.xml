@@ -125,6 +125,21 @@
             <artifactId>cloudevents-json-jackson</artifactId>
         </dependency>
 
+        <!-- P5.2 / ADR-0029: Spring AI 1.0.0 Ollama starter for the
+             SpringAiAnomalyClassifier. Brings the ChatClient.Builder
+             auto-config + OllamaChatModel + OllamaApi. Inert at
+             runtime unless `spring.ai.ollama.*` is configured AND
+             `cortex.processor.classifier=spring-ai` is set, so the
+             default `classifier=noop` profile pays only the JAR cost
+             (~700 KB). The Azure OpenAI prod swap is documented in
+             ADR-0006 + ADR-0029 D6 and lands in a follow-up alongside
+             the prod Helm chart. Version flows from the parent
+             spring-ai-bom (1.0.0). -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-ollama</artifactId>
+        </dependency>
+
         <!-- Observability: Micrometer Prometheus registry (Part 17). -->
         <dependency>
             <groupId>io.micrometer</groupId>
