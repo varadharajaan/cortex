@@ -1,0 +1,99 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-processor-service - base profile (rule A6.1, 15.2).
+#
+# P5.0 scaffold + first production code path: actuator + Eureka +
+# Spring for Apache Kafka consumer for cortex.logs.events.v1 +
+# AnomalyClassifier SPI stub + 3 Micrometer counters. Profile-specific
+# overrides live in application-{profile}.yml (none required at P5.0).
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: log-processor-service
+  main:
+    banner-mode: "off"
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+  # ----- Kafka consumer (P5.0 / ADR-0028) ---------------------------------
+  # Direct Spring for Apache Kafka @KafkaListener container per LD79 +
+  # ADR-0026 + ADR-0028 D1 (symmetric with the P4.4b KafkaTemplate
+  # producer pivot). Manual ack semantics control offset commit
+  # so we only mark messages consumed after the classifier returns
+  # and downstream fan-out (P5.3) acknowledges. Bootstrap servers
+  # default to the local-dev compose broker on localhost:9092.
+  kafka:
+    bootstrap-servers: ${CORTEX_KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: ${CORTEX_PROCESSOR_CONSUMER_GROUP:cortex.processor.v1}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      ack-mode: manual
+      # missing-topics-fatal=false lets the consumer boot before the
+      # topic exists (local-dev / auto-create-topics-enable=true on
+      # the smoke compose stack); the listener container retries the
+      # subscribe attempt until the broker advertises the topic.
+      missing-topics-fatal: false
+
+server:
+  port: 8093
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,beans
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  observations:
+    key-values:
+      service: ${spring.application.name}
+
+# Eureka client (ADR-0016).
+# Defaults point at the local-dev standalone registry. Override in
+# every non-dev profile (staging / prod use K8s Service DNS, not Eureka).
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: ${EUREKA_DEFAULT_ZONE:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${random.uuid}
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+cortex:
+  processor:
+    # Topic this consumer listens to. CloudEvents 1.0 structured-mode
+    # JSON envelopes produced by log-ingest-service per ADR-0026.
+    topic: ${CORTEX_PROCESSOR_TOPIC:cortex.logs.events.v1}
+    # AnomalyClassifier SPI binder gate. Set to `spring-ai` in P5.2
+    # when the Spring AI 1.0 classifier lands. Default `noop` returns
+    # an empty classification (no anomaly) for every event so the
+    # P5.0 scaffold runs end-to-end without an LLM dependency.
+    classifier: ${CORTEX_PROCESSOR_CLASSIFIER:noop}
+
+logging:
+  level:
+    root: INFO
+    io.cortex: INFO
+    com.netflix.discovery: WARN
+    # Quiet the consumer rebalance noise on local-dev; we want WARN
+    # for actual problems, not the routine join-group transitions.
+    org.apache.kafka.clients.consumer.internals: WARN

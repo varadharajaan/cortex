@@ -90,7 +90,11 @@
         <!-- Added in P4: log-ingest-service - validate, dedupe,
              enrich, queue, Postgres write. -->
         <module>log-ingest-service</module>
-        <!-- Added in P5: <module>log-processor-service</module> -->
+        <!-- Added in P5: log-processor-service - parse, classify,
+             AI anomaly, fan-out to Loki + Quickwit. P5.0 ships the
+             scaffold + Kafka consumer skeleton + AnomalyClassifier
+             SPI stub + Micrometer counters. -->
+        <module>log-processor-service</module>
         <!-- Added in P6: <module>log-remediation-service</module> -->
         <!-- Added in P7: <module>log-indexer-service</module> -->
         <!-- Added in P8: <module>log-monitoring-service</module> -->
