@@ -1,0 +1,323 @@
+{
+  "info": {
+    "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e060",
+    "name": "log-processor-service (P5.2 Spring AI classifier)",
+    "description": "Postman v2.1 collection for log-processor-service shipped in P5.2a closer (Part 25 + Part 26 remediation). Covers every HTTP-reachable surface exposed by log-processor-service after P5.0/P5.0a/P5.1/P5.2 on :8095: actuator (health/liveness/readiness/info/metrics/prometheus/beans) + end-to-end pipeline assertion that an anomaly published via log-gateway -> log-ingest-service -> Kafka -> log-processor increments cortex.processor.events.consumed_total and cortex.processor.events.classified_total{outcome=anomaly} on the processor's /actuator/prometheus scrape. Folder order matters: Auth populates jwt, Metrics-Baseline snapshots counters, Pipeline publishes through the gateway, Metrics-After asserts the deltas. Run with --bail. Boot the full stack with scripts/p5-2a/boot-full-stack.ps1 first (sets CORTEX_PROCESSOR_CLASSIFIER=spring-ai + SPRING_AI_OLLAMA_BASE_URL=http://localhost:8094 so the WireMock-stubbed Ollama deterministically returns anomaly verdicts).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('request_id')) {",
+          "    pm.variables.set('request_id', 'pm-' + Math.random().toString(36).substring(2, 12));",
+          "}",
+          "pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.get('request_id') });",
+          "pm.request.headers.upsert({ key: 'X-Correlation-ID', value: pm.variables.get('request_id') });",
+          "const tenant = pm.environment.get('tenant_id');",
+          "if (tenant) { pm.request.headers.upsert({ key: 'X-Tenant-Id', value: tenant }); }",
+          "const token = pm.environment.get('jwt');",
+          "if (token && !pm.request.headers.has('Authorization')) {",
+          "    pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + token });",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('response under 5000 ms (actuator + pipeline tolerated)', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Login against log-gateway and populate jwt for downstream Pipeline folder. Skipped when {{gateway_base_url}} is empty (e.g. running Newman against a processor-only deployment).",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/login -> 200 + populate jwt",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{auth_username}}\",\n  \"password\": \"{{auth_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_base_url}}/api/v1/auth/login",
+              "host": [ "{{gateway_base_url}}" ],
+              "path": [ "api", "v1", "auth", "login" ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('accessToken populated', function () { pm.expect(body.accessToken).to.be.a('string').that.is.not.empty; });",
+                  "pm.test('refreshToken populated', function () { pm.expect(body.refreshToken).to.be.a('string').that.is.not.empty; });",
+                  "pm.environment.set('jwt', body.accessToken);",
+                  "pm.environment.set('refresh_token', body.refreshToken);",
+                  "const headerB64 = body.accessToken.split('.')[0];",
+                  "const headerJson = JSON.parse(Buffer.from(headerB64.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));",
+                  "pm.test('JWT alg=HS256 per ADR-0015', function () { pm.expect(headerJson.alg).to.equal('HS256'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin (actuator)",
+      "description": "Direct actuator surface exposed by log-processor-service on :8095 per application.yml (management.endpoints.web.exposure.include: health,info,metrics,prometheus,beans).",
+      "item": [
+        {
+          "name": "GET /actuator/health -> 200 UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health", "host": [ "{{base_url}}" ], "path": [ "actuator", "health" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/liveness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/liveness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "liveness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/readiness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/readiness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "readiness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/info -> 200 + JSON object",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/info", "host": [ "{{base_url}}" ], "path": [ "actuator", "info" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "pm.test('Content-Type application/json', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application'); });",
+            "pm.test('body parses as JSON object', function () { pm.expect(pm.response.json()).to.be.an('object'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/metrics -> 200 + cortex.processor.events.* metric names",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/metrics", "host": [ "{{base_url}}" ], "path": [ "actuator", "metrics" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('names is an array', function () { pm.expect(body.names).to.be.an('array').that.is.not.empty; });",
+            "pm.test('cortex.processor.events.consumed_total registered', function () { pm.expect(body.names).to.include('cortex.processor.events.consumed_total'); });",
+            "pm.test('cortex.processor.events.parsed_total registered', function () { pm.expect(body.names).to.include('cortex.processor.events.parsed_total'); });",
+            "pm.test('cortex.processor.events.classified_total registered', function () { pm.expect(body.names).to.include('cortex.processor.events.classified_total'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/prometheus -> 200 + scrape contains cortex.processor families",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "pm.test('exposition contains cortex_processor_events_consumed_total', function () { pm.expect(text).to.include('cortex_processor_events_consumed_total'); });",
+            "pm.test('exposition contains cortex_processor_events_parsed_total', function () { pm.expect(text).to.include('cortex_processor_events_parsed_total'); });",
+            "pm.test('exposition contains cortex_processor_events_classified_total', function () { pm.expect(text).to.include('cortex_processor_events_classified_total'); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-Baseline",
+      "description": "Snapshot the counter baselines into env vars BEFORE the Pipeline folder publishes anything. Metrics-After uses these to assert deltas.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus baseline -> capture counters",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName) {",
+            "    const re = new RegExp('^' + metricName.replace(/\\./g, '_') + '(?:\\\\{[^}]*\\\\})?\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "function valueWithTag(metricName, tagPair) {",
+            "    const re = new RegExp('^' + metricName.replace(/\\./g, '_') + '\\\\{[^}]*' + tagPair + '[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'm');",
+            "    const m = re.exec(text); return m ? parseFloat(m[1]) : 0;",
+            "}",
+            "const consumed = sumFamily('cortex.processor.events.consumed_total');",
+            "const anomaly = valueWithTag('cortex.processor.events.classified_total', 'outcome=\"anomaly\"');",
+            "pm.environment.set('consumed_baseline', String(consumed));",
+            "pm.environment.set('classified_anomaly_baseline', String(anomaly));",
+            "pm.test('baseline consumed counter recorded', function () { pm.expect(pm.environment.get('consumed_baseline')).to.be.a('string'); });",
+            "pm.test('baseline anomaly counter recorded', function () { pm.expect(pm.environment.get('classified_anomaly_baseline')).to.be.a('string'); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Pipeline (gateway -> ingest -> Kafka -> processor)",
+      "description": "End-to-end smoke: publish a high-severity log via the gateway, gateway rewrites to /api/v1/ingest/batch, ingest persists + writes outbox row, poller publishes CloudEvent to cortex.logs.events.v1, processor consumer parses + classifies (spring-ai classifier hits WireMock-stubbed Ollama returning anomaly=true), counters tick. The next folder (Metrics-After) reads /actuator/prometheus on the processor and asserts the deltas.",
+      "item": [
+        {
+          "name": "POST /api/v1/logs/batch (anomaly-looking entry) -> 202",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entries\": [\n    {\n      \"timestamp\": \"{{$isoTimestamp}}\",\n      \"level\": \"ERROR\",\n      \"service\": \"demo-app\",\n      \"message\": \"OutOfMemoryError: Java heap space at io.cortex.demo.LoadGenerator.run(LoadGenerator.java:42) -- p5-2a newman pipeline {{$guid}}\",\n      \"labels\": { \"env\": \"local\" }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{gateway_base_url}}/api/v1/logs/batch",
+              "host": [ "{{gateway_base_url}}" ],
+              "path": [ "api", "v1", "logs", "batch" ]
+            }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 202', function () { pm.response.to.have.status(202); });",
+            "const body = pm.response.json();",
+            "pm.test('receivedCount == 1', function () { pm.expect(body.receivedCount).to.equal(1); });",
+            "pm.test('receivedAt is ISO string', function () { pm.expect(body.receivedAt).to.be.a('string').that.matches(/^\\d{4}-\\d{2}-\\d{2}T/); });",
+            "pm.test('X-Request-Id echoed', function () { pm.expect(pm.response.headers.get('X-Request-Id')).to.equal(pm.variables.get('request_id')); });"
+          ] } } ]
+        },
+        {
+          "name": "Settle delay (sleep 20s while outbox poller + Kafka consumer drain)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health", "host": [ "{{base_url}}" ], "path": [ "actuator", "health" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "// Outbox poller has fixed-delay=1s but backoff-max=5min when PENDING is empty.",
+              "// 20s is enough to ride out a typical backoff cycle in a freshly idle stack.",
+              "const wait = 20000;",
+              "const start = Date.now();",
+              "while (Date.now() - start < wait) { /* busy-wait so Newman blocks; setTimeout is not honored synchronously */ }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('processor still healthy after settle', function () { pm.response.to.have.status(200); });"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-After",
+      "description": "Re-scrape /actuator/prometheus and assert the Pipeline payload incremented the consumed + classified-anomaly counters above the baseline captured in Metrics-Baseline.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus delta -> consumed and classified{outcome=anomaly} both ticked",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName) {",
+            "    const re = new RegExp('^' + metricName.replace(/\\./g, '_') + '(?:\\\\{[^}]*\\\\})?\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "function valueWithTag(metricName, tagPair) {",
+            "    const re = new RegExp('^' + metricName.replace(/\\./g, '_') + '\\\\{[^}]*' + tagPair + '[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'm');",
+            "    const m = re.exec(text); return m ? parseFloat(m[1]) : 0;",
+            "}",
+            "const consumedNow = sumFamily('cortex.processor.events.consumed_total');",
+            "const anomalyNow = valueWithTag('cortex.processor.events.classified_total', 'outcome=\"anomaly\"');",
+            "const consumedBase = parseFloat(pm.environment.get('consumed_baseline'));",
+            "const anomalyBase = parseFloat(pm.environment.get('classified_anomaly_baseline'));",
+            "pm.test('consumed_total strictly increased (>= +1)', function () { pm.expect(consumedNow - consumedBase).to.be.at.least(1); });",
+            "pm.test('classified_total{outcome=anomaly} strictly increased (>= +1)', function () { pm.expect(anomalyNow - anomalyBase).to.be.at.least(1); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Error Scenarios",
+      "description": "Negative-path coverage per Part 26.3.",
+      "item": [
+        {
+          "name": "GET /actuator/no-such-endpoint -> 404",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/no-such-endpoint", "host": [ "{{base_url}}" ], "path": [ "actuator", "no-such-endpoint" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 404', function () { pm.response.to.have.status(404); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /no-such-root-path -> 404",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/no-such-root-path", "host": [ "{{base_url}}" ], "path": [ "no-such-root-path" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 404', function () { pm.response.to.have.status(404); });"
+          ] } } ]
+        }
+      ]
+    }
+  ]
+}

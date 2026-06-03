@@ -116,6 +116,9 @@ public class KafkaOutboxPublisher implements OutboxEventPublisher {
      * {@code attempts} / {@code DEAD} lifecycle.
      *
      * @param record producer record to send
+     * @throws IllegalStateException if the producer thread is
+     *         interrupted while awaiting the ack, or the broker
+     *         rejects / times out the send
      */
     private void sendAndAwait(final ProducerRecord<byte[], byte[]> record) {
         try {

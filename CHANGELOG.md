@@ -180,7 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     BRANCH 0.84.
   - LD79 + LD80 + LD85 + LD86 + LD87 + LD88 captured in `memory.md`.
 
-- P4.5: P4 epic closer (PR #65, `21b25b9`, 2026-06-03).
+- P4.5: P4 epic closer (PR #65, `2af00d1`, 2026-06-03).
   - `docs/adr/INDEX.md` -- single-page directory of all 28 ADRs
     (`0000` template + `0001` .. `0027`) grouped by phase.
   - `scripts/p4-5/smoke-p4-5.ps1` -- cross-phase regression wrapper
@@ -202,3 +202,155 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     operation.
   - Atomic 4-file flip: P4.4c + P4.5 both -> SHIPPED, P5 -> IN
     PROGRESS. Compound flip in the same edit batch per LD46.
+
+- P5.0: `log-processor-service` scaffold + Kafka consumer + classifier
+  SPI + metrics (PR #67, `068a3f8`, 2026-06-03).
+  - New Maven module `log-processor-service` with `pom.xml`, Spring Boot
+    main, `application.yml` on port `:8095` (LD92 multi-NIC port pick to
+    avoid the `:8094` WireMock collision shipped in P3.3).
+  - Direct `@KafkaListener` with manual offset commit on
+    `cortex.logs.events.v1`, container factory wired with
+    `ContainerProperties.AckMode.MANUAL_IMMEDIATE`; ADR-0028 over the
+    SCSt + binder approach attempted in P4.4b (LD79 carry-forward).
+  - `LogEventClassifier` SPI with a `noop` default implementation
+    (every record routes to `outcome=normal`), behind
+    `cortex.processor.classifier.provider` so the P5.0 scaffold ships
+    without any AI dependency on the hot path.
+  - Micrometer counters
+    `cortex.processor.events.{consumed,parsed,classified,dlq_replay}_total`
+    with the Part 17 allowlist tags `topic`, `tenant_id`, `outcome`
+    (allowlist enforced by `MicrometerCardinalityFilter`).
+  - Eureka registration + actuator (`health,info,metrics,prometheus,beans`).
+  - JaCoCo BUNDLE gate 0.80 line + 0.80 branch ON for this module from
+    day one (LD23).
+
+- P5.0a: Closer follow-ups (PR #68, `a8e539c`, 2026-06-03).
+  - `log-agent-lib` `CloudEventEnvelope` + builder + JSON
+    `(de)serializer` so producer + consumer agree on the envelope shape
+    (`specversion=1.0`, `type=io.cortex.logs.event.v1`,
+    `source=/cortex/log-ingest-service`, `subject=tenant_id`,
+    `id=event_id`, `time=ingest_time`,
+    `datacontenttype=application/json`).
+  - log-gateway `/api/v1/logs/**` route flipped from the retired
+    `lb://log-echo-service` placeholder to `lb://log-ingest-service`
+    with a rewrite to `/api/v1/ingest/batch`, so external producers can
+    push through the gateway and the resulting CloudEvent flows
+    end-to-end through ingest -> Kafka -> processor.
+  - `log-processor-service` port migration from the originally proposed
+    `:8094` to `:8095` (LD92) because WireMock owns `:8094` in every
+    smoke profile shipped from P3.3 forward.
+
+- multi-NIC eureka loopback fix (PR #71, `f8146a9`, 2026-06-03).
+  - `eureka.instance.preferIpAddress=true` +
+    `eureka.instance.ipAddress=127.0.0.1` in the `dev` profile of every
+    Spring Boot service so multi-NIC dev hosts (corporate VPN +
+    Hyper-V switch + Docker bridge) register the loopback IP instead
+    of an unreachable virtual adapter and `lb://` resolution stops
+    racing.
+  - LD93 added: dev profile must pin Eureka instance to loopback on
+    multi-NIC dev hosts; otherwise `lb://log-processor-service`
+    sporadically resolves to a stale virtual NIC address that no
+    smoke can reach.
+
+- P5.1: Parser + JSON-schema validator + DLQ publisher (PR #70,
+  `65e2ab8`, 2026-06-03).
+  - `CloudEventEnvelopeParser` walks the structured-mode JSON envelope
+    from `cortex.logs.events.v1` and unmarshals the `data` payload to
+    the canonical `LogEvent` POJO; rejects unknown `type`, unknown
+    `specversion`, or missing required envelope fields.
+  - `LogEventSchemaValidator` enforces required fields
+    (`tenant_id`, `event_id`, `timestamp`, `level`, `message`) +
+    `level` enum allowlist + `timestamp` ISO-8601 parsing; failures
+    bubble as `LogEventSchemaException` with a
+    `FailureReason` enum value used as the Prometheus `reason` tag
+    (carry-forward of ADR-0027's cardinality guard).
+  - `DlqPublisher` writes rejected envelopes to
+    `cortex.logs.events.v1.dlq` with `x-orig-topic` +
+    `x-failure-reason` headers (mirror of ingest-side ADR-0027
+    contract) and increments
+    `cortex.processor.events.dlq_replay_total{reason}`.
+  - The consumer commits the offset AFTER the DLQ publish succeeds so a
+    DLQ publish failure becomes a Kafka redelivery (LD94 ordering
+    invariant); successful parses bump
+    `cortex.processor.events.parsed_total` and successful classifies
+    bump `cortex.processor.events.classified_total{outcome=...}`.
+  - Tests: parser IT + schema validator IT + DLQ publisher IT using
+    Kafka 3.8.0 KRaft single-node Testcontainer (`cortex-smoke-kafka`);
+    JaCoCo BUNDLE LINE >= 0.80 BRANCH >= 0.80 holds.
+
+- P5.2: Spring AI 1.0 GA anomaly classifier (PR #73, `e92efaf`,
+  2026-06-03).
+  - `SpringAiAnomalyClassifier` implements `LogEventClassifier` and
+    calls `ChatClient.call(...)` against the
+    `spring-ai-starter-model-ollama` binder; the prompt template is
+    rendered via literal `.replace("{tenant_id}", ...)` (LD42) instead
+    of ST4 so curly-brace tokens inside the user log message cannot
+    crash the renderer.
+  - ADR-0029 captures the provider matrix: Ollama in dev,
+    Azure OpenAI in prod, WireMock-stubbed Ollama on `:8094` in smoke;
+    selection is via `cortex.processor.classifier.provider` +
+    `spring.ai.ollama.base-url` so the same code path is exercised in
+    every environment.
+  - LD42 carry-forward: `OllamaApi` is pinned to HTTP/1.1 via
+    `JdkClientHttpRequestFactory` so the OkHttp default does not
+    silently downgrade HTTP/2 stream resets to retried 5xx responses.
+  - Classifier outcome tagged on
+    `cortex.processor.events.classified_total{outcome=anomaly|normal|error|skipped}`:
+    classifier errors fall back to `outcome=error` (the event is still
+    parsed + committed, just not classified), the AI call timeout maps
+    to `outcome=skipped`.
+  - 5-leg gate (LD73) green: `mvn verify` + `smoke-p5-2.ps1` +
+    `smoke-all.ps1 -Mode default` + `smoke-all.ps1 -Mode rate-burst`
+    + Newman log-gateway collection. LD100 captured: the post-merge
+    atomic 4-file flip MUST cite the actual squash-merge SHA per LD89
+    not the pre-merge feature-branch SHA.
+
+- P5.2a: Postman + docs gap-fill closer (this PR, `feat/p5-2a-postman-docs-closer`).
+  - `postman/log-processor.postman_collection.json` (NEW): Auth ->
+    Admin (actuator: health/liveness/readiness/info/metrics/prometheus)
+    -> Metrics-Baseline -> Pipeline (publish via gateway logs route)
+    -> Metrics-After (assert `cortex.processor.events.consumed_total`
+    and `classified_total{outcome=anomaly}` both incremented) -> Error
+    Scenarios. 13 requests / 30+ assertions, runs with `--bail`.
+  - `postman/log-ingest.postman_collection.json` (BUMP): name flipped
+    from "P4.3 enrich" to "P4.4c outbox + P5.0a logs route"; +2 new
+    items asserting `cortex_ingest_outbox_{published,failed,dlq}_total`
+    counter families are registered on `/actuator/prometheus`, +1 item
+    asserting `cortex_ingest_outbox_published_total` strictly increases
+    after a `/api/v1/ingest/batch` round-trip with a 4-second settle
+    window for the `@Scheduled(fixedDelay=1s)` outbox poller. Total
+    is now 18 top-level items.
+  - `postman/log-processor.postman_environment_{local,staging,prod}.json`
+    (NEW) + `postman/log-ingest.postman_environment_{staging,prod}.json`
+    (NEW): closes the 7.6 / 25.2 / 26.6.1 staging+prod env gap.
+  - `log-processor-service/README.md` (NEW): Part 4 D1 ten-section
+    format (overview, architecture, tech stack, design decisions,
+    SOLID + Clean Code notes, logging, run locally, docker, API docs,
+    future improvements).
+  - `README.md` (PATCH): SHA `21b25b9` -> `2af00d1` (LD90 false-SHA
+    fix for PR #65); phase status bumped from "P0..P4 SHIPPED" to
+    "P0..P5 SHIPPED" with the five new PR rows; new "log-processor"
+    bullet under "What's working today on main"; project layout note
+    flipped to "P5.0..P5.2 SHIPPED; P5.3 next"; scripts/ layout adds
+    `p5-{0,1,2,2a}`.
+  - `CHANGELOG.md` (GAP-FILL): retroactive entries for P5.0, P5.0a,
+    multi-NIC, P5.1, P5.2, P5.2a with real SHAs verified via
+    `git log --grep '#NN'` per LD89.
+  - `scripts/p5-2a/` (NEW): five-script bundle per Part 26.10.8.3
+    (`boot-full-stack.ps1`, `smoke-p5-2a.ps1`, `newman-leg-c.ps1`,
+    `teardown-full-stack.ps1`, `README.md`). The full stack runs
+    Eureka + gateway + ingest + echo + processor with the
+    spring-ai classifier and WireMock-stubbed Ollama so the Pipeline
+    folder in the Newman collection observes a deterministic anomaly
+    verdict.
+  - LD101 (NEW): Newman is Leg C of the LD73 5-leg gate. A smoke
+    script substituted for Newman does not satisfy the gate; the
+    Newman run against the per-phase collection must execute as its
+    own step with `--bail` and EXIT 0.
+  - LD102 (NEW): autopilot mode bans "shall I ship X?" pauses
+    after a plan-first gate has been cleared. Standing approval
+    covers every step that is already mandated by
+    `agent-strict-rules-prompts.md`.
+  - Part 26.11.8 throughput stamp on the previous shipped block
+    (P5.2): "~140 tool calls / 1 subagent / 5 scripts / 19 files
+    +1558/-51 / LD99+LD100".
