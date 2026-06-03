@@ -30,6 +30,7 @@ public final class FailureReason {
     /** Fallback bucket for any RuntimeException not in the allowlist above. */
     public static final String UNKNOWN = "unknown";
 
+    /** Utility class; not instantiable. */
     private FailureReason() {
         // constants only
     }
