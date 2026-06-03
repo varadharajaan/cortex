@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-02 (P4.5 closer, PR #64).
-Total ADRs: 28 (`0000` template + `0001` .. `0027`).
+Last refreshed: 2026-06-03 (P5.2, PR for #72).
+Total ADRs: 29 (`0000` template + `0001` .. `0027` + `0029`).
 
 ---
 
@@ -58,6 +58,14 @@ Total ADRs: 28 (`0000` template + `0001` .. `0027`).
 | [0025](0025-log-ingest-outbox-pattern.md) | Transactional outbox pattern (`outbox_events` + poller) | Accepted | log-ingest-service | partially superseded by 0026 (SCSt -> direct KafkaTemplate) |
 | [0026](0026-log-ingest-scst-kafka-cloudevents.md) | Direct `KafkaTemplate<byte[],byte[]>` + CloudEvents 1.0 envelope (NOT SCSt outbound) | Accepted | log-ingest-service | supersedes the SCSt outbound part of 0005 + 0025 |
 | [0027](0027-log-ingest-dlq-counters-binder.md) | DLQ topic + Service Bus binder stub + `cortex.ingest.outbox.{published,failed,dlq}` counters | Accepted | log-ingest-service | -- |
+
+---
+
+## Processor pipeline (P5)
+
+| ADR | Title | Status | Scope | Supersedes / Superseded by |
+| --- | --- | --- | --- | --- |
+| [0029](0029-log-processor-spring-ai-anomaly-classifier.md) | Spring AI 1.0 anomaly classifier (Ollama dev / Azure OpenAI prod) | Accepted | log-processor-service | -- |
 
 ---
 

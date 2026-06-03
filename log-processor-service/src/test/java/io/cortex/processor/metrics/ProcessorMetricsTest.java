@@ -46,4 +46,37 @@ class ProcessorMetricsTest {
                 .counter()
                 .count()).isEqualTo(1.0);
     }
+
+    /**
+     * Asserts {@link ProcessorMetrics#incClassified(String)} routes
+     * every documented outcome to its pre-registered counter, and
+     * that an unknown outcome falls through to {@code error} so the
+     * tag cardinality stays bounded (P5.2 / ADR-0029 D5 / Part 17).
+     */
+    @Test
+    void incClassifiedRoutesEveryOutcomeIncludingUnknown() {
+        final var registry = new SimpleMeterRegistry();
+        final var metrics = new ProcessorMetrics(registry);
+
+        metrics.incClassified(ProcessorMetrics.OUTCOME_ANOMALY);
+        metrics.incClassified(ProcessorMetrics.OUTCOME_NORMAL);
+        metrics.incClassified(ProcessorMetrics.OUTCOME_LOW_CONFIDENCE);
+        metrics.incClassified(ProcessorMetrics.OUTCOME_ERROR);
+        // Unknown outcome -> default arm -> error counter.
+        metrics.incClassified("unrecognised-outcome");
+
+        assertThat(registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
+                .tag("outcome", ProcessorMetrics.OUTCOME_ANOMALY)
+                .counter().count()).isEqualTo(1.0);
+        assertThat(registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
+                .tag("outcome", ProcessorMetrics.OUTCOME_NORMAL)
+                .counter().count()).isEqualTo(1.0);
+        assertThat(registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
+                .tag("outcome", ProcessorMetrics.OUTCOME_LOW_CONFIDENCE)
+                .counter().count()).isEqualTo(1.0);
+        // Two error ticks: explicit OUTCOME_ERROR + the default arm.
+        assertThat(registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
+                .tag("outcome", ProcessorMetrics.OUTCOME_ERROR)
+                .counter().count()).isEqualTo(2.0);
+    }
 }

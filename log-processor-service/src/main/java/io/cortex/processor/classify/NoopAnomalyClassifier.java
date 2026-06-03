@@ -23,8 +23,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @ConditionalOnProperty(
-        prefix = "cortex.processor",
-        name = "classifier",
+        prefix = "cortex.processor.classifier",
+        name = "provider",
         havingValue = "noop",
         matchIfMissing = true
 )
