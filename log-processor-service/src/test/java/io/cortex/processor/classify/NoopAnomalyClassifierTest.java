@@ -1,14 +1,17 @@
 package io.cortex.processor.classify;
 
-import io.cloudevents.core.builder.CloudEventBuilder;
+import io.cortex.processor.parse.RawLogEvent;
 import org.junit.jupiter.api.Test;
 
-import java.net.URI;
+import java.time.Instant;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit test for {@link NoopAnomalyClassifier} (P5.0 / ADR-0028 D1).
+ * Unit test for {@link NoopAnomalyClassifier} (P5.0 scaffold /
+ * ADR-0028 D1; P5.1 SPI flip from {@code CloudEvent} to
+ * {@link RawLogEvent}).
  *
  * <p>Asserts the default classifier returns the
  * {@link Classification#none()} singleton for every input - the
@@ -23,11 +26,9 @@ class NoopAnomalyClassifierTest {
     /** Asserts the no-op classifier returns the {@link Classification#none()} singleton. */
     @Test
     void returnsNoneSingletonForEveryEvent() {
-        final var event = CloudEventBuilder.v1()
-                .withId("test-id")
-                .withSource(URI.create("/cortex/test"))
-                .withType("io.cortex.logs.event.v1")
-                .build();
+        final RawLogEvent event = new RawLogEvent(
+                "cortex-dev", "evt-1", Instant.now(), "INFO", "checkout",
+                "hello", Map.of(), "idk-1", Instant.now());
 
         final Classification verdict = this.classifier.classify(event);
 
