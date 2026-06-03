@@ -8,6 +8,7 @@ import io.cortex.agent.LogEntry;
 import io.cortex.agent.exception.CortexClientException;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Map;
 
 /**
  * Thin wrapper around a single shared Jackson {@link ObjectMapper}
@@ -15,6 +16,11 @@ import java.util.Collection;
  *
  * <p>Wire format rules:</p>
  * <ul>
+ *   <li>The HTTP body is the JSON object {@code {"entries":[...]}}
+ *       because the ingest endpoint
+ *       ({@code POST /api/v1/ingest/batch}) deserializes into
+ *       {@code IngestBatchRequest(List<LogEntry> entries)}; emitting
+ *       a bare JSON array yields HTTP 400.</li>
  *   <li>{@code java.time.Instant} is serialized as an ISO-8601 string
  *       (not as a numeric timestamp).</li>
  *   <li>Null fields are omitted to keep payloads compact.</li>
@@ -38,18 +44,20 @@ public final class JsonCodec {
     }
 
     /**
-     * Serializes a batch of {@link LogEntry} instances to a UTF-8 JSON
-     * array suitable as an HTTP request body.
+     * Serializes a batch of {@link LogEntry} instances into the ingest
+     * envelope {@code {"entries":[...]}} as UTF-8 bytes suitable as an
+     * HTTP request body.
      *
      * @param entries entries to encode; must not be {@code null}
-     * @return UTF-8 bytes of the JSON array
+     * @return UTF-8 bytes of the JSON envelope
      * @throws CortexClientException if Jackson cannot serialize an entry
      */
     public byte[] encodeBatch(final Collection<LogEntry> entries) {
         try {
-            return this.mapper.writeValueAsBytes(entries);
+            return this.mapper.writeValueAsBytes(Map.of("entries", entries));
         } catch (IOException ex) {
             throw new CortexClientException("Failed to encode log batch", ex);
         }
     }
 }
+

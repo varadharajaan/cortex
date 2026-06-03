@@ -95,7 +95,7 @@ the YAML route prefix moved between minors).
 | Predicate              | Filter                      | Target                | Notes                                                |
 |------------------------|-----------------------------|-----------------------|------------------------------------------------------|
 | `/echo/**`             | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.0b discovery proof.                              |
-| `/api/v1/logs/**`      | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.4 placeholder until P4 brings up log-ingest.     |
+| `/api/v1/logs/**`      | `rewritePath(/api/v1/logs/(.*) -> /api/v1/ingest/$1)` + `lb("log-ingest-service")` | `lb://log-ingest-service` | P5.0a -- placeholder retired; production route to ingest with path rewrite. |
 | `/api/v1/search/**`    | `lb("log-echo-service")`    | `lb://log-echo-service` | P3.4 placeholder until P7 brings up search.         |
 
 No path rewrite is applied; the downstream sees the original path. The
