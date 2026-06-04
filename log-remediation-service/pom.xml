@@ -1,0 +1,243 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-remediation-service - consume cortex.anomalies.v1 (the P5.4 /
+  ADR-0031 handoff topic) and dispatch remediation playbooks via
+  Slack / PagerDuty / Jira adapters (P6 epic).
+
+  P6.0 (this commit) is the SCAFFOLD + first production code path:
+  module compiles, context loads, Kafka consumer for
+  cortex.anomalies.v1 is wired via @KafkaListener (direct Spring for
+  Apache Kafka, per LD79 + ADR-0028 symmetry with the P5 producer
+  pivot), RemediationDispatcher SPI is in place with a
+  NoopRemediationDispatcher default, one Micrometer counter publishes
+  to /actuator/prometheus, Eureka client registers, actuator
+  liveness/readiness probes wired.
+
+  Real adapters arrive in P6.1..P6.4:
+  - P6.1 Slack webhook RemediationDispatcher
+  - P6.2 PagerDuty Events API RemediationDispatcher
+  - P6.3 Jira REST issue create RemediationDispatcher
+  - P6.4 DLQ + retry budget + cortex.anomalies.v1.dlq
+
+  Endpoint surface (P6.0):
+      GET  /actuator/health        - K8s probes
+      GET  /actuator/health/liveness
+      GET  /actuator/health/readiness
+      GET  /actuator/prometheus
+
+  Registers with Eureka at http://localhost:8761/eureka/ as
+  application-id = "log-remediation-service".
+
+  Per LD79 / ADR-0028: this module uses direct spring-kafka
+  @KafkaListener for the consumer rather than Spring Cloud Stream
+  inbound binder. Symmetric with the P5 LogEventConsumer + the P4.4b
+  KafkaTemplate producer + smaller dependency surface + manual offset
+  commit semantics under our direct control.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-remediation-service</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-remediation-service</name>
+    <description>
+        CORTEX log-remediation-service - consume cortex.anomalies.v1
+        (the P5.4 / ADR-0031 handoff topic) and dispatch remediation
+        playbooks via Slack / PagerDuty / Jira adapters. P6.0 ships
+        the scaffold + Kafka consumer skeleton + RemediationDispatcher
+        SPI stub + Micrometer counter; P6.1..P6.4 fill in the
+        per-channel adapters + DLQ + retry budget.
+    </description>
+
+    <dependencies>
+
+        <!-- Spring Boot core. No starter-web on the public-facing
+             port: actuator is exposed on the management port via
+             starter-actuator below. The transitive servlet engine
+             still arrives via starter-web because actuator must
+             serve HTTP. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Eureka client (ADR-0016). -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- P6.0 / ADR-0032: direct Spring for Apache Kafka consumer
+             (NOT Spring Cloud Stream binder) per LD79 symmetry with
+             the P5 producer pivot. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- P6.0 / ADR-0032: CloudEvents 1.0 structured-mode JSON
+             decoder for the cortex.anomalies.v1 envelope. Matches
+             the upstream producer (P5.4 / ADR-0031); same dependency
+             pair the P5 LogEventConsumer uses to decode
+             cortex.logs.events.v1. -->
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.cloudevents</groupId>
+            <artifactId>cloudevents-json-jackson</artifactId>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry (Part 17). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Apache Commons Lang3 (StringUtils null/blank helpers,
+             LD111 prefer mature OSS over re-rolled one-liners). -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P6.0: spring-kafka-test gives EmbeddedKafkaBroker +
+             KafkaTestUtils for the consumer context-loads test. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P6.0: Testcontainers Kafka 3.8.0 + JUnit 5 + Awaitility
+             for AnomalyConsumerKafkaIT (real broker round-trip of a
+             CloudEvent through the parse + dispatch pipeline). Same
+             shape as the P5 LogEventConsumerKafkaIT. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      No @Mapper interfaces yet (scaffold-only). Drop the MapStruct
+      annotation processor + -A options, keep Lombok. Same LD12 / LD14
+      override pattern used by log-gateway / log-echo-service /
+      log-ingest-service / log-processor-service.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Parent default JaCoCo 0.80/0.80 line+branch gate
+                 applies from P6.0 day one (Part 12.5 / 13.4 / 0.4):
+                 no relaxed override block here. The scaffold's
+                 ArchitectureTest + AnomalyEnvelopeParserTest +
+                 AnomalyConsumerTest + NoopRemediationDispatcherTest +
+                 RemediationMetricsTest + AnomalyConsumerKafkaIT cover
+                 every production branch above 0.80. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Activate Failsafe so the *IT.java classes
+                 (AnomalyConsumerKafkaIT) run during `verify`. Mirrors
+                 the log-processor-service P5.0/P5.1 pattern. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>

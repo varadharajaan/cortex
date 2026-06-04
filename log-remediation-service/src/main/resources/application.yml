@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-remediation-service - base profile (rule A6.1, 15.2).
+#
+# P6.0 scaffold + first production code path: actuator + Eureka +
+# Spring for Apache Kafka consumer for cortex.anomalies.v1 (the P5.4
+# / ADR-0031 handoff topic) + RemediationDispatcher SPI stub +
+# Micrometer counter. Profile-specific overrides live in
+# application-{profile}.yml (none required at P6.0).
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: log-remediation-service
+  main:
+    banner-mode: "off"
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+  # ----- Kafka consumer (P6.0 / ADR-0032 D1) ------------------------------
+  # Direct Spring for Apache Kafka @KafkaListener container per LD79 +
+  # ADR-0028 D1 (symmetric with the P5 LogEventConsumer + the P4.4b
+  # KafkaTemplate producer pivot). Manual ack semantics control offset
+  # commit so we only mark messages consumed after the dispatcher
+  # returns. Bootstrap servers default to the local-dev compose broker
+  # on localhost:9092.
+  kafka:
+    bootstrap-servers: ${CORTEX_KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: ${CORTEX_REMEDIATION_CONSUMER_GROUP:cortex.remediation.v1}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      ack-mode: manual
+      # missing-topics-fatal=false lets the consumer boot before the
+      # topic exists (local-dev / auto-create-topics-enable=true on
+      # the smoke compose stack); the listener container retries the
+      # subscribe attempt until the broker advertises the topic.
+      missing-topics-fatal: false
+
+server:
+  # :8090 gateway / :8092 ingest / :8093 echo / :8094 wiremock /
+  # :8095 processor / :8096 remediation -- next free port.
+  port: 8096
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,beans
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  observations:
+    key-values:
+      service: ${spring.application.name}
+
+# Eureka client (ADR-0016).
+# Defaults point at the local-dev standalone registry. Override in
+# every non-dev profile (staging / prod use K8s Service DNS, not Eureka).
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: ${EUREKA_DEFAULT_ZONE:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${random.uuid}
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+cortex:
+  remediation:
+    # Topic this consumer listens to. CloudEvents 1.0 structured-mode
+    # JSON envelopes produced by log-processor-service per ADR-0031.
+    topic: ${CORTEX_REMEDIATION_TOPIC:cortex.anomalies.v1}
+    # DLQ topic for consumer-side parse failures (P6.4 / ADR-0032 D4
+    # will wire the writer). For P6.0 the consumer logs + acks; no
+    # writer is wired yet.
+    dlq:
+      topic: ${CORTEX_REMEDIATION_DLQ_TOPIC:cortex.anomalies.v1.dlq}
+    # RemediationDispatcher SPI binder gate (P6.0 / ADR-0032 D1).
+    #
+    # `provider` is the binder gate read by @ConditionalOnProperty on
+    #            each dispatcher impl:
+    #              noop      -> NoopRemediationDispatcher (default;
+    #                           returns DispatchResult.skipped() for
+    #                           every event; zero outbound HTTP)
+    #              slack     -> SlackRemediationDispatcher (P6.1)
+    #              pagerduty -> PagerDutyRemediationDispatcher (P6.2)
+    #              jira      -> JiraRemediationDispatcher (P6.3)
+    # The per-channel adapter property blocks (slack, pagerduty, jira)
+    # land alongside their respective dispatcher impl in P6.1..P6.3
+    # so the P6.0 yml stays minimal.
+    dispatcher:
+      provider: ${CORTEX_REMEDIATION_DISPATCHER:noop}
+
+logging:
+  level:
+    root: INFO
+    io.cortex: INFO
+    com.netflix.discovery: WARN
+    # Quiet the consumer rebalance noise on local-dev; we want WARN
+    # for actual problems, not the routine join-group transitions.
+    org.apache.kafka.clients.consumer.internals: WARN

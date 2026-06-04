@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-04 (P5.5 close-epic, PR for #82).
-Total ADRs: 31 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031`).
+Last refreshed: 2026-06-04 (P6.0 scaffold, PR for #84).
+Total ADRs: 32 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032`).
 
 ---
 
@@ -68,6 +68,14 @@ Total ADRs: 31 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031`).
 | [0029](0029-log-processor-spring-ai-anomaly-classifier.md) | Spring AI 1.0 anomaly classifier (Ollama dev / Azure OpenAI prod) | Accepted | log-processor-service | -- |
 | [0030](0030-loki-quickwit-fanout-sinks.md) | `ParsedEventSink` fan-out to Grafana Loki + Quickwit (HTTP/1.1, per-sink feature gates) | Accepted | log-processor-service | -- |
 | [0031](0031-log-processor-anomalies-publisher.md) | Synchronous `cortex.anomalies.v1` CloudEvents publisher (no outbox; Kafka offset is the durability mechanism per LD117) | Accepted | log-processor-service | -- |
+
+---
+
+## Remediation pipeline (P6)
+
+| ADR | Title | Status | Scope | Supersedes / Superseded by |
+| --- | --- | --- | --- | --- |
+| [0032](0032-log-remediation-dispatcher.md) | `RemediationDispatcher` SPI + per-channel adapter contract (one bean per profile via `@ConditionalOnProperty`; default `NoopRemediationDispatcher`) | Accepted | log-remediation-service | -- |
 
 ---
 

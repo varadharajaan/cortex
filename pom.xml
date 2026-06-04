@@ -95,7 +95,13 @@
              scaffold + Kafka consumer skeleton + AnomalyClassifier
              SPI stub + Micrometer counters. -->
         <module>log-processor-service</module>
-        <!-- Added in P6: <module>log-remediation-service</module> -->
+        <!-- Added in P6: log-remediation-service - consume from
+             cortex.anomalies.v1 (the P5.4 / ADR-0031 handoff topic)
+             and dispatch remediation playbooks via Slack / PagerDuty
+             / Jira adapters. P6.0 ships the scaffold + Kafka consumer
+             of cortex.anomalies.v1 + RemediationDispatcher SPI stub +
+             Micrometer counters. -->
+        <module>log-remediation-service</module>
         <!-- Added in P7: <module>log-indexer-service</module> -->
         <!-- Added in P8: <module>log-monitoring-service</module> -->
     </modules>
