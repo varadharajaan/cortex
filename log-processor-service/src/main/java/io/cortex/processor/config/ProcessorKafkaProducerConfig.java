@@ -12,15 +12,18 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 
 /**
- * Producer-side Kafka wiring for the {@code DlqPublisher} (P5.1).
+ * Producer-side Kafka wiring for the {@code DlqPublisher} (P5.1)
+ * and {@code AnomaliesPublisher} (P5.4 / ADR-0031).
  *
- * <p>The P5.0 scaffold configured only the consumer side; P5.1 adds
+ * <p>The P5.0 scaffold configured only the consumer side; P5.1 added
  * a byte[]/byte[] {@link KafkaTemplate} so {@code DlqPublisher} can
  * forward failed records to {@code cortex.logs.events.v1.dlq}
- * byte-for-byte. Mirrors the log-ingest-service P4.4b
- * {@code KafkaConfig} producer wiring (ADR-0026) so a tester can
- * read either module and recognise the same shape: acks=all +
- * idempotence + bounded request timeout.</p>
+ * byte-for-byte. P5.4 reuses the same template bean for
+ * {@code AnomaliesPublisher} to write fresh CloudEvents 1.0
+ * envelopes to {@code cortex.anomalies.v1}. Mirrors the
+ * log-ingest-service P4.4b {@code KafkaConfig} producer wiring
+ * (ADR-0026) so a tester can read either module and recognise the
+ * same shape: acks=all + idempotence + bounded request timeout.</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class ProcessorKafkaProducerConfig {
@@ -60,7 +63,11 @@ public class ProcessorKafkaProducerConfig {
 
     /**
      * Byte-array {@link KafkaTemplate} consumed by
-     * {@code DlqPublisher}.
+     * {@code DlqPublisher} (P5.1) and {@code AnomaliesPublisher}
+     * (P5.4 / ADR-0031). Bean name retained for backward
+     * compatibility with the P5.1 DI graph; both publishers
+     * autowire by type since there is exactly one bean of this
+     * shape in the processor context.
      *
      * @param dlqProducerFactory the producer factory bean above
      * @return configured {@link KafkaTemplate}

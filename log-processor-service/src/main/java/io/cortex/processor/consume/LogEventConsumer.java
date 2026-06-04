@@ -70,33 +70,41 @@ public class LogEventConsumer {
     private final AnomalyClassifier classifier;
     private final ProcessorMetrics metrics;
     private final DlqPublisher dlqPublisher;
+    private final AnomaliesPublisher anomaliesPublisher;
     private final List<ParsedEventSink> sinks;
 
     /**
      * Spring constructor.
      *
-     * @param parser       CloudEvent envelope + data decoder
-     * @param validator    schema-conformance enforcer
-     * @param classifier   the selected AnomalyClassifier impl
-     *                     (NoopAnomalyClassifier by default; gated
-     *                     by {@code cortex.processor.classifier})
-     * @param metrics      the Micrometer counter holder
-     * @param dlqPublisher DLQ publisher for parse + validate failures
-     * @param sinks        fan-out sinks (P5.3 / ADR-0030); empty
-     *                     when both Loki + Quickwit are disabled
-     *                     (the default)
+     * @param parser             CloudEvent envelope + data decoder
+     * @param validator          schema-conformance enforcer
+     * @param classifier         the selected AnomalyClassifier impl
+     *                           (NoopAnomalyClassifier by default;
+     *                           gated by {@code cortex.processor.classifier})
+     * @param metrics            the Micrometer counter holder
+     * @param dlqPublisher       DLQ publisher for parse + validate failures
+     * @param anomaliesPublisher P5.4 publisher for the
+     *                           {@code cortex.anomalies.v1} handoff
+     *                           topic consumed by the future P6
+     *                           {@code log-remediation-service}
+     * @param sinks              fan-out sinks (P5.3 / ADR-0030); empty
+     *                           when both Loki + Quickwit are disabled
+     *                           (the default)
      */
+    @SuppressWarnings("checkstyle:ParameterNumber")
     public LogEventConsumer(final LogEventParser parser,
                             final SchemaValidator validator,
                             final AnomalyClassifier classifier,
                             final ProcessorMetrics metrics,
                             final DlqPublisher dlqPublisher,
+                            final AnomaliesPublisher anomaliesPublisher,
                             final List<ParsedEventSink> sinks) {
         this.parser = parser;
         this.validator = validator;
         this.classifier = classifier;
         this.metrics = metrics;
         this.dlqPublisher = dlqPublisher;
+        this.anomaliesPublisher = anomaliesPublisher;
         this.sinks = sinks == null ? Collections.emptyList() : List.copyOf(sinks);
     }
 
@@ -165,7 +173,21 @@ public class LogEventConsumer {
                 this.metrics.incClassified(ProcessorMetrics.OUTCOME_ANOMALY);
                 LOG.info("Anomaly classified eventId={} severity={} reason={}",
                         event.eventId(), verdict.severity(), verdict.reason());
-                // P5.4 will publish to cortex.anomalies.v1 here.
+                try {
+                    this.anomaliesPublisher.publish(event, verdict);
+                    this.metrics.incAnomaliesPublished();
+                } catch (IllegalStateException ex) {
+                    // P5.4 / ADR-0031 / LD117: a publish failure leaves
+                    // the source record un-acked so Kafka rebalance
+                    // redelivers it. The Kafka offset itself is the
+                    // durability mechanism -- no outbox table is
+                    // required because the verdict can always be
+                    // re-classified from the redelivered source.
+                    LOG.error("Anomaly publish failed eventId={} -- leaving record"
+                                    + " un-acked for Kafka redelivery",
+                            event.eventId(), ex);
+                    return;
+                }
             } else {
                 this.metrics.incClassified(ProcessorMetrics.OUTCOME_NORMAL);
             }

@@ -443,3 +443,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     improvements section P5.3 bullet is replaced with a P5.4 outbox
     bullet (since P5.3 is now shipped).
 
+- P5.4: Synchronous `cortex.anomalies.v1` CloudEvents publisher
+  for the future P6 `log-remediation-service` handoff
+  (this PR, `feat/80-p5-4-anomalies-publisher`).
+  - `log-processor-service/src/main/java/io/cortex/processor/consume/AnomaliesPublisher.java`
+    (NEW): mirrors the `DlqPublisher` shape exactly. Public
+    `@Autowired` Spring ctor + package-private test-seam ctor
+    taking an explicit `Clock`. Reuses the existing
+    `KafkaTemplate<byte[], byte[]>` bean from
+    `ProcessorKafkaProducerConfig` (no new producer factory; the
+    P5.1 byte[]/byte[] producer with `acks=all` +
+    `enable.idempotence=true` already satisfies the contract).
+    `publish(RawLogEvent, Classification)` builds a CloudEvents
+    1.0 structured-mode JSON envelope (`id=eventId`,
+    `source=/cortex/log-processor-service`,
+    `type=io.cortex.anomaly.v1`, `subject=tenantId`,
+    `datacontenttype=application/json`, `data` map of
+    `{eventId, tenantId, severity, reason, ts, level, service,
+    message}` in deterministic field order). Sends synchronously
+    with `kafkaTemplate.send(record).get(10, SECONDS)`; on
+    interrupt / NACK / timeout throws `IllegalStateException` so
+    the consumer's catch leaves the source record un-acked and
+    Kafka rebalance redelivery re-attempts the publish on the next
+    poll. Two Kafka headers per ADR-0031 D4:
+    `content-type=application/cloudevents+json` +
+    `x-source-topic=${cortex.processor.topic}`. Record key =
+    `eventId` bytes for downstream dedupe.
+  - `log-processor-service/src/main/java/io/cortex/processor/consume/LogEventConsumer.java`
+    (MOD): ctor gains a 7th argument `AnomaliesPublisher` placed
+    between `dlqPublisher` and `sinks`
+    (`@SuppressWarnings("checkstyle:ParameterNumber")` because the
+    six cooperating collaborators of the Kafka consumer pipeline
+    are the intended design). Anomaly branch becomes
+    `metrics.incAnomaliesPublished(...) ->
+    anomaliesPublisher.publish(...) -> fanOut(...) ->
+    ack.acknowledge()`. A publish failure surfaces as
+    `IllegalStateException`, is logged at ERROR with
+    `eventId+tenantId`, and the method returns early WITHOUT
+    calling `ack.acknowledge()` so Kafka redelivery retries the
+    publish.
+  - `log-processor-service/src/main/java/io/cortex/processor/metrics/ProcessorMetrics.java`
+    (MOD): new counter
+    `cortex.processor.anomalies.published_total{topic, tenant_id}`
+    bootstrap-registered at construct-time with
+    `topic=cortex.anomalies.v1` + `tenant_id=unknown` per LD106 +
+    LD112 so the counter family is visible on the very first
+    Prometheus scrape (Postman / smoke baseline + delta is
+    unconditional; no family-presence gate required).
+  - `log-processor-service/src/main/java/io/cortex/processor/config/ProcessorKafkaProducerConfig.java`
+    (MOD): Javadoc bumped to reflect the second consumer of the
+    same `KafkaTemplate` bean; bean wiring unchanged.
+  - `log-processor-service/src/main/resources/application.yml`
+    (MOD) + `log-processor-service/src/test/resources/application.yml`
+    (MOD per LD100): new
+    `cortex.processor.anomalies.topic: ${CORTEX_PROCESSOR_ANOMALIES_TOPIC:cortex.anomalies.v1}`.
+  - `log-processor-service/src/test/java/io/cortex/processor/consume/AnomaliesPublisherTest.java`
+    (NEW): builds the envelope with an in-memory `ObjectMapper`
+    + a fixed `Clock`; asserts the payload bytes round-trip back
+    through `JsonFormat.deserialize` to a CloudEvent with the
+    documented attributes + the same `data` JSON object.
+  - `log-processor-service/src/test/java/io/cortex/processor/consume/LogEventConsumerTest.java`
+    (MOD): every existing test extended with a
+    `Mockito.mock(AnomaliesPublisher.class)`; verifies the anomaly
+    branch invokes `publish(...)` exactly once and the
+    non-anomaly branches NEVER invoke it. +1 new test
+    `anomalyPublishFailureLeavesRecordUnacked` proving that an
+    `IllegalStateException` from the publisher prevents
+    `ack.acknowledge()` from being called.
+  - `log-processor-service/src/test/java/io/cortex/processor/consume/LogEventConsumerKafkaIT.java`
+    (MOD): new `@Order(4) errorEnvelopeIsClassifiedAndPublishedToAnomaliesTopic()`
+    + new `@TestConfiguration StubAnomalyClassifierConfig` that
+    forces `level=ERROR` -> verdict `severity=HIGH`. The IT
+    pre-creates `cortex.anomalies.v1` on the Testcontainers
+    broker, publishes an ERROR-level envelope to the source topic,
+    drains the anomalies topic with a dedicated consumer, and
+    asserts the envelope shape + the two headers + the record key
+    + the `data` field values + the
+    `cortex.processor.anomalies.published_total` counter delta.
+  - `docs/adr/0031-log-processor-anomalies-publisher.md` (NEW):
+    D1..D6 plus five rejected alternatives (Postgres outbox
+    table + poller, async fire-and-forget, direct StreamBridge,
+    reuse the P5.3 `ParsedEventSink` SPI, schema registry
+    binding).
+  - `docs/adr/INDEX.md` (BUMP): 30 -> 31; new row under
+    "Processor pipeline (P5)".
+  - `log-processor-service/README.md` (PATCH): banner block now
+    mentions P5.4; ADR pointers section adds ADR-0031 +
+    cross-references LD117 (no-outbox rule for Kafka -> Kafka
+    relay services); tech-stack row for the new publisher; Run
+    locally section points at `scripts\p5-4\boot-full-stack.ps1`;
+    Future improvements section drops the P5.4 outbox bullet and
+    adds a P5.5 epic-closer bullet.
+  - `scripts/p5-4/` (NEW per Part 26.10.8.3, gitignored per
+    LD86): `boot-full-stack.ps1` (mirrors P5.3 + adds an
+    `anomalies-drain.ps1` helper that consumes the new topic for
+    smoke validation), `smoke-p5-4.ps1` (extends P5.3 smoke with
+    `cortex_processor_anomalies_published_total` counter delta +
+    a one-shot Kafka topic read on `cortex.anomalies.v1` that
+    asserts a CloudEvent envelope with the documented two
+    headers + record key + `data` fields landed),
+    `newman-leg-c.ps1`, `teardown-full-stack.ps1`, `README.md`.
+  - LD117 (NEW): for Kafka consumer -> Kafka producer relay
+    services, the Kafka offset itself IS the durability mechanism
+    -- no outbox table is needed unless the source of the verdict
+    is non-Kafka. Synchronous publish on the consumer thread with
+    `KafkaTemplate.send().get(timeout)` + on failure throw
+    `IllegalStateException` + don't `ack.acknowledge()` lets
+    Kafka rebalance redelivery retry the publish. P4.4 needed an
+    outbox because HTTP ingest returns 202 Accepted to the client
+    BEFORE durable persistence; P5.4 does not have that
+    asymmetry.
+

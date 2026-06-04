@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-04 (P5.3, PR for #76).
-Total ADRs: 30 (`0000` template + `0001` .. `0027` + `0029` + `0030`).
+Last refreshed: 2026-06-04 (P5.4, PR for #80).
+Total ADRs: 31 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031`).
 
 ---
 
@@ -67,6 +67,7 @@ Total ADRs: 30 (`0000` template + `0001` .. `0027` + `0029` + `0030`).
 | --- | --- | --- | --- | --- |
 | [0029](0029-log-processor-spring-ai-anomaly-classifier.md) | Spring AI 1.0 anomaly classifier (Ollama dev / Azure OpenAI prod) | Accepted | log-processor-service | -- |
 | [0030](0030-loki-quickwit-fanout-sinks.md) | `ParsedEventSink` fan-out to Grafana Loki + Quickwit (HTTP/1.1, per-sink feature gates) | Accepted | log-processor-service | -- |
+| [0031](0031-log-processor-anomalies-publisher.md) | Synchronous `cortex.anomalies.v1` CloudEvents publisher (no outbox; Kafka offset is the durability mechanism per LD117) | Accepted | log-processor-service | -- |
 
 ---
 

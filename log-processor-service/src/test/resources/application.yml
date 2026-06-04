@@ -64,6 +64,13 @@ cortex:
     topic: cortex.logs.events.v1
     dlq:
       topic: cortex.logs.events.v1.dlq
+    anomalies:
+      # P5.4 / ADR-0031 handoff topic for the P6 remediation service.
+      # Mirrors the main-yml default so a bare @SpringBootTest can
+      # construct AnomaliesPublisher; the LogEventConsumerKafkaIT
+      # creates the topic on the Testcontainers broker before the
+      # consumer ticks.
+      topic: cortex.anomalies.v1
     classifier:
       provider: noop
       model: mistral

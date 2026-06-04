@@ -15,10 +15,15 @@ via its transactional outbox (P4.4b/c).
 > + DLQ publisher. P5.2 (PR #73, `e92efaf`) shipped the Spring AI 1.0
 > GA anomaly classifier. P5.2a (PR #75, `43a94e9`) shipped the
 > Postman collection + ten-section README + Newman Leg C evidence.
-> P5.3 (this branch) wires the `ParsedEventSink` SPI list +
+> P5.3 (PR #77, `6e2f51c`) wired the `ParsedEventSink` SPI list +
 > `LokiSink` + `QuickwitSink` fan-out behind
 > `cortex.processor.sinks.{loki,quickwit}.enabled` feature gates
-> (ADR-0030).
+> (ADR-0030). P5.3a (PR #78, `5579186`) bumped the matching
+> `postman/README.md` matrix entry (LD116). P5.4 (this branch) wires
+> `AnomaliesPublisher` to publish CloudEvents 1.0 anomaly envelopes
+> to `cortex.anomalies.v1` for the future P6
+> `log-remediation-service` handoff (ADR-0031 / LD117 -- no outbox
+> table because Kafka offset is the durability mechanism).
 
 ## 1. Overview
 
@@ -113,8 +118,8 @@ so a confirmed anomaly fans out to `log-remediation-service`.
 | Health / probes            | Spring Boot Actuator (`health,info,metrics,prometheus,beans`)        |
 | Persistence                | None (the service is stateless on the consumer thread)               |
 | Build                      | Maven 3.9.9 wrapper, JaCoCo BUNDLE 0.80 line + 0.80 branch (LD23)    |
-| Smoke contract             | `scripts/p5-2/smoke-p5-2.ps1` + `scripts/p5-2a/smoke-p5-2a.ps1`     |
-| Newman collection          | `postman/log-processor.postman_collection.json` (P5.2a)             |
+| Smoke contract             | `scripts/p5-2/smoke-p5-2.ps1` + `scripts/p5-2a/smoke-p5-2a.ps1` + `scripts/p5-3/smoke-p5-3.ps1` + `scripts/p5-4/smoke-p5-4.ps1` |
+| Newman collection          | `postman/log-processor.postman_collection.json` (P5.4 / 13+ requests / 55+ assertions) |
 
 ## 4. Design decisions (ADR pointers)
 
@@ -132,6 +137,22 @@ so a confirmed anomaly fans out to `log-remediation-service`.
   per-tenant + per-reason failure counters; sink failures NEVER
   block the Kafka offset commit. See `cortex.processor.sinks.*`
   block in `application.yml` for the per-sink env-var overrides.
+- **ADR-0031** -- synchronous `cortex.anomalies.v1` CloudEvents
+  1.0 publisher for the future P6 `log-remediation-service`
+  handoff. `AnomaliesPublisher` reuses the existing
+  byte[]/byte[] `KafkaTemplate` and sends synchronously with a
+  10-second bounded wait; on failure throws
+  `IllegalStateException` so the source record stays un-acked
+  and Kafka rebalance redelivery retries the publish. New
+  Micrometer counter `cortex.processor.anomalies.published_total
+  {topic, tenant_id}` bootstrap-registered at construct-time
+  per LD106 + LD112.
+- **LD117** -- for Kafka consumer -> Kafka producer relay
+  services, the Kafka offset itself IS the durability mechanism;
+  no outbox table is needed unless the source of the verdict is
+  non-Kafka. P4.4 needed an outbox because HTTP ingest returns
+  202 Accepted to the client before durable persistence; P5.4
+  does not have that asymmetry.
 - **LD42** -- HTTP/1.1 pin on `OllamaApi` (`JdkClientHttpRequestFactory`)
   + literal substring prompt template render. OkHttp HTTP/2 stream
   resets were silently mapped to retried 5xx and ST4 crashed on
@@ -215,7 +236,10 @@ For the full pipeline run (gateway -> ingest -> Kafka -> processor)
 use `scripts\p5-2a\boot-full-stack.ps1`. For the P5.3 fan-out
 variant that flips both `cortex.processor.sinks.loki.enabled` and
 `cortex.processor.sinks.quickwit.enabled` to `true` (pointed at the
-WireMock :8094 stub), use `scripts\p5-3\boot-full-stack.ps1`.
+WireMock :8094 stub), use `scripts\p5-3\boot-full-stack.ps1`. For
+the P5.4 anomalies-publisher variant that additionally drains the
+`cortex.anomalies.v1` topic and asserts the new counter delta, use
+`scripts\p5-4\boot-full-stack.ps1`.
 
 ## 8. Docker
 
@@ -261,11 +285,14 @@ mirror of the ingest-side outbox DLQ contract).
 
 ## 10. Future improvements
 
-- **P5.4** -- transactional outbox for the sink fan-out so a Loki /
-  Quickwit outage no longer blocks the consumer thread (currently
-  P5.3 fan-out is synchronous on the consumer thread; sink failures
-  tick a counter and the offset is still committed, but per-event
-  latency is bounded by `loki_latency + quickwit_latency`).
+- **P5.5** -- close the P5 epic: atomic 4-file flip, ADR INDEX
+  refresh, CHANGELOG closer entry, and bump
+  `log-processor-service/README.md` banner to `P0..P5 SHIPPED`.
+- **P6** -- `log-remediation-service` consumes from
+  `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff topic) and
+  dispatches Slack / PagerDuty / Jira playbooks. Includes a
+  CloudEvents 1.0 envelope schema-registry binding so the
+  contract is enforced server-side at publish time.
 - **Azure OpenAI provider** -- light up the prod binder in P9 so we
   can validate the ADR-0029 dual-provider claim end-to-end on a real
   Azure subscription, not just under the WireMock stub.

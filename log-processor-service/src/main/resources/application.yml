@@ -93,6 +93,17 @@ cortex:
     # the cluster Terraform module.
     dlq:
       topic: ${CORTEX_PROCESSOR_DLQ_TOPIC:cortex.logs.events.v1.dlq}
+    # Anomalies handoff topic for the P6 log-remediation-service
+    # (P5.4 / ADR-0031). AnomaliesPublisher writes a fresh
+    # CloudEvents 1.0 envelope (specversion=1.0, type=io.cortex
+    # .anomaly.v1, source=/cortex/log-processor-service) for every
+    # anomaly verdict the classifier returns. No outbox table -- the
+    # Kafka offset of the source record is the durability mechanism
+    # (LD117): if the publish fails, the consumer leaves the source
+    # record un-acked and Kafka redelivery re-attempts the publish
+    # on the next poll.
+    anomalies:
+      topic: ${CORTEX_PROCESSOR_ANOMALIES_TOPIC:cortex.anomalies.v1}
     # AnomalyClassifier SPI configuration (P5.0 binder gate + P5.2
     # / ADR-0029 typed properties).
     #
