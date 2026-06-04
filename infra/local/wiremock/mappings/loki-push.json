@@ -1,0 +1,13 @@
+{
+  "priority": 60,
+  "request": {
+    "method": "POST",
+    "url": "/loki/api/v1/push"
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "X-Cortex-Mock": "loki-push"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "priority": 60,
+  "request": {
+    "method": "POST",
+    "urlPathPattern": "/api/v1/[^/]+/ingest"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Cortex-Mock": "quickwit-ingest"
+    },
+    "jsonBody": {
+      "num_docs_for_processing": 1
+    }
+  }
+}

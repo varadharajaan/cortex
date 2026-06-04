@@ -13,8 +13,12 @@ via its transactional outbox (P4.4b/c).
 > this service from `:8094` to `:8095` so WireMock keeps `:8094`.
 > P5.1 (PR #70, `65e2ab8`) shipped the parser + JSON-schema validator
 > + DLQ publisher. P5.2 (PR #73, `e92efaf`) shipped the Spring AI 1.0
-> GA anomaly classifier. P5.2a (this branch) shipped the Postman
-> collection + ten-section README + Newman Leg C evidence.
+> GA anomaly classifier. P5.2a (PR #75, `43a94e9`) shipped the
+> Postman collection + ten-section README + Newman Leg C evidence.
+> P5.3 (this branch) wires the `ParsedEventSink` SPI list +
+> `LokiSink` + `QuickwitSink` fan-out behind
+> `cortex.processor.sinks.{loki,quickwit}.enabled` feature gates
+> (ADR-0030).
 
 ## 1. Overview
 
@@ -121,6 +125,13 @@ so a confirmed anomaly fans out to `log-remediation-service`.
   Azure OpenAI in prod, WireMock-stubbed Ollama on `:8094` in smoke.
   Selection is `cortex.processor.classifier.provider` +
   `spring.ai.ollama.base-url`.
+- **ADR-0030** -- `ParsedEventSink` SPI list + `LokiSink` +
+  `QuickwitSink` fan-out behind
+  `cortex.processor.sinks.{loki,quickwit}.enabled` feature gates.
+  Both sinks pin outbound HTTP to HTTP/1.1 per LD42; both tick
+  per-tenant + per-reason failure counters; sink failures NEVER
+  block the Kafka offset commit. See `cortex.processor.sinks.*`
+  block in `application.yml` for the per-sink env-var overrides.
 - **LD42** -- HTTP/1.1 pin on `OllamaApi` (`JdkClientHttpRequestFactory`)
   + literal substring prompt template render. OkHttp HTTP/2 stream
   resets were silently mapped to retried 5xx and ST4 crashed on
@@ -201,7 +212,10 @@ Invoke-WebRequest http://localhost:8095/actuator/prometheus `
 ```
 
 For the full pipeline run (gateway -> ingest -> Kafka -> processor)
-use `scripts\p5-2a\boot-full-stack.ps1`.
+use `scripts\p5-2a\boot-full-stack.ps1`. For the P5.3 fan-out
+variant that flips both `cortex.processor.sinks.loki.enabled` and
+`cortex.processor.sinks.quickwit.enabled` to `true` (pointed at the
+WireMock :8094 stub), use `scripts\p5-3\boot-full-stack.ps1`.
 
 ## 8. Docker
 
@@ -247,12 +261,14 @@ mirror of the ingest-side outbox DLQ contract).
 
 ## 10. Future improvements
 
-- **P5.3** -- fan out `outcome=anomaly` into a remediation hook
-  (`log-remediation-service`); add the `cortex.processor.anomaly.fanout`
-  counter family.
-- **Azure OpenAI provider** -- light up the prod binder in P5.3 / P9
-  so we can validate the ADR-0029 dual-provider claim end-to-end on a
-  real Azure subscription, not just under the WireMock stub.
+- **P5.4** -- transactional outbox for the sink fan-out so a Loki /
+  Quickwit outage no longer blocks the consumer thread (currently
+  P5.3 fan-out is synchronous on the consumer thread; sink failures
+  tick a counter and the offset is still committed, but per-event
+  latency is bounded by `loki_latency + quickwit_latency`).
+- **Azure OpenAI provider** -- light up the prod binder in P9 so we
+  can validate the ADR-0029 dual-provider claim end-to-end on a real
+  Azure subscription, not just under the WireMock stub.
 - **mTLS** -- enable the commented `SslBundle` block in
   `application.yml` when P5.x rolls cluster-wide service-to-service
   mTLS out.

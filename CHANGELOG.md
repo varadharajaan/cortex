@@ -354,3 +354,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Part 26.11.8 throughput stamp on the previous shipped block
     (P5.2): "~140 tool calls / 1 subagent / 5 scripts / 19 files
     +1558/-51 / LD99+LD100".
+
+- P5.3: `ParsedEventSink` fan-out to Loki + Quickwit
+  (this PR, `feat/76-p5-3-loki-quickwit-sinks`).
+  - `log-processor-service/src/main/java/io/cortex/processor/sink/`
+    (NEW package, 5 production files):
+    - `ParsedEventSink` -- SPI:
+      `void send(RawLogEvent, Classification)` + `String name()`.
+      Contract: implementations MUST NOT throw; they MUST tick
+      `SinkMetrics.*Failed(...)` on every failure category and
+      return.
+    - `SinkProperties` --
+      `@ConfigurationProperties("cortex.processor.sinks")` record
+      with nested `Loki(enabled, baseUrl, requestTimeout)` +
+      `Quickwit(enabled, baseUrl, index, requestTimeout)` records.
+      Defensive defaults on canonical ctors so blank yml entries
+      do not NPE. Both sinks default to `enabled=false`.
+    - `SinkMetrics` -- `@Component("cortexSinkMetrics")`. Two
+      counter families per sink:
+      `cortex.processor.sink.{loki|quickwit}.published_total{tenant_id}`
+      and
+      `cortex.processor.sink.{loki|quickwit}.failed_total{tenant_id, reason}`
+      where `reason` is the bounded enum
+      `{HTTP_STATUS, TIMEOUT, TRANSPORT, SERIALIZATION, UNKNOWN}`.
+      Counters lazy-registered through a `ConcurrentMap` keyed by
+      `metric|tenant|reason` per LD106.
+      `@EnableConfigurationProperties(SinkProperties.class)` is
+      placed on `SinkMetrics` (always loaded) so the properties
+      bind even when both sinks are disabled.
+    - `LokiSink` -- `@Component @ConditionalOnProperty("cortex.processor.sinks.loki.enabled" = true)`.
+      Posts `{streams:[{stream:{tenant_id,level,anomaly}, values:[[tsNanos,line]]}]}`
+      to `{base-url}/loki/api/v1/push`. HTTP/1.1-pinned `RestClient`
+      via `JdkClientHttpRequestFactory` per LD42.
+    - `QuickwitSink` -- `@Component @ConditionalOnProperty("cortex.processor.sinks.quickwit.enabled" = true)`.
+      Posts an NDJSON doc per event to
+      `{base-url}/api/v1/{index}/ingest`. `id = event.eventId()` for
+      server-side dedupe on Kafka rebalance redelivery (ADR-0030 D6).
+  - `log-processor-service/src/main/java/io/cortex/processor/consume/LogEventConsumer.java`
+    (MOD): ctor gains `List<ParsedEventSink> sinks` (null-safe to
+    empty list); new private `fanOut(...)` method iterates the list
+    inside a `try { ... } catch (RuntimeException)` so a defective
+    sink can never bubble up and rewind the Kafka offset. Called
+    inline AFTER the `events.classified_total{outcome}` tick and
+    BEFORE `ack.acknowledge()` on the success branch.
+  - `log-processor-service/src/test/java/io/cortex/processor/sink/`
+    (NEW, 4 unit tests):
+    - `SinkPropertiesTest` -- defensive default coverage.
+    - `SinkMetricsTest` -- lazy registration + per-(tenant,reason)
+      series isolation + null reason -> UNKNOWN + blank tenant ->
+      unknown.
+    - `LokiSinkTest` -- in-process JDK `HttpServer` stand-in;
+      asserts happy-path body shape, anomaly suffix, http_status,
+      transport, null event no-op, null tenant coercion,
+      `name()=="loki"`.
+    - `QuickwitSinkTest` -- in-process JDK `HttpServer` stand-in;
+      asserts NDJSON shape, `id=eventId` dedupe key, http_status,
+      transport, anomaly fields, `name()=="quickwit"`.
+  - `log-processor-service/src/test/java/io/cortex/processor/consume/LogEventConsumerTest.java`
+    (MOD): two `Mockito.mock(ParsedEventSink.class)` instances
+    injected; existing test cases extended with sink-call
+    assertions; +3 new tests:
+    `sinkExceptionDoesNotBlockAckOrFanoutToPeer`,
+    `emptySinkListIsTolerated`, `nullSinkListIsTolerated`.
+  - `log-processor-service/src/main/resources/application.yml`
+    (MOD) + `log-processor-service/src/test/resources/application.yml`
+    (MOD per LD100): new `cortex.processor.sinks.{loki,quickwit}.*`
+    block with env-var overrides + `enabled=false` defaults.
+  - `infra/local/wiremock/mappings/loki-push.json` (NEW): WireMock
+    stub `POST /loki/api/v1/push -> 204`.
+  - `infra/local/wiremock/mappings/quickwit-ingest.json` (NEW):
+    WireMock stub `POST /api/v1/{index}/ingest -> 200`.
+  - `scripts/p5-3/` (NEW per Part 26.10.8.3, gitignored per LD86):
+    `boot-full-stack.ps1` (mirrors P5.2a but flips
+    `CORTEX_PROCESSOR_SINKS_{LOKI,QUICKWIT}_ENABLED=true` and points
+    both base-urls at WireMock :8094), `smoke-p5-3.ps1` (extends
+    P5.2a smoke with sink published_total counter delta + WireMock
+    journal assertions on the two sink endpoints), `newman-leg-c.ps1`,
+    `teardown-full-stack.ps1`, `README.md`.
+  - `docs/adr/0030-loki-quickwit-fanout-sinks.md` (NEW): D1..D6
+    plus five rejected alternatives (Kafka Connect, Vector forwarder,
+    two-binder approach, synchronous blocking sinks, dedicated ML
+    service is rejected via ADR-0006 cross-ref).
+  - `docs/adr/INDEX.md` (BUMP): 29 -> 30; new row under "Processor
+    pipeline (P5)".
+  - `log-processor-service/README.md` (PATCH): banner block now
+    mentions P5.3; ADR pointers section adds ADR-0030; Run locally
+    section points at `scripts\p5-3\boot-full-stack.ps1`; Future
+    improvements section P5.3 bullet is replaced with a P5.4 outbox
+    bullet (since P5.3 is now shipped).
+

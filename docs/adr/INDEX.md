@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-03 (P5.2, PR for #72).
-Total ADRs: 29 (`0000` template + `0001` .. `0027` + `0029`).
+Last refreshed: 2026-06-04 (P5.3, PR for #76).
+Total ADRs: 30 (`0000` template + `0001` .. `0027` + `0029` + `0030`).
 
 ---
 
@@ -66,6 +66,7 @@ Total ADRs: 29 (`0000` template + `0001` .. `0027` + `0029`).
 | ADR | Title | Status | Scope | Supersedes / Superseded by |
 | --- | --- | --- | --- | --- |
 | [0029](0029-log-processor-spring-ai-anomaly-classifier.md) | Spring AI 1.0 anomaly classifier (Ollama dev / Azure OpenAI prod) | Accepted | log-processor-service | -- |
+| [0030](0030-loki-quickwit-fanout-sinks.md) | `ParsedEventSink` fan-out to Grafana Loki + Quickwit (HTTP/1.1, per-sink feature gates) | Accepted | log-processor-service | -- |
 
 ---
 

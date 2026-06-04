@@ -9,6 +9,9 @@ import io.cortex.processor.parse.ParseException;
 import io.cortex.processor.parse.RawLogEvent;
 import io.cortex.processor.parse.SchemaValidator;
 import io.cortex.processor.parse.SchemaViolationException;
+import io.cortex.processor.sink.ParsedEventSink;
+import java.util.Collections;
+import java.util.List;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,6 +70,7 @@ public class LogEventConsumer {
     private final AnomalyClassifier classifier;
     private final ProcessorMetrics metrics;
     private final DlqPublisher dlqPublisher;
+    private final List<ParsedEventSink> sinks;
 
     /**
      * Spring constructor.
@@ -78,17 +82,22 @@ public class LogEventConsumer {
      *                     by {@code cortex.processor.classifier})
      * @param metrics      the Micrometer counter holder
      * @param dlqPublisher DLQ publisher for parse + validate failures
+     * @param sinks        fan-out sinks (P5.3 / ADR-0030); empty
+     *                     when both Loki + Quickwit are disabled
+     *                     (the default)
      */
     public LogEventConsumer(final LogEventParser parser,
                             final SchemaValidator validator,
                             final AnomalyClassifier classifier,
                             final ProcessorMetrics metrics,
-                            final DlqPublisher dlqPublisher) {
+                            final DlqPublisher dlqPublisher,
+                            final List<ParsedEventSink> sinks) {
         this.parser = parser;
         this.validator = validator;
         this.classifier = classifier;
         this.metrics = metrics;
         this.dlqPublisher = dlqPublisher;
+        this.sinks = sinks == null ? Collections.emptyList() : List.copyOf(sinks);
     }
 
     /**
@@ -160,6 +169,7 @@ public class LogEventConsumer {
             } else {
                 this.metrics.incClassified(ProcessorMetrics.OUTCOME_NORMAL);
             }
+            fanOut(event, verdict);
             ack.acknowledge();
         } catch (RuntimeException ex) {
             // Catch-all defence in depth: classifier-side path
@@ -171,6 +181,30 @@ public class LogEventConsumer {
                     record.topic(), record.partition(), record.offset(),
                     event.eventId(), ex);
             ack.acknowledge();
+        }
+    }
+
+    /**
+     * Dispatch the parsed event + classifier verdict to every wired
+     * {@link ParsedEventSink} (P5.3 / ADR-0030).
+     *
+     * <p>Each sink implementation is contractually fire-and-forget
+     * and ticks its own failed-counter on error; this method still
+     * wraps the call in a {@code try}/{@code catch} as a final safety
+     * net so a defective sink can never escape into the consumer's
+     * commit path (ADR-0030 D2).</p>
+     *
+     * @param event   parsed source event
+     * @param verdict classifier verdict (never {@code null})
+     */
+    private void fanOut(final RawLogEvent event, final Classification verdict) {
+        for (final ParsedEventSink sink : this.sinks) {
+            try {
+                sink.send(event, verdict);
+            } catch (RuntimeException ex) {
+                LOG.warn("Sink {} threw despite fire-and-forget contract eventId={}: {}",
+                        sink.name(), event.eventId(), ex.getMessage());
+            }
         }
     }
 }

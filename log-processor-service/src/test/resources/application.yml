@@ -72,3 +72,19 @@ cortex:
       confidence-threshold: 0.7
       request-timeout: PT10S
       prompt-template: classpath:/prompts/anomaly-classifier.st
+    # ParsedEventSink fan-out (P5.3 / ADR-0030).
+    # Both sinks default to enabled=false so plain @SpringBootTest
+    # context loads bring up zero outbound HTTP. Sink-specific
+    # @SpringBootTest classes flip enabled=true via
+    # @TestPropertySource. Block re-declared in full per LD100
+    # (test yml fully shadows main yml under Spring Boot).
+    sinks:
+      loki:
+        enabled: false
+        base-url: http://localhost:3100
+        request-timeout: PT5S
+      quickwit:
+        enabled: false
+        base-url: http://localhost:7280
+        index: cortex-logs
+        request-timeout: PT5S

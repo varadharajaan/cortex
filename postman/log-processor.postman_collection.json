@@ -166,7 +166,13 @@
             "const text = pm.response.text();",
             "pm.test('exposition contains cortex_processor_events_consumed_total', function () { pm.expect(text).to.include('cortex_processor_events_consumed_total'); });",
             "pm.test('exposition contains cortex_processor_events_parsed_total', function () { pm.expect(text).to.include('cortex_processor_events_parsed_total'); });",
-            "pm.test('exposition contains cortex_processor_events_classified_total', function () { pm.expect(text).to.include('cortex_processor_events_classified_total'); });"
+            "pm.test('exposition contains cortex_processor_events_classified_total', function () { pm.expect(text).to.include('cortex_processor_events_classified_total'); });",
+            "if (text.includes('cortex_processor_sink_loki_published_total')) {",
+            "    pm.test('exposition contains cortex_processor_sink_loki_published_total (P5.3 sink enabled)', function () { pm.expect(text).to.include('cortex_processor_sink_loki_published_total'); });",
+            "}",
+            "if (text.includes('cortex_processor_sink_quickwit_published_total')) {",
+            "    pm.test('exposition contains cortex_processor_sink_quickwit_published_total (P5.3 sink enabled)', function () { pm.expect(text).to.include('cortex_processor_sink_quickwit_published_total'); });",
+            "}"
           ] } } ]
         }
       ]
@@ -197,10 +203,15 @@
             "}",
             "const consumed = sumFamily('cortex.processor.events.consumed_total');",
             "const anomaly = valueWithTag('cortex.processor.events.classified_total', 'outcome=\"anomaly\"');",
+            "const lokiPub = sumFamily('cortex.processor.sink.loki.published_total');",
+            "const quickwitPub = sumFamily('cortex.processor.sink.quickwit.published_total');",
             "pm.environment.set('consumed_baseline', String(consumed));",
             "pm.environment.set('classified_anomaly_baseline', String(anomaly));",
+            "pm.environment.set('sink_loki_published_baseline', String(lokiPub));",
+            "pm.environment.set('sink_quickwit_published_baseline', String(quickwitPub));",
             "pm.test('baseline consumed counter recorded', function () { pm.expect(pm.environment.get('consumed_baseline')).to.be.a('string'); });",
-            "pm.test('baseline anomaly counter recorded', function () { pm.expect(pm.environment.get('classified_anomaly_baseline')).to.be.a('string'); });"
+            "pm.test('baseline anomaly counter recorded', function () { pm.expect(pm.environment.get('classified_anomaly_baseline')).to.be.a('string'); });",
+            "pm.test('baseline sink loki + quickwit recorded (zero when sinks disabled is fine)', function () { pm.expect(pm.environment.get('sink_loki_published_baseline')).to.be.a('string'); pm.expect(pm.environment.get('sink_quickwit_published_baseline')).to.be.a('string'); });"
           ] } } ]
         }
       ]
@@ -283,10 +294,21 @@
             "}",
             "const consumedNow = sumFamily('cortex.processor.events.consumed_total');",
             "const anomalyNow = valueWithTag('cortex.processor.events.classified_total', 'outcome=\"anomaly\"');",
+            "const lokiNow = sumFamily('cortex.processor.sink.loki.published_total');",
+            "const quickwitNow = sumFamily('cortex.processor.sink.quickwit.published_total');",
             "const consumedBase = parseFloat(pm.environment.get('consumed_baseline'));",
             "const anomalyBase = parseFloat(pm.environment.get('classified_anomaly_baseline'));",
+            "const lokiBase = parseFloat(pm.environment.get('sink_loki_published_baseline') || '0');",
+            "const quickwitBase = parseFloat(pm.environment.get('sink_quickwit_published_baseline') || '0');",
             "pm.test('consumed_total strictly increased (>= +1)', function () { pm.expect(consumedNow - consumedBase).to.be.at.least(1); });",
-            "pm.test('classified_total{outcome=anomaly} strictly increased (>= +1)', function () { pm.expect(anomalyNow - anomalyBase).to.be.at.least(1); });"
+            "pm.test('classified_total{outcome=anomaly} strictly increased (>= +1)', function () { pm.expect(anomalyNow - anomalyBase).to.be.at.least(1); });",
+            "// Sink counters are only asserted when the sink family is registered on the scrape (i.e. the sink bean loaded because cortex.processor.sinks.{loki|quickwit}.enabled=true).",
+            "if (text.includes('cortex_processor_sink_loki_published_total')) {",
+            "    pm.test('sink loki published_total strictly increased (>= +1)', function () { pm.expect(lokiNow - lokiBase).to.be.at.least(1); });",
+            "}",
+            "if (text.includes('cortex_processor_sink_quickwit_published_total')) {",
+            "    pm.test('sink quickwit published_total strictly increased (>= +1)', function () { pm.expect(quickwitNow - quickwitBase).to.be.at.least(1); });",
+            "}"
           ] } } ]
         }
       ]
