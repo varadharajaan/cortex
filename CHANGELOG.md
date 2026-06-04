@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P6.0: log-remediation-service scaffold (PR for #84, ADR-0032).
+  - New Maven module `log-remediation-service` on port `:8096`
+    (parent `pom.xml` `<module>` block uncommented).
+  - `CortexRemediationApplication` `@SpringBootApplication`
+    `@EnableKafka` `@EnableDiscoveryClient` boot class.
+  - `consume/AnomalyConsumer` `@KafkaListener` on
+    `${cortex.remediation.topic}` (default
+    `cortex.anomalies.v1`) with manual `Acknowledgment` per
+    LD79 + ADR-0028 D1 symmetry.
+  - `parse/AnomalyEnvelopeParser` -- decodes CloudEvents 1.0
+    structured-mode JSON via `cloudevents-json-jackson`;
+    enforces `specversion="1.0"` + `type="io.cortex.anomaly.v1"`
+    per `docs/p5-to-p6-handoff.md` section 3.
+  - `parse/AnomalyEvent` 8-field record (eventId, tenantId,
+    severity, reason, ts, level, service, message) matching
+    the producer-side ADR-0031 contract.
+  - `parse/FailureReason` enum (`INVALID_ENVELOPE`,
+    `WRONG_TYPE`, `MISSING_DATA`) + `parse/ParseException`.
+  - `dispatch/RemediationDispatcher` SPI +
+    `dispatch/DispatchResult` record + default
+    `dispatch/NoopRemediationDispatcher` gated by
+    `cortex.remediation.dispatcher.provider=noop`
+    (`matchIfMissing=true`).
+  - `metrics/RemediationMetrics`
+    `cortex.remediation.dispatched_total{channel, outcome,
+    tenant_id}` counter, bootstrap-registered at construct time
+    with all-`unknown` placeholder tags per LD106 + LD112
+    (Part 17 tag-key allowlist).
+  - Test surface: 23 tests across `ArchitectureTest`,
+    `CortexRemediationApplicationTests` (`@SpringBootTest
+    @EmbeddedKafka`), `AnomalyConsumerTest` (Mockito unit, 7
+    tests), `AnomalyConsumerKafkaIT` (Testcontainers Kafka
+    3.8.0 IT), `NoopRemediationDispatcherTest`,
+    `RemediationMetricsTest`, `AnomalyEnvelopeParserTest` (8
+    tests covering every branch).
+  - ADR-0032 -- `RemediationDispatcher` SPI + per-channel
+    adapter contract (Slack/PagerDuty/Jira); 6 rejected
+    alternatives documented (reactive SPI, native channel
+    SDKs, single shared HTTP adapter, server-side per-channel
+    topics, Spring AI tools framework). `docs/adr/INDEX.md`
+    row + count bump 31 -> 32 + new "Remediation pipeline
+    (P6)" section.
+  - `log-remediation-service/README.md` ten-section pattern
+    mirroring `log-processor-service/README.md`.
+  - `docs/p5-to-p6-handoff.md` section 2 heading typo fixed
+    (`binary mode` -> `structured-mode JSON`; body was
+    already correct).
+
 - P0: Repository bootstrap.
   - Parent Maven POM (Java 17, Spring Boot 3.3.5, Spring Cloud 2023.0.4,
     Spring AI 1.0.0).

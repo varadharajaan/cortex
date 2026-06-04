@@ -22,7 +22,7 @@
 
 ---
 
-## 2. CloudEvents 1.0 envelope (binary mode `data`)
+## 2. CloudEvents 1.0 envelope (structured-mode JSON `data`)
 
 The record value is the structured-mode CloudEvent JSON, written by
 `io.cloudevents:cloudevents-json-jackson` `JsonFormat.serialize(..)`.

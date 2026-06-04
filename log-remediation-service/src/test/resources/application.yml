@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-remediation-service - test classpath defaults (P6.0 /
+# ADR-0032).
+#
+# Loaded with highest precedence under src/test/resources so unit
+# @SpringBootTest classes boot without env vars and without reaching
+# out to Eureka.
+#
+# Per LD100: src/test/resources/application.yml fully shadows the
+# src/main one under Spring Boot. We therefore re-declare every
+# placeholder the production beans dereference (topic, dlq.topic,
+# dispatcher.provider) so a bare @SpringBootTest(classes =
+# CortexRemediationApplication.class) bootstraps without external
+# state.
+# ---------------------------------------------------------------------------
+
+# Eureka disabled at the property level so the test JVM does not
+# attempt to register with a registry that isn't running (ADR-0016).
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+spring:
+  application:
+    name: log-remediation-service
+  # Kafka consumer placeholder defaults used by @KafkaListener on
+  # AnomalyConsumer (groupId = "${spring.kafka.consumer.group-id}").
+  # Bootstrap servers are overridden by Testcontainers / EmbeddedKafka
+  # in the IT layer. We must mirror the FULL main-yml
+  # kafka.consumer + kafka.listener blocks here because under Spring
+  # Boot src/test/resources/application.yml fully shadows the main
+  # one (LD100) -- otherwise auto-offset-reset defaults to latest
+  # and the IT consumer misses records that were published before it
+  # joined the (fresh) group.
+  kafka:
+    consumer:
+      group-id: cortex.remediation.test
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      ack-mode: manual
+      missing-topics-fatal: false
+
+# Production placeholder defaults required to wire AnomalyConsumer,
+# NoopRemediationDispatcher, etc. in a full context load. Values
+# mirror application.yml defaults so tests stay representative of dev.
+cortex:
+  remediation:
+    topic: cortex.anomalies.v1
+    dlq:
+      topic: cortex.anomalies.v1.dlq
+    dispatcher:
+      provider: noop
