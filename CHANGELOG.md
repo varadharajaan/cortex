@@ -554,3 +554,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     BEFORE durable persistence; P5.4 does not have that
     asymmetry.
 
+- P5.5: Close the P5 epic (this PR, `chore/82-p5-5-close-epic`,
+  closes #6 + #66 + #69 + #72 + #76 + #79 + #82).
+  Docs-only closer; zero production code changes; Leg A
+  `mvn verify` is the only safety check.
+  - `log-processor-service/README.md` (PATCH): banner block
+    flipped to `Status: P0..P5 SHIPPED` with the full P5.0..P5.5
+    PR + merge SHA chain (P5.0 #67/`068a3f8`, P5.0a #68/`a8e539c`,
+    P5.1 #70/`65e2ab8`, P5.2 #73/`e92efaf`, P5.2a #75/`43a94e9`,
+    P5.3 #77/`6e2f51c`, P5.3a #78/`5579186`, P5.4 #81/`d2e6acc`).
+    Future improvements section drops the P5.5 bullet (now done)
+    and adds an explicit pointer to `docs/p5-to-p6-handoff.md`
+    from the P6 bullet.
+  - `docs/adr/INDEX.md` (PATCH): `Last refreshed:` bumped from
+    "2026-06-04 (P5.4, PR for #80)" to "2026-06-04
+    (P5.5 close-epic, PR for #82)". Total ADR count unchanged
+    (31; this is a docs-only closer).
+  - `docs/p5-to-p6-handoff.md` (NEW): single-page contract that
+    pins everything the future P6 `log-remediation-service`
+    consumer needs to subscribe to `cortex.anomalies.v1` without
+    reading the P5 producer source. Covers Kafka coordinates
+    (topic name, source topic, producer mode, partitions, key,
+    mandatory headers), the CloudEvents 1.0 envelope shape (per
+    ADR-0031), the `data` payload schema, six concrete consumer
+    guidance items (idempotency, deserialization, schema
+    enforcement, bootstrap counter, header forwarding, DLQ), and
+    cross-references to ADR-0027 / 0029 / 0030 / 0031 + LD117 +
+    PR #81. No new ADR -- the contract content already lives in
+    ADR-0031; this is a navigation aid for the P6 author.
+
