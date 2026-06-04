@@ -61,6 +61,10 @@ public class ProcessorMetrics {
     public static final String METRIC_CLASSIFIED_TOTAL =
             "cortex.processor.events.classified_total";
 
+    /** The anomalies-published counter metric name (P5.4 / ADR-0031). */
+    public static final String METRIC_ANOMALIES_PUBLISHED_TOTAL =
+            "cortex.processor.anomalies.published_total";
+
     private final MeterRegistry registry;
 
     /** Hot-path consumed-record counter for the production topic. */
@@ -77,6 +81,8 @@ public class ProcessorMetrics {
     private final Counter classifiedLowConfidence;
     /** Hot-path classified-error counter (P5.2 / ADR-0029 D5). */
     private final Counter classifiedError;
+    /** Hot-path anomaly-published counter (P5.4 / ADR-0031). */
+    private final Counter anomaliesPublished;
 
     /**
      * Spring constructor.
@@ -104,6 +110,18 @@ public class ProcessorMetrics {
         this.classifiedNormal = buildClassifiedCounter(OUTCOME_NORMAL);
         this.classifiedLowConfidence = buildClassifiedCounter(OUTCOME_LOW_CONFIDENCE);
         this.classifiedError = buildClassifiedCounter(OUTCOME_ERROR);
+        // Bootstrap the P5.4 anomalies-published counter (LD112) so the
+        // /actuator/prometheus scrape sees a stable surface even before
+        // the first anomaly verdict ticks. tenant_id stays "unknown"
+        // to match the bounded-cardinality policy of the other counters
+        // (Part 17 tag-key allowlist).
+        this.anomaliesPublished =
+                Counter.builder(METRIC_ANOMALIES_PUBLISHED_TOTAL)
+                        .description("Anomaly verdicts successfully published to"
+                                + " cortex.anomalies.v1 (P5.4 / ADR-0031)")
+                        .tag(TAG_TOPIC, "cortex.anomalies.v1")
+                        .tag(TAG_TENANT, "unknown")
+                        .register(registry);
     }
 
     /**
@@ -160,5 +178,14 @@ public class ProcessorMetrics {
             case OUTCOME_ERROR -> this.classifiedError.increment();
             default -> this.classifiedError.increment();
         }
+    }
+
+    /**
+     * Increment the anomalies-published counter by one. Called by
+     * {@code AnomaliesPublisher} after a successful synchronous send
+     * to the {@code cortex.anomalies.v1} topic (P5.4 / ADR-0031).
+     */
+    public void incAnomaliesPublished() {
+        this.anomaliesPublished.increment();
     }
 }

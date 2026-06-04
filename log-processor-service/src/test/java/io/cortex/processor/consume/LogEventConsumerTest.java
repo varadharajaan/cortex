@@ -31,14 +31,21 @@ import org.springframework.kafka.support.Acknowledgment;
 /**
  * Unit test for {@link LogEventConsumer} that exercises every
  * pipeline branch without a real broker (P5.1 + P5.2 classifier
- * outcome counter assertions, ADR-0029 D5).
+ * outcome counter assertions, ADR-0029 D5; P5.4 anomaly publish
+ * paths, ADR-0031).
  *
  * <p>Branches covered:</p>
  * <ol>
  *   <li>happy path normal: parse + validate + classify (none) ->
- *       outcome=normal counter ticks</li>
+ *       outcome=normal counter ticks, AnomaliesPublisher NOT invoked</li>
  *   <li>happy path anomaly: parse + validate + classify (anomaly)
- *       -> outcome=anomaly counter ticks + INFO log</li>
+ *       -> outcome=anomaly counter ticks + INFO log +
+ *       AnomaliesPublisher.publish invoked + anomalies_published
+ *       counter ticks + ack (P5.4)</li>
+ *   <li>anomaly publish failure: AnomaliesPublisher throws
+ *       IllegalStateException -> consumer logs ERROR, does NOT
+ *       ack, does NOT fan-out to sinks; anomalies_published
+ *       counter stays at 0 (P5.4 / LD117)</li>
  *   <li>classifier throws -> outcome=error counter ticks + ack
  *       (consumer never loops on an LLM outage; ADR-0029 D4)</li>
  *   <li>classifier returns null -> verdict treated as none ->
@@ -58,6 +65,7 @@ class LogEventConsumerTest {
     private ProcessorMetrics metrics;
     private MeterRegistry registry;
     private DlqPublisher dlqPublisher;
+    private AnomaliesPublisher anomaliesPublisher;
     private ParsedEventSink lokiSink;
     private ParsedEventSink quickwitSink;
     private LogEventConsumer consumer;
@@ -71,12 +79,14 @@ class LogEventConsumerTest {
         this.registry = new SimpleMeterRegistry();
         this.metrics = new ProcessorMetrics(this.registry);
         this.dlqPublisher = mock(DlqPublisher.class);
+        this.anomaliesPublisher = mock(AnomaliesPublisher.class);
         this.lokiSink = mock(ParsedEventSink.class);
         when(this.lokiSink.name()).thenReturn("loki");
         this.quickwitSink = mock(ParsedEventSink.class);
         when(this.quickwitSink.name()).thenReturn("quickwit");
         this.consumer = new LogEventConsumer(this.parser, this.validator,
                 this.classifier, this.metrics, this.dlqPublisher,
+                this.anomaliesPublisher,
                 List.of(this.lokiSink, this.quickwitSink));
     }
 
@@ -94,16 +104,18 @@ class LogEventConsumerTest {
         verify(this.classifier).classify(event);
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        verify(this.anomaliesPublisher, never()).publish(any(), any());
         verify(this.lokiSink).send(eq(event), any(Classification.class));
         verify(this.quickwitSink).send(eq(event), any(Classification.class));
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isEqualTo(1.0d);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isZero();
+        assertThat(anomaliesPublishedCount()).isZero();
     }
 
-    /** Happy path anomaly verdict: tick outcome=anomaly + ack (publish path is P5.4). */
+    /** Happy path anomaly verdict: tick outcome=anomaly + publish to cortex.anomalies.v1 + ack (P5.4). */
     @Test
-    void anomalyVerdictTicksAnomalyOutcomeAndAcks() {
+    void anomalyVerdictPublishesAndAcks() {
         final RawLogEvent event = sample();
         final Classification anomaly = new Classification(true, "HIGH", "spike");
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
@@ -112,12 +124,45 @@ class LogEventConsumerTest {
         final Acknowledgment ack = mock(Acknowledgment.class);
         this.consumer.onMessage(record(new byte[]{1}), ack);
 
+        verify(this.anomaliesPublisher).publish(event, anomaly);
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
         verify(this.lokiSink).send(event, anomaly);
         verify(this.quickwitSink).send(event, anomaly);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isEqualTo(1.0d);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
+        assertThat(anomaliesPublishedCount()).isEqualTo(1.0d);
+    }
+
+    /**
+     * P5.4 / LD117: AnomaliesPublisher throws -> consumer leaves
+     * record un-acked so Kafka redelivery re-attempts the publish.
+     * Sinks must NOT fan out (we don't want duplicate Loki writes on
+     * the retry).
+     */
+    @Test
+    void anomalyPublishFailureLeavesRecordUnacked() {
+        final RawLogEvent event = sample();
+        final Classification anomaly = new Classification(true, "HIGH", "spike");
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event)).thenReturn(anomaly);
+        org.mockito.Mockito.doThrow(new IllegalStateException("kafka down"))
+                .when(this.anomaliesPublisher).publish(event, anomaly);
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        this.consumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(this.anomaliesPublisher).publish(event, anomaly);
+        // Source record stays un-acked so Kafka rebalance redelivers.
+        verify(ack, never()).acknowledge();
+        // Sinks must NOT run -- the retry will publish + fan-out together.
+        verify(this.lokiSink, never()).send(any(), any());
+        verify(this.quickwitSink, never()).send(any(), any());
+        // The anomaly tick already happened pre-publish (outcome counter
+        // is per-attempt, not per-commit; same semantics as parsed_total).
+        assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isEqualTo(1.0d);
+        // Published counter only ticks on successful send.
+        assertThat(anomaliesPublishedCount()).isZero();
     }
 
     /** Classifier throws: tick outcome=error, fall back, ack, do NOT loop. */
@@ -209,19 +254,18 @@ class LogEventConsumerTest {
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
     }
 
-    /** Anomaly verdict is logged but the cortex.anomalies.v1 publish path is P5.4. */
+    /** Anomaly verdict is logged AND published to cortex.anomalies.v1 (P5.4 / ADR-0031). */
     @Test
-    void anomalyVerdictIsLoggedButNotPublishedYet() {
+    void anomalyVerdictIsLoggedAndPublished() {
         final RawLogEvent event = sample();
+        final Classification anomaly = new Classification(true, "HIGH", "spike");
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
-        when(this.classifier.classify(event))
-                .thenReturn(new Classification(true, "HIGH", "spike"));
+        when(this.classifier.classify(event)).thenReturn(anomaly);
 
         final Acknowledgment ack = mock(Acknowledgment.class);
         this.consumer.onMessage(record(new byte[]{1}), ack);
 
-        // P5.4 will add the cortex.anomalies.v1 publish path; for
-        // P5.2 we just ack to keep the consumer moving.
+        verify(this.anomaliesPublisher).publish(event, anomaly);
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(eq(null), any(), any());
     }
@@ -249,6 +293,7 @@ class LogEventConsumerTest {
     void emptySinkListIsTolerated() {
         final LogEventConsumer noSinkConsumer = new LogEventConsumer(this.parser,
                 this.validator, this.classifier, this.metrics, this.dlqPublisher,
+                this.anomaliesPublisher,
                 java.util.List.of());
         final RawLogEvent event = sample();
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
@@ -265,6 +310,7 @@ class LogEventConsumerTest {
     void nullSinkListIsTolerated() {
         final LogEventConsumer noSinkConsumer = new LogEventConsumer(this.parser,
                 this.validator, this.classifier, this.metrics, this.dlqPublisher,
+                this.anomaliesPublisher,
                 null);
         final RawLogEvent event = sample();
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
@@ -288,6 +334,22 @@ class LogEventConsumerTest {
         try {
             return this.registry.get(ProcessorMetrics.METRIC_CLASSIFIED_TOTAL)
                     .tag("outcome", outcome)
+                    .counter().count();
+        } catch (RuntimeException ex) {
+            return 0.0d;
+        }
+    }
+
+    /**
+     * Reads the P5.4 anomalies-published counter from the test meter
+     * registry; returns {@code 0.0} when the counter is absent.
+     *
+     * @return current counter value
+     */
+    private double anomaliesPublishedCount() {
+        try {
+            return this.registry.get(
+                            ProcessorMetrics.METRIC_ANOMALIES_PUBLISHED_TOTAL)
                     .counter().count();
         } catch (RuntimeException ex) {
             return 0.0d;

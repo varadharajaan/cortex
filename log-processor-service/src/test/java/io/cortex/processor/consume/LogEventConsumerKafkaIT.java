@@ -3,9 +3,14 @@ package io.cortex.processor.consume;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
 import io.cloudevents.jackson.JsonFormat;
+import io.cortex.processor.classify.AnomalyClassifier;
+import io.cortex.processor.classify.Classification;
+import io.cortex.processor.parse.RawLogEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +41,10 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestConstructor;
@@ -45,9 +54,10 @@ import org.testcontainers.kafka.KafkaContainer;
 
 /**
  * End-to-end integration test for the P5.1 parse + validate + DLQ
- * pipeline against a real Kafka broker (Testcontainers 3.8.0).
+ * pipeline + P5.4 anomaly handoff against a real Kafka broker
+ * (Testcontainers 3.8.0).
  *
- * <p>Three scenarios:</p>
+ * <p>Scenarios:</p>
  * <ol>
  *   <li>Valid CloudEvent on {@code cortex.logs.events.v1} ->
  *       {@code cortex.processor.events.parsed_total} ticks +
@@ -57,6 +67,11 @@ import org.testcontainers.kafka.KafkaContainer;
  *       {@code x-failure-reason=parse_error}.</li>
  *   <li>Schema-violating event -> one record on the DLQ topic with
  *       header {@code x-failure-reason=schema_violation}.</li>
+ *   <li>ERROR-level event classified as anomaly by the test stub
+ *       classifier -> one CloudEvent on
+ *       {@code cortex.anomalies.v1} with the documented headers +
+ *       {@code cortex.processor.anomalies.published_total} ticks
+ *       (P5.4 / ADR-0031).</li>
  * </ol>
  *
  * <p>Same shape as the P4.4b {@code OutboxPollerKafkaIT} in
@@ -66,6 +81,12 @@ import org.testcontainers.kafka.KafkaContainer;
  * {@code org.testcontainers.kafka.KafkaContainer} apache-image
  * variant (LD78).</p>
  *
+ * <p>The {@link StubAnomalyClassifierConfig} test config overrides
+ * the default {@code NoopAnomalyClassifier} with one that flags any
+ * event whose {@code level} is {@code "ERROR"} as an anomaly so
+ * scenario 4 exercises the publish path without requiring a live
+ * Spring AI model.</p>
+ *
  * <p>Eureka is disabled at the property level; the test JVM has
  * no registry on :8761.</p>
  */
@@ -73,6 +94,7 @@ import org.testcontainers.kafka.KafkaContainer;
 @Testcontainers
 @TestConstructor(autowireMode = TestConstructor.AutowireMode.ALL)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Import(LogEventConsumerKafkaIT.StubAnomalyClassifierConfig.class)
 class LogEventConsumerKafkaIT {
 
     /** Production topic; pinned by ADR-0026. */
@@ -81,11 +103,20 @@ class LogEventConsumerKafkaIT {
     /** DLQ topic; pinned by ADR-0027 contract mirror. */
     private static final String DLQ_TOPIC = "cortex.logs.events.v1.dlq";
 
+    /** Anomalies handoff topic; pinned by ADR-0031 (P5.4). */
+    private static final String ANOMALIES_TOPIC = "cortex.anomalies.v1";
+
     /** CloudEvent type identifier asserted on every consumed envelope. */
     private static final String EVENT_TYPE = "io.cortex.logs.event.v1";
 
-    /** CloudEvent source URI. */
+    /** CloudEvent type identifier asserted on every anomaly envelope. */
+    private static final String ANOMALY_TYPE = "io.cortex.anomaly.v1";
+
+    /** CloudEvent source URI of the upstream ingest producer. */
     private static final String EVENT_SOURCE = "/cortex/log-ingest-service";
+
+    /** CloudEvent source URI of the anomaly publisher (P5.4 / ADR-0031). */
+    private static final String ANOMALY_SOURCE = "/cortex/log-processor-service";
 
     /** Shared Apache Kafka 3.8.0 KRaft container. */
     @Container
@@ -132,7 +163,8 @@ class LogEventConsumerKafkaIT {
         try (AdminClient admin = AdminClient.create(props)) {
             for (final NewTopic topic : List.of(
                     new NewTopic(TOPIC, 1, (short) 1),
-                    new NewTopic(DLQ_TOPIC, 1, (short) 1))) {
+                    new NewTopic(DLQ_TOPIC, 1, (short) 1),
+                    new NewTopic(ANOMALIES_TOPIC, 1, (short) 1))) {
                 try {
                     admin.createTopics(List.of(topic)).all().get();
                 } catch (ExecutionException ex) {
@@ -142,23 +174,32 @@ class LogEventConsumerKafkaIT {
                 }
             }
         }
-        dlqConsumer = newDlqConsumer();
-        final TopicPartition partition = new TopicPartition(DLQ_TOPIC, 0);
-        dlqConsumer.assign(List.of(partition));
-        dlqConsumer.seekToBeginning(List.of(partition));
-        // Force the position to materialise so the first poll is fast.
-        dlqConsumer.position(partition);
+        dlqConsumer = newDrainConsumer("dlq-it-");
+        final TopicPartition dlqPartition = new TopicPartition(DLQ_TOPIC, 0);
+        dlqConsumer.assign(List.of(dlqPartition));
+        dlqConsumer.seekToBeginning(List.of(dlqPartition));
+        dlqConsumer.position(dlqPartition);
+
+        anomaliesConsumer = newDrainConsumer("anomalies-it-");
+        final TopicPartition anomaliesPartition = new TopicPartition(ANOMALIES_TOPIC, 0);
+        anomaliesConsumer.assign(List.of(anomaliesPartition));
+        anomaliesConsumer.seekToBeginning(List.of(anomaliesPartition));
+        anomaliesConsumer.position(anomaliesPartition);
     }
 
     /**
-     * Close the shared DLQ consumer once the class is finished so the
-     * test JVM does not leak the network client.
+     * Close the shared DLQ + anomalies consumers once the class is
+     * finished so the test JVM does not leak network clients.
      */
     @AfterAll
-    static void closeDlqConsumer() {
+    static void closeDrainConsumers() {
         if (dlqConsumer != null) {
             dlqConsumer.close(Duration.ofSeconds(2));
             dlqConsumer = null;
+        }
+        if (anomaliesConsumer != null) {
+            anomaliesConsumer.close(Duration.ofSeconds(2));
+            anomaliesConsumer = null;
         }
     }
 
@@ -169,6 +210,12 @@ class LogEventConsumerKafkaIT {
      * fresh consumer group rebalance on every poll.
      */
     private static KafkaConsumer<byte[], byte[]> dlqConsumer;
+
+    /**
+     * Shared anomalies-topic consumer used by every
+     * {@link #drainAnomalies(Duration)} call (P5.4 / ADR-0031).
+     */
+    private static KafkaConsumer<byte[], byte[]> anomaliesConsumer;
 
     private final MeterRegistry meterRegistry;
 
@@ -269,6 +316,63 @@ class LogEventConsumerKafkaIT {
     }
 
     /**
+     * P5.4 / ADR-0031: an ERROR-level event classified as anomaly
+     * by the stub classifier publishes a CloudEvent envelope to
+     * {@code cortex.anomalies.v1} with the documented headers + the
+     * {@code cortex.processor.anomalies.published_total} counter
+     * ticks. End-to-end proof of the synchronous-publish handoff
+     * for the future P6 remediation service.
+     *
+     * @throws Exception if the producer thread fails to publish the
+     *                   envelope
+     */
+    @Test
+    @Order(4)
+    @SuppressWarnings("checkstyle:MethodLength")
+    void errorEnvelopeIsClassifiedAndPublishedToAnomaliesTopic() throws Exception {
+        final double publishedBefore = anomaliesPublishedCount();
+        final String eventId = "evt-it-anomaly";
+        final byte[] envelope = buildEnvelopeBytes(eventId, "cortex-dev",
+                "ERROR", "checkout", "NPE in pricing engine");
+        publish(TOPIC, envelope);
+
+        await().atMost(30, TimeUnit.SECONDS)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> {
+                    final List<ConsumerRecord<byte[], byte[]>> records =
+                            drainAnomalies(Duration.ofSeconds(2));
+                    assertThat(records).isNotEmpty();
+                    final ConsumerRecord<byte[], byte[]> last = records.get(records.size() - 1);
+                    assertThat(headerValue(last, "content-type"))
+                            .isEqualTo("application/cloudevents+json");
+                    assertThat(headerValue(last, "x-source-topic"))
+                            .isEqualTo(TOPIC);
+                    assertThat(last.key())
+                            .as("anomaly record key is the eventId for downstream dedup")
+                            .isEqualTo(eventId.getBytes(StandardCharsets.UTF_8));
+                    final ObjectMapper mapper = new ObjectMapper();
+                    final JsonNode envelopeNode = mapper.readTree(last.value());
+                    assertThat(envelopeNode.get("specversion").asText()).isEqualTo("1.0");
+                    assertThat(envelopeNode.get("id").asText()).isEqualTo(eventId);
+                    assertThat(envelopeNode.get("source").asText()).isEqualTo(ANOMALY_SOURCE);
+                    assertThat(envelopeNode.get("type").asText()).isEqualTo(ANOMALY_TYPE);
+                    assertThat(envelopeNode.get("subject").asText()).isEqualTo("cortex-dev");
+                    assertThat(envelopeNode.get("datacontenttype").asText())
+                            .isEqualTo("application/json");
+                    final JsonNode data = envelopeNode.get("data");
+                    assertThat(data.get("eventId").asText()).isEqualTo(eventId);
+                    assertThat(data.get("tenantId").asText()).isEqualTo("cortex-dev");
+                    assertThat(data.get("severity").asText()).isEqualTo("HIGH");
+                    assertThat(data.get("reason").asText()).isEqualTo("error-level-stub");
+                    assertThat(data.get("level").asText()).isEqualTo("ERROR");
+                    assertThat(data.get("service").asText()).isEqualTo("checkout");
+                    assertThat(data.get("message").asText()).isEqualTo("NPE in pricing engine");
+                    assertThat(anomaliesPublishedCount())
+                            .isGreaterThan(publishedBefore);
+                });
+    }
+
+    /**
      * Read the parsed-total counter; returns {@code 0.0} when the
      * counter has not yet been registered.
      *
@@ -277,6 +381,21 @@ class LogEventConsumerKafkaIT {
     private double parsedCount() {
         try {
             return this.meterRegistry.get("cortex.processor.events.parsed_total")
+                    .counter().count();
+        } catch (RuntimeException ex) {
+            return 0.0;
+        }
+    }
+
+    /**
+     * Read the P5.4 anomalies-published counter; returns {@code 0.0}
+     * when the counter has not yet been registered.
+     *
+     * @return current value of the anomalies-published counter
+     */
+    private double anomaliesPublishedCount() {
+        try {
+            return this.meterRegistry.get("cortex.processor.anomalies.published_total")
                     .counter().count();
         } catch (RuntimeException ex) {
             return 0.0;
@@ -361,16 +480,40 @@ class LogEventConsumerKafkaIT {
     }
 
     /**
-     * Build a fresh DLQ consumer with a unique group id (never
+     * Drain the {@code cortex.anomalies.v1} topic using the shared
+     * consumer with an explicit {@code seekToBeginning} on every
+     * call so the caller always sees the full anomalies stream from
+     * offset 0 (P5.4 / ADR-0031).
+     *
+     * @param timeout poll timeout
+     * @return records currently visible on the anomalies topic
+     */
+    private static List<ConsumerRecord<byte[], byte[]>> drainAnomalies(
+            final Duration timeout) {
+        final TopicPartition partition = new TopicPartition(ANOMALIES_TOPIC, 0);
+        anomaliesConsumer.seekToBeginning(List.of(partition));
+        final ConsumerRecords<byte[], byte[]> records = anomaliesConsumer.poll(timeout);
+        final java.util.ArrayList<ConsumerRecord<byte[], byte[]>> out =
+                new java.util.ArrayList<>();
+        for (ConsumerRecord<byte[], byte[]> r : records) {
+            out.add(r);
+        }
+        return out;
+    }
+
+    /**
+     * Build a fresh drain consumer with a unique group id (never
      * actually used for group coordination because {@code assign} is
      * used in place of {@code subscribe}).
      *
+     * @param groupIdPrefix prefix for the unique group id
      * @return ready-to-assign consumer
      */
-    private static KafkaConsumer<byte[], byte[]> newDlqConsumer() {
+    private static KafkaConsumer<byte[], byte[]> newDrainConsumer(
+            final String groupIdPrefix) {
         final Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "dlq-it-" + System.nanoTime());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupIdPrefix + System.nanoTime());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
@@ -391,5 +534,36 @@ class LogEventConsumerKafkaIT {
             final ConsumerRecord<byte[], byte[]> record, final String name) {
         final Header h = record.headers().lastHeader(name);
         return h == null ? null : new String(h.value(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Test-only Spring config that swaps the default
+     * {@code NoopAnomalyClassifier} for a deterministic stub that
+     * flags any event whose {@code level} equals {@code "ERROR"} as
+     * an anomaly. Lets the IT exercise the P5.4 publish path without
+     * requiring a live Spring AI model.
+     */
+    @TestConfiguration
+    static class StubAnomalyClassifierConfig {
+
+        /**
+         * Replaces the default NoopAnomalyClassifier with a stub
+         * that flags ERROR-level events as HIGH-severity anomalies.
+         *
+         * @return primary AnomalyClassifier bean
+         */
+        @Bean
+        @Primary
+        AnomalyClassifier stubAnomalyClassifier() {
+            return new AnomalyClassifier() {
+                @Override
+                public Classification classify(final RawLogEvent event) {
+                    if ("ERROR".equals(event.level())) {
+                        return new Classification(true, "HIGH", "error-level-stub");
+                    }
+                    return Classification.none();
+                }
+            };
+        }
     }
 }
