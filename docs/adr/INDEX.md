@@ -6,7 +6,7 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-04 (P5.4, PR for #80).
+Last refreshed: 2026-06-04 (P5.5 close-epic, PR for #82).
 Total ADRs: 31 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031`).
 
 ---

@@ -1,5 +1,14 @@
 # log-processor-service
 
+**Status: P0..P5 SHIPPED** -- the P5 epic is closed on `main` at
+merge commit `d2e6acc` (PR #81, 2026-06-04T08:37:51Z). Five
+sub-phases delivered: P5.0 scaffold + Kafka consumer (PR #67), P5.1
+parser + schema validator + DLQ (PR #70), P5.2 Spring AI 1.0
+anomaly classifier (PR #73), P5.3 Loki + Quickwit fan-out sinks
+(PR #77), P5.4 `cortex.anomalies.v1` synchronous CloudEvents
+publisher for P6 handoff (PR #81, ADR-0031 + LD117). Closer:
+P5.5 docs + handoff doc + atomic 4-file flip (this PR).
+
 CORTEX log processor. **Consume CloudEvents from Kafka -> parse +
 validate -> classify (Spring AI 1.0) -> commit offset, fan rejected
 envelopes out to the DLQ topic**. Activated by the
@@ -19,11 +28,13 @@ via its transactional outbox (P4.4b/c).
 > `LokiSink` + `QuickwitSink` fan-out behind
 > `cortex.processor.sinks.{loki,quickwit}.enabled` feature gates
 > (ADR-0030). P5.3a (PR #78, `5579186`) bumped the matching
-> `postman/README.md` matrix entry (LD116). P5.4 (this branch) wires
-> `AnomaliesPublisher` to publish CloudEvents 1.0 anomaly envelopes
-> to `cortex.anomalies.v1` for the future P6
+> `postman/README.md` matrix entry (LD116). P5.4 (PR #81, `d2e6acc`)
+> wired `AnomaliesPublisher` to publish CloudEvents 1.0 anomaly
+> envelopes to `cortex.anomalies.v1` for the future P6
 > `log-remediation-service` handoff (ADR-0031 / LD117 -- no outbox
-> table because Kafka offset is the durability mechanism).
+> table because Kafka offset is the durability mechanism). P5.5
+> (this PR) closes the epic: banner flip, ADR INDEX refresh, P6
+> handoff doc, atomic 4-file flip.
 
 ## 1. Overview
 
@@ -285,14 +296,13 @@ mirror of the ingest-side outbox DLQ contract).
 
 ## 10. Future improvements
 
-- **P5.5** -- close the P5 epic: atomic 4-file flip, ADR INDEX
-  refresh, CHANGELOG closer entry, and bump
-  `log-processor-service/README.md` banner to `P0..P5 SHIPPED`.
 - **P6** -- `log-remediation-service` consumes from
   `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff topic) and
   dispatches Slack / PagerDuty / Jira playbooks. Includes a
   CloudEvents 1.0 envelope schema-registry binding so the
-  contract is enforced server-side at publish time.
+  contract is enforced server-side at publish time. See
+  [docs/p5-to-p6-handoff.md](../docs/p5-to-p6-handoff.md) for the
+  concrete contract.
 - **Azure OpenAI provider** -- light up the prod binder in P9 so we
   can validate the ADR-0029 dual-provider claim end-to-end on a real
   Azure subscription, not just under the WireMock stub.
