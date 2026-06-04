@@ -116,6 +116,25 @@ cortex:
       confidence-threshold: ${CORTEX_PROCESSOR_CLASSIFIER_CONFIDENCE_THRESHOLD:0.7}
       request-timeout: ${CORTEX_PROCESSOR_CLASSIFIER_REQUEST_TIMEOUT:PT10S}
       prompt-template: classpath:/prompts/anomaly-classifier.st
+    # ParsedEventSink fan-out config (P5.3 / ADR-0030).
+    #
+    # Two independent feature-gated sinks downstream of the
+    # @KafkaListener happy path. Both default to enabled=false so a
+    # stock dev boot continues to emit zero outbound HTTP traffic
+    # (matches P5.0..P5.2 behaviour). Smoke + prod profiles flip the
+    # enabled flag via env vars + point base-url at the real
+    # Loki / Quickwit endpoint (or the WireMock :8094 stub for
+    # cortex-smoke).
+    sinks:
+      loki:
+        enabled: ${CORTEX_PROCESSOR_SINKS_LOKI_ENABLED:false}
+        base-url: ${CORTEX_PROCESSOR_SINKS_LOKI_BASE_URL:http://localhost:3100}
+        request-timeout: ${CORTEX_PROCESSOR_SINKS_LOKI_REQUEST_TIMEOUT:PT5S}
+      quickwit:
+        enabled: ${CORTEX_PROCESSOR_SINKS_QUICKWIT_ENABLED:false}
+        base-url: ${CORTEX_PROCESSOR_SINKS_QUICKWIT_BASE_URL:http://localhost:7280}
+        index: ${CORTEX_PROCESSOR_SINKS_QUICKWIT_INDEX:cortex-logs}
+        request-timeout: ${CORTEX_PROCESSOR_SINKS_QUICKWIT_REQUEST_TIMEOUT:PT5S}
 
 # Spring AI 1.0.0 Ollama starter config (P5.2 / ADR-0029 D1; ADR-0006).
 # Inert when cortex.processor.classifier.provider=noop (the

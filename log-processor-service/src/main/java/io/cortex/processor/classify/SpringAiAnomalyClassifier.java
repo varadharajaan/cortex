@@ -6,6 +6,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -161,12 +162,12 @@ public class SpringAiAnomalyClassifier implements AnomalyClassifier {
      */
     private String renderPrompt(final RawLogEvent event) {
         return this.promptTemplateText
-                .replace("{tenant_id}", nullToEmpty(event.tenantId()))
+                .replace("{tenant_id}", StringUtils.defaultString(event.tenantId()))
                 .replace("{ts}", event.ts() == null ? "" : event.ts().toString())
-                .replace("{service}", nullToEmpty(event.service()))
-                .replace("{level}", nullToEmpty(event.level()))
+                .replace("{service}", StringUtils.defaultString(event.service()))
+                .replace("{level}", StringUtils.defaultString(event.level()))
                 .replace("{labels}", formatLabels(event.labels()))
-                .replace("{message}", nullToEmpty(event.message()));
+                .replace("{message}", StringUtils.defaultString(event.message()));
     }
 
     /**
@@ -225,17 +226,5 @@ public class SpringAiAnomalyClassifier implements AnomalyClassifier {
         return raw.length() <= MAX_REASON_LENGTH
                 ? raw
                 : raw.substring(0, MAX_REASON_LENGTH);
-    }
-
-    /**
-     * Defensive {@code null} -> empty-string coercion for prompt
-     * substitution so a malformed event field cannot inject a
-     * literal {@code "null"} into the prompt body.
-     *
-     * @param value possibly-null field value
-     * @return the value or an empty string
-     */
-    private static String nullToEmpty(final String value) {
-        return value == null ? "" : value;
     }
 }

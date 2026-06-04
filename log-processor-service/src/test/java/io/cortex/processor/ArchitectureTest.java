@@ -21,6 +21,11 @@ import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
  * validation + DLQ failure-reason allowlist) and the {@code config}
  * layer (Kafka producer wiring for the DLQ publisher).</p>
  *
+ * <p>P5.3 adds the {@code sink} layer (ParsedEventSink SPI plus
+ * Grafana Loki + Quickwit HTTP fan-out implementations). The sink
+ * package depends on Parse + Classify for the SPI signature and is
+ * itself only invoked by Consume + wired by App.</p>
+ *
  * <p>This is a layered-architecture contract, not a no-cycles
  * check: cycles already get caught by Maven's
  * {@code dependencyConvergence} on the parent enforcer.</p>
@@ -40,18 +45,23 @@ class ArchitectureTest {
                 .layer("Consume").definedBy("io.cortex.processor.consume..")
                 .layer("Classify").definedBy("io.cortex.processor.classify..")
                 .layer("Parse").definedBy("io.cortex.processor.parse..")
+                .layer("Sink").definedBy("io.cortex.processor.sink..")
                 .layer("Metrics").definedBy("io.cortex.processor.metrics..")
                 .layer("Config").definedBy("io.cortex.processor.config..")
 
                 // Consume orchestrates the parse + validate + classify
                 // pipeline; only App scans the @KafkaListener.
                 .whereLayer("Consume").mayOnlyBeAccessedByLayers("App")
-                // Classify is the SPI - accessed by Consume + tests.
-                .whereLayer("Classify").mayOnlyBeAccessedByLayers("App", "Consume")
+                // Classify is the SPI - accessed by Consume + Sink (the
+                // ParsedEventSink contract carries Classification) + tests.
+                .whereLayer("Classify").mayOnlyBeAccessedByLayers("App", "Consume", "Sink")
                 // Parse carries the typed RawLogEvent referenced by the
-                // Classify SPI signature, so Classify reaches in.
+                // Classify + Sink SPI signatures, so both reach in.
                 .whereLayer("Parse")
-                .mayOnlyBeAccessedByLayers("App", "Consume", "Classify")
+                .mayOnlyBeAccessedByLayers("App", "Consume", "Classify", "Sink")
+                // Sink fan-out (Loki + Quickwit) is invoked by Consume
+                // post-classify and wired by App.
+                .whereLayer("Sink").mayOnlyBeAccessedByLayers("App", "Consume")
                 // Metrics is accessed by Consume.
                 .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume")
                 // Config beans are wired by App; Consume @Autowires the

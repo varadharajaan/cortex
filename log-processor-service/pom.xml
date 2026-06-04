@@ -167,6 +167,14 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Apache Commons Lang3 for StringUtils null/blank helpers
+             (LD<TBD> prefer mature OSS over re-rolled one-liners).
+             Version managed by Spring Boot 3.3.6 BOM. -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+        </dependency>
+
         <!-- ==================== Test scope ==================== -->
 
         <dependency>

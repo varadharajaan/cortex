@@ -17,9 +17,11 @@ import io.cortex.processor.parse.ParseException;
 import io.cortex.processor.parse.RawLogEvent;
 import io.cortex.processor.parse.SchemaValidator;
 import io.cortex.processor.parse.SchemaViolationException;
+import io.cortex.processor.sink.ParsedEventSink;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +58,8 @@ class LogEventConsumerTest {
     private ProcessorMetrics metrics;
     private MeterRegistry registry;
     private DlqPublisher dlqPublisher;
+    private ParsedEventSink lokiSink;
+    private ParsedEventSink quickwitSink;
     private LogEventConsumer consumer;
 
     /** Resets all mocks + builds a fresh consumer under test. */
@@ -67,8 +71,13 @@ class LogEventConsumerTest {
         this.registry = new SimpleMeterRegistry();
         this.metrics = new ProcessorMetrics(this.registry);
         this.dlqPublisher = mock(DlqPublisher.class);
+        this.lokiSink = mock(ParsedEventSink.class);
+        when(this.lokiSink.name()).thenReturn("loki");
+        this.quickwitSink = mock(ParsedEventSink.class);
+        when(this.quickwitSink.name()).thenReturn("quickwit");
         this.consumer = new LogEventConsumer(this.parser, this.validator,
-                this.classifier, this.metrics, this.dlqPublisher);
+                this.classifier, this.metrics, this.dlqPublisher,
+                List.of(this.lokiSink, this.quickwitSink));
     }
 
     /** Happy path normal verdict: parse + validate + classify, tick outcome=normal, ack. */
@@ -85,6 +94,8 @@ class LogEventConsumerTest {
         verify(this.classifier).classify(event);
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        verify(this.lokiSink).send(eq(event), any(Classification.class));
+        verify(this.quickwitSink).send(eq(event), any(Classification.class));
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isEqualTo(1.0d);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isZero();
@@ -94,15 +105,17 @@ class LogEventConsumerTest {
     @Test
     void anomalyVerdictTicksAnomalyOutcomeAndAcks() {
         final RawLogEvent event = sample();
+        final Classification anomaly = new Classification(true, "HIGH", "spike");
         when(this.parser.parse(any(byte[].class))).thenReturn(event);
-        when(this.classifier.classify(event))
-                .thenReturn(new Classification(true, "HIGH", "spike"));
+        when(this.classifier.classify(event)).thenReturn(anomaly);
 
         final Acknowledgment ack = mock(Acknowledgment.class);
         this.consumer.onMessage(record(new byte[]{1}), ack);
 
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        verify(this.lokiSink).send(event, anomaly);
+        verify(this.quickwitSink).send(event, anomaly);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isEqualTo(1.0d);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
     }
@@ -120,6 +133,8 @@ class LogEventConsumerTest {
 
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(any(), any(), any());
+        verify(this.lokiSink, never()).send(any(), any());
+        verify(this.quickwitSink, never()).send(any(), any());
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ERROR)).isEqualTo(1.0d);
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
@@ -153,6 +168,8 @@ class LogEventConsumerTest {
         verify(this.dlqPublisher).publish(record, FailureReason.PARSE_ERROR, ex);
         verify(this.validator, never()).validate(any());
         verify(this.classifier, never()).classify(any());
+        verify(this.lokiSink, never()).send(any(), any());
+        verify(this.quickwitSink, never()).send(any(), any());
         verify(ack).acknowledge();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_ANOMALY)).isZero();
@@ -174,6 +191,8 @@ class LogEventConsumerTest {
 
         verify(this.dlqPublisher).publish(record, FailureReason.SCHEMA_VIOLATION, ex);
         verify(this.classifier, never()).classify(any());
+        verify(this.lokiSink, never()).send(any(), any());
+        verify(this.quickwitSink, never()).send(any(), any());
         verify(ack).acknowledge();
         assertThat(classifiedCount(ProcessorMetrics.OUTCOME_NORMAL)).isZero();
     }
@@ -205,6 +224,56 @@ class LogEventConsumerTest {
         // P5.2 we just ack to keep the consumer moving.
         verify(ack).acknowledge();
         verify(this.dlqPublisher, never()).publish(eq(null), any(), any());
+    }
+
+    /** P5.3: sink throwing must NOT block the consumer or rewind offsets. */
+    @Test
+    void sinkExceptionDoesNotBlockAckOrFanoutToPeer() {
+        final RawLogEvent event = sample();
+        final Classification anomaly = new Classification(true, "HIGH", "spike");
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event)).thenReturn(anomaly);
+        org.mockito.Mockito.doThrow(new RuntimeException("loki down"))
+                .when(this.lokiSink).send(any(), any());
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        this.consumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(this.lokiSink).send(event, anomaly);
+        verify(this.quickwitSink).send(event, anomaly);
+        verify(ack).acknowledge();
+    }
+
+    /** P5.3: an empty sink list must not break the consumer (default boot). */
+    @Test
+    void emptySinkListIsTolerated() {
+        final LogEventConsumer noSinkConsumer = new LogEventConsumer(this.parser,
+                this.validator, this.classifier, this.metrics, this.dlqPublisher,
+                java.util.List.of());
+        final RawLogEvent event = sample();
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event)).thenReturn(Classification.none());
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        noSinkConsumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(ack).acknowledge();
+    }
+
+    /** P5.3: null sink list (defensive) must not break the consumer. */
+    @Test
+    void nullSinkListIsTolerated() {
+        final LogEventConsumer noSinkConsumer = new LogEventConsumer(this.parser,
+                this.validator, this.classifier, this.metrics, this.dlqPublisher,
+                null);
+        final RawLogEvent event = sample();
+        when(this.parser.parse(any(byte[].class))).thenReturn(event);
+        when(this.classifier.classify(event)).thenReturn(Classification.none());
+
+        final Acknowledgment ack = mock(Acknowledgment.class);
+        noSinkConsumer.onMessage(record(new byte[]{1}), ack);
+
+        verify(ack).acknowledge();
     }
 
     /**
