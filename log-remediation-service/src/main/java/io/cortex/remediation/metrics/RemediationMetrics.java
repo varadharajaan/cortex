@@ -75,6 +75,14 @@ public class RemediationMetrics {
         bootstrap("pagerduty", "dispatched");
         bootstrap("pagerduty", "transient_failure");
         bootstrap("pagerduty", "permanent_failure");
+        // P6.3: bootstrap the three Jira outcome series for the
+        // same reason -- the Jira Cloud REST API v3 adapter
+        // (ADR-0035) plugs into the same metric family and must
+        // publish its full outcome surface before the first Jira
+        // create-issue call ticks.
+        bootstrap("jira", "dispatched");
+        bootstrap("jira", "transient_failure");
+        bootstrap("jira", "permanent_failure");
     }
 
     /**

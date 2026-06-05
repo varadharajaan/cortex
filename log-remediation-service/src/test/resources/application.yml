@@ -76,3 +76,16 @@ cortex:
       dedup-key-template: "{tenantId}:{eventId}"
       source: cortex-remediation-test
       severity-default: error
+    # P6.3 Jira properties default to blank base-url / email /
+    # api-token / project-key so the test boot stays green even
+    # when the Jira provider is selected by an opt-in slice (the
+    # adapter returns DispatchResult.skipped("jira:unconfigured")
+    # per ADR-0035 D1).
+    jira:
+      base-url: ""
+      email: ""
+      api-token: ""
+      request-timeout: 5s
+      project-key: ""
+      issue-type: Bug
+      severity-label-prefix: anomaly-severity

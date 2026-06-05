@@ -38,6 +38,9 @@ public record DispatchResult(boolean dispatched, String channel,
     /** Channel value emitted by the PagerDuty Events API v2 adapter in P6.2. */
     public static final String CHANNEL_PAGERDUTY = "pagerduty";
 
+    /** Channel value emitted by the Jira Cloud REST API v3 adapter in P6.3. */
+    public static final String CHANNEL_JIRA = "jira";
+
     /** Outcome value: dispatcher chose not to escalate this anomaly. */
     public static final String OUTCOME_SKIPPED = "skipped";
 

@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P6.3: log-remediation-service Jira Cloud REST API v3 adapter
+  (PR for #91, ADR-0035; LD104 closer-pattern -- Legs B-E still
+  roll forward to the P6.1a closer that ships smoke + Postman +
+  cross-phase regression ONCE for Slack + PagerDuty + Jira
+  together after this ship).
+  - New `dispatch/JiraProperties` `@ConfigurationProperties`
+    record (`cortex.remediation.jira.{base-url, email, api-token,
+    request-timeout, project-key, issue-type,
+    severity-label-prefix}`); blank `base-url` / `email` /
+    `api-token` / `project-key` tolerated per ADR-0035 D7 so
+    preview/smoke envs boot green. Compact ctor coerces null/blank
+    inputs to documented defaults for every field EXCEPT the four
+    credential / target fields (which stay blank as the
+    unconfigured signal). Default `issue-type` is `Bug`; default
+    `severity-label-prefix` is `anomaly-severity` (joined to the
+    lowercased AnomalyEvent severity via `-`).
+  - New `dispatch/JiraHttpConfig` `@Configuration` providing the
+    `jiraRestClient` bean wired with HTTP/1.1-pinned
+    `JdkClientHttpRequestFactory` (LD42 symmetry with
+    `LokiSink`/`QuickwitSink`/`SlackHttpConfig`/`PagerDutyHttpConfig`)
+    AND pinning BOTH `HttpClient.connectTimeout(...)` and
+    `factory.setReadTimeout(...)` per LD121; gated by
+    `cortex.remediation.dispatcher.provider=jira` +
+    `@EnableConfigurationProperties(JiraProperties.class)`
+    (the boot app deliberately does NOT carry
+    `@ConfigurationPropertiesScan`).
+  - New `dispatch/JiraRemediationDispatcher` -- third real
+    `RemediationDispatcher` implementation; posts the REST API v3
+    create-issue envelope (`{fields:{project:{key}, summary,
+    description{ADF doc}, issuetype:{name}, labels}}`) to
+    `{baseUrl}/rest/api/3/issue` with an `Authorization: Basic
+    <Base64(email:apiToken)>` header per ADR-0035 D2 and the
+    ADR-0035 D3 HTTP outcome -> `DispatchResult` classification
+    table (2xx -> `dispatched`; 429 ->
+    `transient_failure/jira:429`; 5xx ->
+    `transient_failure/jira:5xx:<code>`; other 4xx ->
+    `permanent_failure/jira:4xx:<code>`; timeout ->
+    `transient_failure/jira:timeout`; transport ->
+    `transient_failure/jira:transport`; unknown ->
+    `transient_failure/jira:unknown`; blank credentials ->
+    `skipped/jira:unconfigured`; null event ->
+    `skipped/jira:null-event`). ADF description is built as one
+    paragraph node per non-blank `AnomalyEvent` field so Jira's
+    UI renders each detail on its own line. Labels rendered as
+    `["cortex-remediation", "tenant:<tenantId>",
+    "<severityLabelPrefix>-<severity-lowercased>"]`. Honours
+    ADR-0032 D6 (never throws on transient) + D7 (stays agnostic
+    to future P6.4 retry-budget).
+  - `DispatchResult` extension: `CHANNEL_JIRA` constant sits
+    beside the existing `CHANNEL_SLACK` + `CHANNEL_PAGERDUTY`.
+  - `RemediationMetrics` extension: bootstrap-register the three
+    Jira outcome series (`{channel=jira,
+    outcome=dispatched|transient_failure|permanent_failure,
+    tenant_id=unknown}`) at construct time per LD106 + LD112.
+  - `application.yml` + `src/test/resources/application.yml`:
+    `cortex.remediation.jira.*` block with env-var defaults;
+    main yml uses blank env-var default for `base-url` / `email` /
+    `api-token` / `project-key`; test yml uses literal `""`
+    values so the boot stays green even when the Jira provider is
+    selected by an opt-in test slice.
+  - Test surface: `JiraPropertiesTest` (4 tests -- compact-ctor
+    null-coerce, blank-coerce, verbatim round-trip, default
+    request timeout), `JiraRemediationDispatcherTest` (13 Mockito
+    tests covering every outcome-table row + body renderer + ADF
+    description shape + Basic-auth header build + labels;
+    LD119-compliant `doReturn(bodySpec).when(bodySpec).body(any(Object.class))`
+    self-type stub for `RequestBodySpec`),
+    `JiraRemediationDispatcherWireMockIT` (5 IT tests against an
+    in-process WireMock server on a dynamic port -- happy 201,
+    401, 429, 500, transport-fault via LD120
+    `Fault.CONNECTION_RESET_BY_PEER`; happy-path asserts both
+    the `Authorization: Basic <Base64>` header and JSON-path
+    matchers on `$.fields.project.key`, `$.fields.summary`,
+    `$.fields.description.type`, `$.fields.issuetype.name`, and
+    the three labels), plus 1 new
+    `bootstrapRegistersAllThreeJiraOutcomeSeries` test in
+    `RemediationMetricsTest`.
+  - ADR-0035 -- Jira `RemediationDispatcher` adapter (REST API v3
+    create-issue + Basic-auth-with-API-token + ADF description +
+    label-based severity + create-issue-only + outcome
+    classification); 8 rejected alternatives (Jira Service
+    Management REST endpoints, Jira Cloud OAuth 2.0, Spring
+    Retry, Resilience4j `@CircuitBreaker`, fail-closed boot,
+    plain-text description vs ADF, auto-assign by component
+    owner, account-level API token vs per-user). `docs/adr/INDEX.md`
+    row + count bump 34 -> 35 + refreshed-on date.
+  - `log-remediation-service/README.md` status banner bump
+    (`P6.0..P6.2 SHIPPED` -> `P6.0..P6.3 SHIPPED`) +
+    "Channel adapters -> Jira (P6.3, ADR-0035)" section.
+
 - P6.2: log-remediation-service PagerDuty Events API v2 adapter
   (PR for #89, ADR-0034; LD104 closer-pattern -- Legs B-E still
   roll forward to the P6.1a closer that ships smoke + Postman +

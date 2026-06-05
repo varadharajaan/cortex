@@ -145,4 +145,31 @@ class RemediationMetricsTest {
             assertThat(pd.count()).isZero();
         }
     }
+
+    /**
+     * P6.3 / ADR-0035: bootstrap MUST register all three Jira
+     * outcome series with {@code tenant_id=unknown} so the Prometheus
+     * scrape sees the full Jira outcome surface even before the
+     * first anomaly hits the Jira adapter.
+     */
+    @Test
+    void bootstrapRegistersAllThreeJiraOutcomeSeries() {
+        final MeterRegistry registry = new SimpleMeterRegistry();
+
+        new RemediationMetrics(registry);
+
+        for (final String outcome : new String[] {
+                "dispatched", "transient_failure", "permanent_failure"}) {
+            final Counter jira = registry.find(
+                            RemediationMetrics.METRIC_DISPATCHED_TOTAL)
+                    .tag("channel", "jira")
+                    .tag("outcome", outcome)
+                    .tag("tenant_id", RemediationMetrics.UNKNOWN)
+                    .counter();
+            assertThat(jira)
+                    .as("Jira outcome=%s bootstrap counter must exist", outcome)
+                    .isNotNull();
+            assertThat(jira.count()).isZero();
+        }
+    }
 }
