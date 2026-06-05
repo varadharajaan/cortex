@@ -150,8 +150,32 @@ cortex:
       dedup-key-template: ${CORTEX_REMEDIATION_PAGERDUTY_DEDUP_KEY_TEMPLATE:}
       source: ${CORTEX_REMEDIATION_PAGERDUTY_SOURCE:cortex-remediation}
       severity-default: ${CORTEX_REMEDIATION_PAGERDUTY_SEVERITY_DEFAULT:error}
-
-logging:
+    # ---------- Jira adapter (P6.3 / ADR-0035) -----------------------
+    # Bound to JiraProperties; only consumed when
+    # cortex.remediation.dispatcher.provider=jira so the noop
+    # default never touches these values. Blank base-url / email /
+    # api-token / project-key are tolerated: the adapter logs +
+    # returns DispatchResult.skipped ("jira:unconfigured") and the
+    # boot stays green per ADR-0035 D1 (operator gets skipped-
+    # outcome counter ticks, not a CrashLoopBackOff). base-url is
+    # the Jira Cloud site root (https://<your-domain>.atlassian.net);
+    # email + api-token form the Basic-auth pair (the API token is
+    # minted at id.atlassian.com -- NOT the account password);
+    # project-key is the target Jira project key (e.g. OPS / SRE);
+    # issue-type is the issue type name (default Bug; MUST exist in
+    # the target project's issue-type scheme); request-timeout is
+    # the JDK HTTP/1.1 client connect + read timeout (LD42 pin +
+    # LD121 forward rule); severity-label-prefix is joined to the
+    # lowercased AnomalyEvent severity via "-" to form a Jira label
+    # (e.g. anomaly-severity-high).
+    jira:
+      base-url: ${CORTEX_REMEDIATION_JIRA_BASE_URL:}
+      email: ${CORTEX_REMEDIATION_JIRA_EMAIL:}
+      api-token: ${CORTEX_REMEDIATION_JIRA_API_TOKEN:}
+      request-timeout: ${CORTEX_REMEDIATION_JIRA_REQUEST_TIMEOUT:5s}
+      project-key: ${CORTEX_REMEDIATION_JIRA_PROJECT_KEY:}
+      issue-type: ${CORTEX_REMEDIATION_JIRA_ISSUE_TYPE:Bug}
+      severity-label-prefix: ${CORTEX_REMEDIATION_JIRA_SEVERITY_LABEL_PREFIX:anomaly-severity}
   level:
     root: INFO
     io.cortex: INFO

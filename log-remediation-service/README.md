@@ -1,6 +1,6 @@
 # log-remediation-service
 
-**Status: P6.0 .. P6.2 SHIPPED** -- P6.0 scaffold + Kafka
+**Status: P6.0 .. P6.3 SHIPPED** -- P6.0 scaffold + Kafka
 consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
 topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
 P6.1 first real adapter `SlackRemediationDispatcher` against
@@ -384,6 +384,136 @@ outcome series at construct time per LD106 + LD112:
 - `cortex.remediation.dispatched_total{channel=pagerduty, outcome=permanent_failure, tenant_id=unknown}`
 
 So the `/actuator/prometheus` scrape exposes the full PagerDuty
+outcome surface on the very first scrape, before any anomaly
+hits the dispatcher.
+
+## 4c. Channel adapters -> Jira (P6.3, ADR-0035)
+
+The third real `RemediationDispatcher` implementation. Gated
+by `cortex.remediation.dispatcher.provider=jira`. Posts a Jira
+Cloud REST API v3 create-issue envelope to
+`{baseUrl}/rest/api/3/issue` using a `RestClient` wired with
+HTTP/1.1 pinned `JdkClientHttpRequestFactory` AND pinning
+BOTH `HttpClient.connectTimeout(...)` and
+`factory.setReadTimeout(...)` per LD42 + LD121.
+
+### Configuration
+
+```yaml
+cortex:
+  remediation:
+    dispatcher:
+      provider: jira
+    jira:
+      base-url: 'https://cortex.atlassian.net'
+      email: 'ops@cortex.io'
+      api-token: '<your-jira-api-token>'
+      request-timeout: 5s
+      project-key: OPS
+      issue-type: Bug
+      severity-label-prefix: anomaly-severity
+```
+
+Env vars (preferred for the four credential / target fields):
+
+```powershell
+$env:CORTEX_REMEDIATION_DISPATCHER                          = 'jira'
+$env:CORTEX_REMEDIATION_JIRA_BASE_URL                       = 'https://cortex.atlassian.net'
+$env:CORTEX_REMEDIATION_JIRA_EMAIL                          = 'ops@cortex.io'
+$env:CORTEX_REMEDIATION_JIRA_API_TOKEN                      = '<your-jira-api-token>'
+$env:CORTEX_REMEDIATION_JIRA_REQUEST_TIMEOUT                = '5s'
+$env:CORTEX_REMEDIATION_JIRA_PROJECT_KEY                    = 'OPS'
+$env:CORTEX_REMEDIATION_JIRA_ISSUE_TYPE                     = 'Bug'
+$env:CORTEX_REMEDIATION_JIRA_SEVERITY_LABEL_PREFIX          = 'anomaly-severity'
+```
+
+Any of blank `base-url` / `email` / `api-token` / `project-key`
+is tolerated: the adapter returns
+`DispatchResult.skipped("jira:unconfigured")` and the boot
+stays green (ADR-0035 D7). Authentication uses Jira Cloud's
+Basic-auth-with-API-token scheme per ADR-0035 D2 -- the adapter
+builds an `Authorization: Basic <Base64(email:apiToken)>`
+header per request (the API token is rotatable in the
+id.atlassian.com profile UI).
+
+### Body shape (ADR-0035 D2)
+
+```json
+{
+  "fields": {
+    "project":  { "key": "OPS" },
+    "summary":  "[HIGH] checkout: checkout 5xx burst",
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        { "type": "paragraph", "content": [
+          { "type": "text", "text": "eventId: evt-1" } ] },
+        { "type": "paragraph", "content": [
+          { "type": "text", "text": "tenantId: tenant-abc" } ] },
+        { "type": "paragraph", "content": [
+          { "type": "text", "text": "severity: HIGH" } ] }
+      ]
+    },
+    "issuetype": { "name": "Bug" },
+    "labels": [
+      "cortex-remediation",
+      "tenant:tenant-abc",
+      "anomaly-severity-high"
+    ]
+  }
+}
+```
+
+The adapter ships create-issue only per ADR-0035 D2 -- it
+NEVER auto-transitions or auto-resolves issues; the on-call
+human (or a separate Jira Automation rule that fires on the
+`cortex-remediation` label) owns issue lifecycle.
+
+### Severity mapping (ADR-0035 D5)
+
+1. Lowercase the upstream `AnomalyEvent.severity` string.
+2. Prepend the configurable `severity-label-prefix` (default
+   `anomaly-severity`) with a `-` separator.
+3. Emit the resulting string as a Jira label (e.g.
+   `anomaly-severity-high`).
+
+Label-based severity sidesteps every per-project priority
+scheme issue while still letting operators build Jira filter
+queries like `labels = "anomaly-severity-high"` for the
+on-call dashboard.
+
+### Outcome -> `DispatchResult` table (ADR-0035 D3)
+
+| HTTP outcome                                | `outcome`           | `reason`              |
+|---------------------------------------------|---------------------|-----------------------|
+| 201 (success)                               | `dispatched`        | `""`                  |
+| 2xx (other)                                 | `dispatched`        | `""`                  |
+| 429                                         | `transient_failure` | `jira:429`            |
+| 5xx                                         | `transient_failure` | `jira:5xx:<code>`     |
+| 4xx (other -- 400 / 401 / 403 / 404 / ...) | `permanent_failure` | `jira:4xx:<code>`     |
+| Read timeout                                | `transient_failure` | `jira:timeout`        |
+| Connection error                            | `transient_failure` | `jira:transport`      |
+| Other RuntimeEx                             | `transient_failure` | `jira:unknown`        |
+| Blank `baseUrl`/`email`/`apiToken`/`projectKey` | `skipped`       | `jira:unconfigured`   |
+| Null event                                  | `skipped`           | `jira:null-event`     |
+
+Per ADR-0032 D6 + ADR-0035 D6 the adapter NEVER throws on a
+transient downstream failure -- it returns a typed verdict so
+the consumer can ack the offset and the operator alerts on the
+failed-outcome metric. No in-adapter retry: ADR-0035 D6 defers
+the retry-budget axis to P6.4.
+
+### Counter bootstrap
+
+`RemediationMetrics` bootstrap-registers three Jira outcome
+series at construct time per LD106 + LD112:
+
+- `cortex.remediation.dispatched_total{channel=jira, outcome=dispatched, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=jira, outcome=transient_failure, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=jira, outcome=permanent_failure, tenant_id=unknown}`
+
+So the `/actuator/prometheus` scrape exposes the full Jira
 outcome surface on the very first scrape, before any anomaly
 hits the dispatcher.
 
