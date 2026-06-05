@@ -1,14 +1,16 @@
 # log-remediation-service
 
-**Status: P6.0 .. P6.1 SHIPPED** -- P6.0 scaffold + Kafka
+**Status: P6.0 .. P6.2 SHIPPED** -- P6.0 scaffold + Kafka
 consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
 topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
 P6.1 first real adapter `SlackRemediationDispatcher` against
-Slack Incoming Webhook (PR for #87, ADR-0033). Legs B-E
-(boot smoke + Postman + cross-phase regression) deferred to the
-P6.1a closer that ships them ONCE for Slack + PagerDuty + Jira
-together after P6.2 + P6.3 ship (LD104 closer-pattern).
-P6.2 PagerDuty / P6.3 Jira / P6.4 DLQ + retry budgets follow.
+Slack Incoming Webhook (PR for #87, ADR-0033); P6.2 second
+real adapter `PagerDutyRemediationDispatcher` against the
+PagerDuty Events API v2 enqueue endpoint (PR for #89,
+ADR-0034). Legs B-E (boot smoke + Postman + cross-phase
+regression) deferred to the P6.1a closer that ships them ONCE
+for Slack + PagerDuty + Jira together after P6.3 ships (LD104
+closer-pattern). P6.3 Jira / P6.4 DLQ + retry budgets follow.
 
 CORTEX log remediation. **Consume anomaly CloudEvents from
 Kafka -> decode the 8-field `data` block into a typed
@@ -256,6 +258,132 @@ series at construct time per LD106 + LD112:
 - `cortex.remediation.dispatched_total{channel=slack, outcome=permanent_failure, tenant_id=unknown}`
 
 So the `/actuator/prometheus` scrape exposes the full Slack
+outcome surface on the very first scrape, before any anomaly
+hits the dispatcher.
+
+## 4b. Channel adapters -> PagerDuty (P6.2, ADR-0034)
+
+The second real `RemediationDispatcher` implementation. Gated
+by `cortex.remediation.dispatcher.provider=pagerduty`. Posts a
+PagerDuty Events API v2 envelope to
+`https://events.pagerduty.com/v2/enqueue` using a `RestClient`
+wired with HTTP/1.1 pinned `JdkClientHttpRequestFactory` AND
+pinning BOTH `HttpClient.connectTimeout(...)` and
+`factory.setReadTimeout(...)` per LD42 + LD121.
+
+### Configuration
+
+```yaml
+cortex:
+  remediation:
+    dispatcher:
+      provider: pagerduty
+    pagerduty:
+      routing-key: 'abcdef1234567890abcdef1234567890'
+      request-timeout: 5s
+      events-url: https://events.pagerduty.com/v2/enqueue
+      dedup-key-template: '{tenantId}:{eventId}'
+      source: cortex-remediation
+      severity-default: error
+```
+
+Env vars (preferred for the routing key):
+
+```powershell
+$env:CORTEX_REMEDIATION_DISPATCHER                       = 'pagerduty'
+$env:CORTEX_REMEDIATION_PAGERDUTY_ROUTING_KEY            = 'abcdef1234567890abcdef1234567890'
+$env:CORTEX_REMEDIATION_PAGERDUTY_REQUEST_TIMEOUT        = '5s'
+$env:CORTEX_REMEDIATION_PAGERDUTY_EVENTS_URL             = 'https://events.pagerduty.com/v2/enqueue'
+$env:CORTEX_REMEDIATION_PAGERDUTY_DEDUP_KEY_TEMPLATE     = '{tenantId}:{eventId}'
+$env:CORTEX_REMEDIATION_PAGERDUTY_SOURCE                 = 'cortex-remediation'
+$env:CORTEX_REMEDIATION_PAGERDUTY_SEVERITY_DEFAULT       = 'error'
+```
+
+A blank `routing-key` is tolerated: the adapter returns
+`DispatchResult.skipped("pagerduty:unconfigured")` and the boot
+stays green (ADR-0034 D7). The dedup-key template uses
+single-brace `{tenantId}:{eventId}` placeholders (NOT Spring
+`${...}` syntax) so the literal default string does not
+collide with Spring's property-placeholder parser at boot; the
+substitution is performed inside the adapter via two
+`String.replace` calls.
+
+### Body shape (ADR-0034 D1)
+
+```json
+{
+  "routing_key": "abcdef1234567890abcdef1234567890",
+  "event_action": "trigger",
+  "dedup_key": "tenant-abc:evt-1",
+  "payload": {
+    "summary": ":rotating_light: HIGH anomaly on checkout (tenant=tenant-abc): checkout 5xx burst",
+    "severity": "error",
+    "source": "cortex-remediation",
+    "custom_details": {
+      "eventId": "evt-1",
+      "tenantId": "tenant-abc",
+      "reason": "checkout 5xx burst",
+      "level": "ERROR",
+      "service": "checkout",
+      "message": "503 from /pay endpoint",
+      "ts": "2026-06-04T15:00:00Z",
+      "rawSeverity": "HIGH"
+    }
+  }
+}
+```
+
+The `event_action` is hard-coded `"trigger"` per ADR-0034 D2 --
+the adapter NEVER auto-acknowledges or auto-resolves; the
+on-call human (or a separate operator workflow) owns
+resolution.
+
+### Severity mapping (ADR-0034 D6)
+
+1. Lowercase the upstream `AnomalyEvent.severity` string.
+2. If the lowercased value is in
+   `{critical, error, warning, info}`, pass it through to
+   `payload.severity` verbatim.
+3. Otherwise fall back to
+   `cortex.remediation.pagerduty.severity-default` (default
+   `"error"`).
+
+The raw upstream severity is always copied into
+`payload.custom_details.rawSeverity` so the on-call human sees
+the classifier's original verdict string in the PagerDuty
+incident UI even when the Events API enum gets the default.
+
+### Outcome -> `DispatchResult` table (ADR-0034 D3)
+
+| HTTP outcome      | `outcome`           | `reason`                |
+|-------------------|---------------------|-------------------------|
+| 202 (success)     | `dispatched`        | `""`                    |
+| 2xx (other)       | `dispatched`        | `""`                    |
+| 429               | `transient_failure` | `pagerduty:429`         |
+| 5xx               | `transient_failure` | `pagerduty:5xx:<code>`  |
+| 4xx (other)       | `permanent_failure` | `pagerduty:4xx:<code>`  |
+| Read timeout      | `transient_failure` | `pagerduty:timeout`     |
+| Connection error  | `transient_failure` | `pagerduty:transport`   |
+| Other RuntimeEx   | `transient_failure` | `pagerduty:unknown`     |
+| Blank routing key | `skipped`           | `pagerduty:unconfigured`|
+| Null event        | `skipped`           | `pagerduty:null-event`  |
+
+Per ADR-0032 D6 + ADR-0034 D5 the adapter NEVER throws on a
+transient downstream failure -- it returns a typed verdict so
+the consumer can ack the offset and the operator alerts on the
+failed-outcome metric. No in-adapter retry: ADR-0034 D5 defers
+the retry-budget axis to P6.4.
+
+### Counter bootstrap
+
+`RemediationMetrics` bootstrap-registers three PagerDuty
+outcome series at construct time per LD106 + LD112:
+
+- `cortex.remediation.dispatched_total{channel=pagerduty, outcome=dispatched, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=pagerduty, outcome=transient_failure, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=pagerduty, outcome=permanent_failure, tenant_id=unknown}`
+
+So the `/actuator/prometheus` scrape exposes the full PagerDuty
 outcome surface on the very first scrape, before any anomaly
 hits the dispatcher.
 

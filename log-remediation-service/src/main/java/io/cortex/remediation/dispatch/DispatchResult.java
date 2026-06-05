@@ -35,6 +35,9 @@ public record DispatchResult(boolean dispatched, String channel,
     /** Channel value emitted by the Slack adapter in P6.1. */
     public static final String CHANNEL_SLACK = "slack";
 
+    /** Channel value emitted by the PagerDuty Events API v2 adapter in P6.2. */
+    public static final String CHANNEL_PAGERDUTY = "pagerduty";
+
     /** Outcome value: dispatcher chose not to escalate this anomaly. */
     public static final String OUTCOME_SKIPPED = "skipped";
 

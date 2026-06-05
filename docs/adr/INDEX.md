@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-04 (P6.1 Slack adapter, PR for #87).
-Total ADRs: 33 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033`).
+Last refreshed: 2026-06-05 (P6.2 PagerDuty adapter, PR for #89).
+Total ADRs: 34 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034`).
 
 ---
 
@@ -77,6 +77,7 @@ Total ADRs: 33 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + 
 | --- | --- | --- | --- | --- |
 | [0032](0032-log-remediation-dispatcher.md) | `RemediationDispatcher` SPI + per-channel adapter contract (one bean per profile via `@ConditionalOnProperty`; default `NoopRemediationDispatcher`) | Accepted | log-remediation-service | -- |
 | [0033](0033-slack-remediation-adapter.md) | Slack `RemediationDispatcher` adapter -- Incoming Webhook + plain-text body + `RestClient` HTTP/1.1 pin + typed outcome classification (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
+| [0034](0034-pagerduty-remediation-adapter.md) | PagerDuty `RemediationDispatcher` adapter -- Events API v2 enqueue + trigger-only `event_action` + deterministic `{tenantId}:{eventId}` dedup-key + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + severity-mapping fallback (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 
 ---
 

@@ -68,6 +68,13 @@ public class RemediationMetrics {
         bootstrap("slack", "dispatched");
         bootstrap("slack", "transient_failure");
         bootstrap("slack", "permanent_failure");
+        // P6.2: bootstrap the three PagerDuty outcome series for the
+        // same reason -- the Events API v2 adapter (ADR-0034) plugs
+        // into the same metric family and must publish its full
+        // outcome surface before the first PagerDuty enqueue ticks.
+        bootstrap("pagerduty", "dispatched");
+        bootstrap("pagerduty", "transient_failure");
+        bootstrap("pagerduty", "permanent_failure");
     }
 
     /**

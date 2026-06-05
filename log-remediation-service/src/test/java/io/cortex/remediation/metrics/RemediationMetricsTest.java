@@ -118,4 +118,31 @@ class RemediationMetricsTest {
             assertThat(slack.count()).isZero();
         }
     }
+
+    /**
+     * P6.2 / ADR-0034: bootstrap MUST register all three PagerDuty
+     * outcome series with {@code tenant_id=unknown} so the Prometheus
+     * scrape sees the full PagerDuty outcome surface even before the
+     * first anomaly hits the PagerDuty adapter.
+     */
+    @Test
+    void bootstrapRegistersAllThreePagerDutyOutcomeSeries() {
+        final MeterRegistry registry = new SimpleMeterRegistry();
+
+        new RemediationMetrics(registry);
+
+        for (final String outcome : new String[] {
+                "dispatched", "transient_failure", "permanent_failure"}) {
+            final Counter pd = registry.find(
+                            RemediationMetrics.METRIC_DISPATCHED_TOTAL)
+                    .tag("channel", "pagerduty")
+                    .tag("outcome", outcome)
+                    .tag("tenant_id", RemediationMetrics.UNKNOWN)
+                    .counter();
+            assertThat(pd)
+                    .as("PagerDuty outcome=%s bootstrap counter must exist", outcome)
+                    .isNotNull();
+            assertThat(pd.count()).isZero();
+        }
+    }
 }

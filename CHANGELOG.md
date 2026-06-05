@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P6.2: log-remediation-service PagerDuty Events API v2 adapter
+  (PR for #89, ADR-0034; LD104 closer-pattern -- Legs B-E still
+  roll forward to the P6.1a closer that ships smoke + Postman +
+  cross-phase regression ONCE for Slack + PagerDuty + Jira
+  together after P6.3).
+  - New `dispatch/PagerDutyProperties` `@ConfigurationProperties`
+    record (`cortex.remediation.pagerduty.{routing-key,
+    request-timeout, events-url, dedup-key-template, source,
+    severity-default}`); blank routing key tolerated per
+    ADR-0034 D7 so preview/smoke envs boot green. Compact ctor
+    coerces null/blank inputs to documented defaults for every
+    field EXCEPT `routingKey` (which stays blank as the
+    unconfigured signal). Default dedup-key template is the
+    single-brace literal `{tenantId}:{eventId}` (NOT Spring
+    `${...}` syntax) to dodge the property-placeholder parser at
+    boot.
+  - New `dispatch/PagerDutyHttpConfig` `@Configuration` providing
+    the `pagerDutyRestClient` bean wired with HTTP/1.1-pinned
+    `JdkClientHttpRequestFactory` (LD42 symmetry with
+    `LokiSink`/`QuickwitSink`/`SlackHttpConfig`) AND pinning BOTH
+    `HttpClient.connectTimeout(...)` and
+    `factory.setReadTimeout(...)` per LD121; gated by
+    `cortex.remediation.dispatcher.provider=pagerduty` +
+    `@EnableConfigurationProperties(PagerDutyProperties.class)`
+    (the boot app deliberately does NOT carry
+    `@ConfigurationPropertiesScan`).
+  - New `dispatch/PagerDutyRemediationDispatcher` -- second real
+    `RemediationDispatcher` implementation; posts the Events API
+    v2 envelope (`{routing_key, event_action:"trigger",
+    dedup_key, payload:{summary, severity, source,
+    custom_details}}`) to `https://events.pagerduty.com/v2/enqueue`
+    with the ADR-0034 D3 HTTP outcome -> `DispatchResult`
+    classification table (2xx -> `dispatched`; 429 ->
+    `transient_failure/pagerduty:429`; 5xx ->
+    `transient_failure/pagerduty:5xx:<code>`; other 4xx ->
+    `permanent_failure/pagerduty:4xx:<code>`; timeout ->
+    `transient_failure/pagerduty:timeout`; transport ->
+    `transient_failure/pagerduty:transport`; unknown ->
+    `transient_failure/pagerduty:unknown`; blank routing key ->
+    `skipped/pagerduty:unconfigured`; null event ->
+    `skipped/pagerduty:null-event`). Severity mapping per
+    ADR-0034 D6: pass-through `critical|error|warning|info`,
+    else fall back to `severity-default` (default `"error"`)
+    with the raw upstream value preserved in
+    `payload.custom_details.rawSeverity`. Dedup-key substitution
+    via two `String.replace` calls against `{tenantId}` +
+    `{eventId}`. Honours ADR-0032 D6 (never throws on transient)
+    + D7 (stays agnostic to future P6.4 retry-budget).
+  - `DispatchResult` extension: `CHANNEL_PAGERDUTY` constant
+    sits beside the existing `CHANNEL_SLACK`.
+  - `RemediationMetrics` extension: bootstrap-register the three
+    PagerDuty outcome series
+    (`{channel=pagerduty, outcome=dispatched|transient_failure|permanent_failure,
+    tenant_id=unknown}`) at construct time per LD106 + LD112.
+  - `application.yml` + `src/test/resources/application.yml`:
+    `cortex.remediation.pagerduty.*` block with env-var defaults;
+    main yml uses blank env-var default for `dedup-key-template`
+    (compact-ctor coerces) to dodge the Spring `${...}` parser's
+    inner-colon ambiguity; test yml uses the literal quoted
+    `"{tenantId}:{eventId}"`.
+  - Test surface: `PagerDutyPropertiesTest` (4 tests --
+    compact-ctor null-coerce, blank-coerce, verbatim round-trip,
+    default request timeout), `PagerDutyRemediationDispatcherTest`
+    (14 Mockito tests covering every outcome-table row + body
+    renderer + severity pass-through + severity fallback;
+    LD119-compliant `doReturn(bodySpec).when(bodySpec).body(any(Object.class))`
+    self-type stub for `RequestBodySpec`),
+    `PagerDutyRemediationDispatcherWireMockIT` (5 IT tests
+    against an in-process WireMock server on a dynamic port --
+    happy 202, 429, 500, 400, transport-fault via LD120
+    `Fault.CONNECTION_RESET_BY_PEER`), plus 1 new
+    `bootstrapRegistersAllThreePagerDutyOutcomeSeries` test in
+    `RemediationMetricsTest`.
+  - ADR-0034 -- PagerDuty `RemediationDispatcher` adapter
+    (Events API v2 enqueue + trigger-only + deterministic
+    dedup-key + outcome classification + severity-mapping
+    fallback); 8 rejected alternatives (REST API v2 Incidents
+    endpoint, full trigger/ack/resolve workflow, PagerDuty Apps
+    OAuth, Spring Retry `@Retryable`, Resilience4j
+    `@CircuitBreaker`, fail-closed boot, raise on unknown
+    severity). `docs/adr/INDEX.md` row + count bump 33 -> 34 +
+    refreshed-on date.
+  - `log-remediation-service/README.md` status banner bump
+    (`P6.0..P6.1 SHIPPED` -> `P6.0..P6.2 SHIPPED`) +
+    "Channel adapters -> PagerDuty (P6.2, ADR-0034)" section.
+
 - P6.1: log-remediation-service Slack webhook adapter (PR for #87,
   ADR-0033; LD104 closer-pattern -- Legs B-E roll forward to the
   P6.1a closer that ships smoke + Postman + cross-phase regression
