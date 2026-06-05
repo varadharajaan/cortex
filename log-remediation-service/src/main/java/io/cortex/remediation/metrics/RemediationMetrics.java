@@ -59,11 +59,33 @@ public class RemediationMetrics {
         // before the first anomaly verdict ticks. All three tag
         // values are "unknown" so the bootstrap series stays
         // unambiguously distinct from real tag combinations.
+        bootstrap(UNKNOWN, UNKNOWN);
+        // P6.1: bootstrap the three Slack outcome series so the
+        // scrape sees every Slack outcome row even before the
+        // first anomaly hits the Slack adapter. tenant_id stays
+        // "unknown" -- the real series for a given tenant lazy-
+        // registers on first tick per LD106 cardinality rules.
+        bootstrap("slack", "dispatched");
+        bootstrap("slack", "transient_failure");
+        bootstrap("slack", "permanent_failure");
+    }
+
+    /**
+     * Register a single bootstrap counter series (count = 0) for
+     * the supplied {@code channel} + {@code outcome} pair with
+     * {@code tenant_id=unknown}. Counters are idempotent in
+     * Micrometer -- the production {@code incDispatched(...)} ticks
+     * re-use the same meter when the tag tuple matches.
+     *
+     * @param channel one of the {@code DispatchResult.CHANNEL_*} constants
+     * @param outcome one of the {@code DispatchResult.OUTCOME_*} constants
+     */
+    private void bootstrap(final String channel, final String outcome) {
         Counter.builder(METRIC_DISPATCHED_TOTAL)
                 .description("Anomaly events handled by RemediationDispatcher"
                         + " (P6.0 / ADR-0032)")
-                .tag(TAG_CHANNEL, UNKNOWN)
-                .tag(TAG_OUTCOME, UNKNOWN)
+                .tag(TAG_CHANNEL, channel)
+                .tag(TAG_OUTCOME, outcome)
                 .tag(TAG_TENANT, UNKNOWN)
                 .register(this.registry);
     }

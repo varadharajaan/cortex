@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P6.1: log-remediation-service Slack webhook adapter (PR for #87,
+  ADR-0033; LD104 closer-pattern -- Legs B-E roll forward to the
+  P6.1a closer that ships smoke + Postman + cross-phase regression
+  ONCE for Slack + PagerDuty + Jira together after P6.2 + P6.3).
+  - New `dispatch/SlackProperties` `@ConfigurationProperties` record
+    (`cortex.remediation.slack.{webhook-url, request-timeout,
+    username, channel-override}`); blank webhook URL tolerated per
+    ADR-0033 D5 so preview/smoke envs boot green.
+  - New `dispatch/SlackHttpConfig` `@Configuration` providing the
+    `slackRestClient` bean wired with HTTP/1.1-pinned
+    `JdkClientHttpRequestFactory` (LD42 symmetry with
+    `LokiSink`/`QuickwitSink`); gated by
+    `cortex.remediation.dispatcher.provider=slack`.
+  - New `dispatch/SlackRemediationDispatcher` -- first real
+    `RemediationDispatcher` implementation; posts plain-text JSON
+    body to Slack Incoming Webhook with the ADR-0033 D3 HTTP
+    outcome -> `DispatchResult` classification table (2xx ->
+    `dispatched`; 429 -> `transient_failure/slack:429`; 5xx ->
+    `transient_failure/slack:5xx:<code>`; other 4xx ->
+    `permanent_failure/slack:4xx:<code>`; timeout ->
+    `transient_failure/slack:timeout`; transport ->
+    `transient_failure/slack:transport`; blank URL ->
+    `skipped/slack:unconfigured`; null event ->
+    `skipped/slack:null-event`). Honours ADR-0032 D6 (never throws
+    on transient) + D7 (stays agnostic to future P6.4 retry-budget).
+  - `DispatchResult` extension: `CHANNEL_SLACK` constant +
+    `dispatched(channel)` / `transientFailure(channel, reason)` /
+    `permanentFailure(channel, reason)` factory methods.
+  - `RemediationMetrics` extension: bootstrap-register the three
+    Slack outcome series
+    (`{channel=slack, outcome=dispatched|transient_failure|permanent_failure,
+    tenant_id=unknown}`) at construct time per LD106 + LD112.
+  - `application.yml` + `src/test/resources/application.yml`:
+    `cortex.remediation.slack.*` block with env-var defaults; blank
+    webhook URL keeps both prod + test boot green.
+  - Test surface: `SlackPropertiesTest` (3 tests -- compact-ctor
+    defaults + verbatim round-trip + default constant),
+    `SlackRemediationDispatcherTest` (12 Mockito tests covering
+    every outcome-table row + body renderer username/channel
+    overrides), `SlackRemediationDispatcherWireMockIT` (5 IT tests
+    against an in-process WireMock server on a dynamic port --
+    happy 200, 429, 500, 400, slow-timeout), plus 2 new assertions
+    in `RemediationMetricsTest` for the Slack bootstrap series +
+    the null-tag fallback path.
+  - New parent-managed test dep usage: `org.wiremock:wiremock-
+    standalone` (first Java-test consumer in this module).
+  - ADR-0033 -- Slack `RemediationDispatcher` adapter (Incoming
+    Webhook + plain-text body + outcome classification + no
+    in-adapter retry); 6 rejected alternatives (OAuth
+    `chat.postMessage`, Slack Workflow Builder webhooks, Block
+    Kit rich layout, Spring Retry `@Retryable`, Resilience4j
+    `@CircuitBreaker`, fail-closed boot). `docs/adr/INDEX.md` row
+    + count bump 32 -> 33 + refreshed-on date.
+  - `log-remediation-service/README.md` status banner bump +
+    "Channel adapters -> Slack (P6.1)" section.
+
 - P6.0: log-remediation-service scaffold (PR for #84, ADR-0032).
   - New Maven module `log-remediation-service` on port `:8096`
     (parent `pom.xml` `<module>` block uncommented).

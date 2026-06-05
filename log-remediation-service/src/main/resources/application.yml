@@ -106,6 +106,21 @@ cortex:
     # so the P6.0 yml stays minimal.
     dispatcher:
       provider: ${CORTEX_REMEDIATION_DISPATCHER:noop}
+    # ---------- Slack adapter (P6.1 / ADR-0033) ----------------------
+    # Bound to SlackProperties; only consumed when
+    # cortex.remediation.dispatcher.provider=slack so the noop
+    # default never touches these values. A blank webhook-url is
+    # tolerated: the adapter logs + returns DispatchResult.skipped
+    # ("slack:unconfigured") and the boot stays green per ADR-0033
+    # D1 (operator gets skipped-outcome counter ticks, not a
+    # CrashLoopBackOff). request-timeout is the JDK HTTP/1.1 client
+    # connect + read timeout (LD42 pin); username + channel-override
+    # are optional Slack message field overrides.
+    slack:
+      webhook-url: ${CORTEX_REMEDIATION_SLACK_WEBHOOK_URL:}
+      request-timeout: ${CORTEX_REMEDIATION_SLACK_REQUEST_TIMEOUT:5s}
+      username: ${CORTEX_REMEDIATION_SLACK_USERNAME:cortex-remediation}
+      channel-override: ${CORTEX_REMEDIATION_SLACK_CHANNEL:}
 
 logging:
   level:
