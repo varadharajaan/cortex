@@ -121,6 +121,35 @@ cortex:
       request-timeout: ${CORTEX_REMEDIATION_SLACK_REQUEST_TIMEOUT:5s}
       username: ${CORTEX_REMEDIATION_SLACK_USERNAME:cortex-remediation}
       channel-override: ${CORTEX_REMEDIATION_SLACK_CHANNEL:}
+    # ---------- PagerDuty adapter (P6.2 / ADR-0034) ------------------
+    # Bound to PagerDutyProperties; only consumed when
+    # cortex.remediation.dispatcher.provider=pagerduty so the noop
+    # default never touches these values. A blank routing-key is
+    # tolerated: the adapter logs + returns DispatchResult.skipped
+    # ("pagerduty:unconfigured") and the boot stays green per
+    # ADR-0034 D1 (operator gets skipped-outcome counter ticks, not
+    # a CrashLoopBackOff). request-timeout is the JDK HTTP/1.1
+    # client connect + read timeout (LD42 pin + LD121 forward rule).
+    # events-url defaults to the US Events API v2 enqueue endpoint;
+    # override to https://events.eu.pagerduty.com/v2/enqueue for EU
+    # tenants. dedup-key-template supports ${tenantId} + ${eventId}
+    # placeholders for natural per-event idempotency. source is the
+    # payload.source field shown on the incident card. severity-
+    # default is the PagerDuty severity used when the AnomalyEvent
+    # severity does not map to critical|error|warning|info.
+    pagerduty:
+      routing-key: ${CORTEX_REMEDIATION_PAGERDUTY_ROUTING_KEY:}
+      request-timeout: ${CORTEX_REMEDIATION_PAGERDUTY_REQUEST_TIMEOUT:5s}
+      events-url: ${CORTEX_REMEDIATION_PAGERDUTY_EVENTS_URL:https://events.pagerduty.com/v2/enqueue}
+      # dedup-key-template default ("{tenantId}:{eventId}") is applied
+      # by the PagerDutyProperties compact constructor when the
+      # env-var is unset/blank; we leave the default OUT of the
+      # placeholder fallback so Spring's ${...:default} parser does
+      # not have to navigate the inner colon between {tenantId} and
+      # {eventId}.
+      dedup-key-template: ${CORTEX_REMEDIATION_PAGERDUTY_DEDUP_KEY_TEMPLATE:}
+      source: ${CORTEX_REMEDIATION_PAGERDUTY_SOURCE:cortex-remediation}
+      severity-default: ${CORTEX_REMEDIATION_PAGERDUTY_SEVERITY_DEFAULT:error}
 
 logging:
   level:

@@ -64,3 +64,15 @@ cortex:
       request-timeout: 5s
       username: cortex-remediation-test
       channel-override: ""
+    # P6.2 PagerDuty properties default to blank routing-key so the
+    # test boot stays green even when the PagerDuty provider is
+    # selected by an opt-in slice (the adapter returns
+    # DispatchResult.skipped("pagerduty:unconfigured") per
+    # ADR-0034 D1).
+    pagerduty:
+      routing-key: ""
+      request-timeout: 5s
+      events-url: https://events.pagerduty.com/v2/enqueue
+      dedup-key-template: "{tenantId}:{eventId}"
+      source: cortex-remediation-test
+      severity-default: error
