@@ -91,4 +91,31 @@ class RemediationMetricsTest {
         assertThat(bootstrap).isNotNull();
         assertThat(bootstrap.count()).isEqualTo(1.0d);
     }
+
+    /**
+     * P6.1 / ADR-0033: bootstrap MUST register all three Slack outcome
+     * series with {@code tenant_id=unknown} so the Prometheus scrape
+     * sees the full Slack outcome surface even before the first
+     * anomaly hits the Slack adapter.
+     */
+    @Test
+    void bootstrapRegistersAllThreeSlackOutcomeSeries() {
+        final MeterRegistry registry = new SimpleMeterRegistry();
+
+        new RemediationMetrics(registry);
+
+        for (final String outcome : new String[] {
+                "dispatched", "transient_failure", "permanent_failure"}) {
+            final Counter slack = registry.find(
+                            RemediationMetrics.METRIC_DISPATCHED_TOTAL)
+                    .tag("channel", "slack")
+                    .tag("outcome", outcome)
+                    .tag("tenant_id", RemediationMetrics.UNKNOWN)
+                    .counter();
+            assertThat(slack)
+                    .as("Slack outcome=%s bootstrap counter must exist", outcome)
+                    .isNotNull();
+            assertThat(slack.count()).isZero();
+        }
+    }
 }

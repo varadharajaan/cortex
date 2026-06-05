@@ -1,11 +1,14 @@
 # log-remediation-service
 
-**Status: P6.0 SHIPPED** -- scaffold + Kafka consumer of
-`cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff topic) +
-`RemediationDispatcher` SPI stub + Micrometer counter
-(PR for #84, ADR-0032). The real Slack / PagerDuty / Jira
-adapters land in P6.1 (#85), P6.2 (#86), P6.3 (#87); DLQ +
-retry budgets land in P6.4.
+**Status: P6.0 .. P6.1 SHIPPED** -- P6.0 scaffold + Kafka
+consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
+topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
+P6.1 first real adapter `SlackRemediationDispatcher` against
+Slack Incoming Webhook (PR for #87, ADR-0033). Legs B-E
+(boot smoke + Postman + cross-phase regression) deferred to the
+P6.1a closer that ships them ONCE for Slack + PagerDuty + Jira
+together after P6.2 + P6.3 ship (LD104 closer-pattern).
+P6.2 PagerDuty / P6.3 Jira / P6.4 DLQ + retry budgets follow.
 
 CORTEX log remediation. **Consume anomaly CloudEvents from
 Kafka -> decode the 8-field `data` block into a typed
@@ -175,6 +178,87 @@ Resilience4j retry budgets.
   `DispatchResult.OUTCOME_*` constants bound the first two
   axes by construction.
 
+## 4a. Channel adapters -> Slack (P6.1, ADR-0033)
+
+The first real `RemediationDispatcher` implementation.
+Gated by `cortex.remediation.dispatcher.provider=slack`. Posts
+a plain-text JSON body to a Slack Incoming Webhook URL using a
+`RestClient` wired with HTTP/1.1 pinned `JdkClientHttpRequestFactory`
+(LD42 symmetry with `LokiSink` / `QuickwitSink`).
+
+### Configuration
+
+```yaml
+cortex:
+  remediation:
+    dispatcher:
+      provider: slack
+    slack:
+      webhook-url: https://hooks.slack.com/services/T.../B.../X...
+      request-timeout: 5s
+      username: cortex-remediation     # optional
+      channel-override: '#sre-incidents'  # optional
+```
+
+Env vars (preferred for the webhook URL):
+
+```powershell
+$env:CORTEX_REMEDIATION_DISPATCHER          = 'slack'
+$env:CORTEX_REMEDIATION_SLACK_WEBHOOK_URL   = 'https://hooks.slack.com/services/T/B/X'
+$env:CORTEX_REMEDIATION_SLACK_REQUEST_TIMEOUT = '5s'
+$env:CORTEX_REMEDIATION_SLACK_USERNAME      = 'cortex-remediation'
+$env:CORTEX_REMEDIATION_SLACK_CHANNEL       = '#sre-incidents'
+```
+
+A blank `webhook-url` is tolerated: the adapter returns
+`DispatchResult.skipped("slack:unconfigured")` and the boot
+stays green (ADR-0033 D5).
+
+### Body shape (ADR-0033 D2)
+
+```json
+{
+  "text": ":rotating_light: HIGH anomaly on checkout (tenant=tenant-abc): checkout 5xx burst",
+  "username": "cortex-remediation",
+  "channel": "#sre-incidents"
+}
+```
+
+`username` and `channel` are dropped from the body when blank.
+
+### Outcome -> `DispatchResult` table (ADR-0033 D3)
+
+| HTTP outcome      | `outcome`           | `reason`            |
+|-------------------|---------------------|---------------------|
+| 2xx               | `dispatched`        | `""`                |
+| 429               | `transient_failure` | `slack:429`         |
+| 5xx               | `transient_failure` | `slack:5xx:<code>`  |
+| 4xx (other)       | `permanent_failure` | `slack:4xx:<code>`  |
+| Read timeout      | `transient_failure` | `slack:timeout`     |
+| Connection error  | `transient_failure` | `slack:transport`   |
+| Other RuntimeEx   | `transient_failure` | `slack:unknown`     |
+| Blank webhook URL | `skipped`           | `slack:unconfigured`|
+| Null event        | `skipped`           | `slack:null-event`  |
+
+Per ADR-0032 D6 + ADR-0033 D4 the adapter NEVER throws on a
+transient downstream failure -- it returns a typed verdict so
+the consumer can ack the offset and the operator alerts on the
+failed-outcome metric. No in-adapter retry: ADR-0033 D4 defers
+the retry-budget axis to P6.4.
+
+### Counter bootstrap
+
+`RemediationMetrics` bootstrap-registers three Slack outcome
+series at construct time per LD106 + LD112:
+
+- `cortex.remediation.dispatched_total{channel=slack, outcome=dispatched, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=slack, outcome=transient_failure, tenant_id=unknown}`
+- `cortex.remediation.dispatched_total{channel=slack, outcome=permanent_failure, tenant_id=unknown}`
+
+So the `/actuator/prometheus` scrape exposes the full Slack
+outcome surface on the very first scrape, before any anomaly
+hits the dispatcher.
+
 ## 5. SOLID + Clean Code notes
 
 - `RemediationDispatcher` is the SPI seam (S + O + D); the
@@ -317,11 +401,14 @@ Plus two Kafka headers (ADR-0027 mirror):
 
 ## 10. Future improvements
 
-- **P6.1** -- `SlackRemediationDispatcher` (`RestClient` +
-  Slack incoming-webhook URL + Resilience4j
-  `@CircuitBreaker` + `@TimeLimiter`; gated
-  `cortex.remediation.dispatcher.provider=slack`). Per-tenant
-  webhook routing via a config-driven map.
+- **P6.1a closer (LD104)** -- ship the deferred Legs B-E
+  ONCE for Slack + PagerDuty + Jira together: end-to-end boot
+  smoke against the local-stack
+  (`scripts/p6-1a/smoke.ps1`), Postman v2.1 contract
+  refresh covering all three adapter happy + failure
+  outcomes, and cross-phase regression sweep
+  (`scripts/p6-1a/regression.ps1`). Currently scheduled
+  immediately after P6.3 ships.
 - **P6.2** -- `PagerDutyRemediationDispatcher` (PagerDuty
   Events API v2 envelope with `routing_key` + `dedup_key
   = event.eventId()` for end-to-end dedupe; gated
@@ -333,7 +420,17 @@ Plus two Kafka headers (ADR-0027 mirror):
   (`cortex.anomalies.v1.dlq` with `x-failure-reason` header) +
   Resilience4j retry budgets for dispatcher transient failures
   + `cortex.remediation.dispatcher.errors_total{channel}`
-  counter for the consumer catch-all.
+  counter for the consumer catch-all. Will compose with (not
+  replace) the per-adapter `transient_failure` verdicts the
+  P6.1 Slack adapter already returns per ADR-0033 D4.
+- **P6.x Slack richer body** -- promote the plain-text Slack
+  message to Block Kit with action buttons (acknowledge /
+  escalate) once operator feedback warrants. ADR-0033 D2
+  documents why the first ship stayed plain-text.
+- **P6.x Slack per-tenant routing** -- replace the single
+  `cortex.remediation.slack.webhook-url` with a config-driven
+  `Map<String, String>` keyed by tenant id, falling back to
+  the default when the tenant key is absent.
 - **P6.5** -- (conditional on operator demand) explicit
   fan-out dispatcher (a `FanOutRemediationDispatcher` that is
   itself a `RemediationDispatcher` + delegates to N inner

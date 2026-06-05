@@ -189,6 +189,21 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- P6.1: WireMock standalone (parent-managed version) for
+             SlackRemediationDispatcherWireMockIT. Spins up an
+             in-process WireMock server on a dynamic port to stub
+             Slack's Incoming Webhook endpoint (200 happy / 429
+             transient / 500 transient / 400 permanent) so the
+             adapter HTTP outcome -> DispatchResult mapping is
+             proven end-to-end without an external Slack workspace.
+             Symmetric with the log-gateway P3.3 WireMock dependency
+             declaration; see ADR-0033 D3 for the outcome table. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!--

@@ -55,3 +55,12 @@ cortex:
       topic: cortex.anomalies.v1.dlq
     dispatcher:
       provider: noop
+    # P6.1 Slack properties default to blank webhook-url so the test
+    # boot stays green even when the Slack provider is selected by
+    # an opt-in slice (the adapter returns
+    # DispatchResult.skipped("slack:unconfigured") per ADR-0033 D1).
+    slack:
+      webhook-url: ""
+      request-timeout: 5s
+      username: cortex-remediation-test
+      channel-override: ""

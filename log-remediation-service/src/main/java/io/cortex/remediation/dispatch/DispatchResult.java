@@ -32,6 +32,9 @@ public record DispatchResult(boolean dispatched, String channel,
     /** Channel value emitted by the no-op dispatcher in P6.0. */
     public static final String CHANNEL_NOOP = "noop";
 
+    /** Channel value emitted by the Slack adapter in P6.1. */
+    public static final String CHANNEL_SLACK = "slack";
+
     /** Outcome value: dispatcher chose not to escalate this anomaly. */
     public static final String OUTCOME_SKIPPED = "skipped";
 
@@ -56,5 +59,57 @@ public record DispatchResult(boolean dispatched, String channel,
     public static DispatchResult skipped(final String reason) {
         return new DispatchResult(false, CHANNEL_NOOP, OUTCOME_SKIPPED,
                 reason == null ? "" : reason);
+    }
+
+    /**
+     * Convenience factory for the "downstream succeeded" verdict
+     * (e.g. Slack returned 200 OK, PagerDuty returned 202 Accepted).
+     *
+     * @param channel one of the {@code CHANNEL_*} constants
+     * @return a {@link DispatchResult} with {@code dispatched=true},
+     *         {@code outcome=dispatched}, blank reason
+     */
+    public static DispatchResult dispatched(final String channel) {
+        return new DispatchResult(true,
+                channel == null ? CHANNEL_NOOP : channel,
+                OUTCOME_DISPATCHED, "");
+    }
+
+    /**
+     * Convenience factory for a retriable downstream failure verdict
+     * (5xx / 429 / IOException / timeout). Per ADR-0032 D6 the
+     * adapter MUST NOT throw on these; the consumer acks regardless
+     * and the operator alerts on the failed-outcome metric.
+     *
+     * @param channel one of the {@code CHANNEL_*} constants
+     * @param reason  short categorical explanation, e.g. {@code
+     *                slack:500} or {@code slack:timeout}
+     * @return a {@link DispatchResult} with {@code dispatched=false},
+     *         {@code outcome=transient_failure}
+     */
+    public static DispatchResult transientFailure(final String channel,
+                                                  final String reason) {
+        return new DispatchResult(false,
+                channel == null ? CHANNEL_NOOP : channel,
+                OUTCOME_TRANSIENT_FAILURE, reason == null ? "" : reason);
+    }
+
+    /**
+     * Convenience factory for a non-retriable downstream failure
+     * verdict (4xx other than 429, e.g. 400 invalid body, 401
+     * unauthorized, 404 webhook revoked). The consumer acks
+     * regardless; the operator alerts on the failed-outcome metric.
+     *
+     * @param channel one of the {@code CHANNEL_*} constants
+     * @param reason  short categorical explanation, e.g. {@code
+     *                slack:400} or {@code slack:404}
+     * @return a {@link DispatchResult} with {@code dispatched=false},
+     *         {@code outcome=permanent_failure}
+     */
+    public static DispatchResult permanentFailure(final String channel,
+                                                  final String reason) {
+        return new DispatchResult(false,
+                channel == null ? CHANNEL_NOOP : channel,
+                OUTCOME_PERMANENT_FAILURE, reason == null ? "" : reason);
     }
 }
