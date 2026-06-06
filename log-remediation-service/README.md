@@ -1,6 +1,6 @@
 # log-remediation-service
 
-**Status: P6.0 .. P6.3 + P6.0a SHIPPED** -- P6.0 scaffold + Kafka
+**Status: P6.0 .. P6.3 + P6.0a + P6.1a SHIPPED** -- P6.0 scaffold + Kafka
 consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
 topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
 P6.1 first real adapter `SlackRemediationDispatcher` against
@@ -16,11 +16,15 @@ OCP-flipped `RemediationMetrics` (loops over
 on every `@ConfigurationProperties` + Lombok
 `@RequiredArgsConstructor` + `@Slf4j` adoption + constants
 package + A2.3 private-method-Javadoc supersede of LD5 (PR for
-#95, ADR-0036; no behavioural change). Legs B-E (boot smoke +
-Postman + cross-phase regression) deferred to the P6.1a closer
-that ships them ONCE for Slack + PagerDuty + Jira together
-after P6.0a merges (LD104 closer-pattern). P6.4 DLQ + retry
-budgets follow.
+#95, ADR-0036; no behavioural change); **P6.1a cross-phase
+closer** -- singleton Testcontainers Kafka + in-process WireMock
+base + 3 `@SpringBootTest` subclasses (`Slack/PagerDuty/Jira
+CrossPhaseIT`) each on its own per-channel topic
+`cortex.anomalies.v1.cross-phase.<channel>` per LD125 + full-
+stack PowerShell boot smoke `scripts/smoke-p6-1a.ps1` (all 3
+channels GREEN) + Postman collection (4 folders / 10 requests
+/ 25 assertions mirroring the smoke 1:1) + ADR-0037 (PR for
+#93). P6.4 DLQ + retry budgets follow.
 
 CORTEX log remediation. **Consume anomaly CloudEvents from
 Kafka -> decode the 8-field `data` block into a typed
@@ -526,6 +530,110 @@ series at construct time per LD106 + LD112:
 So the `/actuator/prometheus` scrape exposes the full Jira
 outcome surface on the very first scrape, before any anomaly
 hits the dispatcher.
+
+## 4d. Cross-phase closer (P6.1a, ADR-0037)
+
+The P6.1a closer is the **only P6 deliverable that ships
+artifacts spanning all three real channels at once**. Per the
+LD104 closer-pattern, P6.0..P6.3 + P6.0a shipped Leg A only
+(`mvn verify` GREEN) and deferred Legs B-E to this closer so
+the boot smoke + Postman collection + cross-phase IT could
+exercise Slack + PagerDuty + Jira together rather than three
+times in three separate PRs.
+
+**5-leg gate** (all must be GREEN at PR-merge time):
+
+- **Leg A** -- `./mvnw verify -pl log-remediation-service -am`:
+  Surefire 76/76, Failsafe 22/22 (16 prior + 6 new closer ITs),
+  0 Checkstyle, 0 SpotBugs, JaCoCo BUNDLE 0.80/0.80 met,
+  `BUILD SUCCESS`.
+- **Leg B** -- `scripts/smoke-p6-1a.ps1`: starts the actual
+  service JAR three times (once per channel) against a per-
+  channel Kafka topic (`cortex.anomalies.v1.<runId>.<channel>`
+  via `CORTEX_REMEDIATION_TOPIC`, per LD125) + a per-channel
+  WireMock container, publishes an anomaly envelope through
+  the consumer, asserts the Prometheus counter delta + the
+  WireMock journal entry. Last GREEN transcript:
+  `scripts/logs/p6-1a/smoke-all-20260606-220655.log`.
+- **Leg C** -- `npx newman run postman/log-remediation.postman_
+  collection.json -e postman/log-remediation.postman_
+  environment_local.json --reporters cli --bail`: 4 folders
+  / 10 requests / 25 assertions mirror the smoke 1:1 (Admin
+  actuator + Metrics-Baseline + Channel-Mock-Smoke + Metrics-
+  After). `pm.execution.skipRequest()` gates the WireMock
+  folder on `wiremock_base_url` so staging + prod env runs
+  exercise admin-only surfaces.
+- **Leg D** -- the new `closer/*CrossPhaseIT.java` suite under
+  `src/test/java/io/cortex/remediation/closer/`. Singleton
+  Testcontainers Kafka + in-process WireMock server owned by
+  `AnomalyCrossPhaseBaseIT`; three sealed-shape `@SpringBootTest`
+  subclasses (`SlackCrossPhaseIT`, `PagerDutyCrossPhaseIT`,
+  `JiraCrossPhaseIT`), each on its own per-channel topic +
+  unique consumer group-id, each with two tests
+  (`happyPathTicksDispatched` + `transientPathTicksTransientFailure`)
+  that assert (a) the `cortex_remediation_dispatched_total
+  {channel,outcome,tenant_id}` counter ticks for a unique
+  `tenant_id` per test, (b) the WireMock POST was recorded
+  at the expected path, and (c) the DLT topic stayed empty
+  (P6.4 hasn't shipped, any DLT growth is a regression).
+- **Leg E** -- this section + ADR-0037 + INDEX bump 36 -> 37
+  + CHANGELOG `[Unreleased] > Added` entry + atomic 4-file
+  tracking flip (plan.md + checkpoint.md + memory.md +
+  todo.md).
+
+**Cross-phase IT shape**:
+
+- Base class owns `protected static final KafkaContainer KAFKA
+  = new KafkaContainer("apache/kafka:3.8.0");` + `protected
+  static final WireMockServer WIRE_MOCK = new WireMockServer
+  (WireMockConfiguration.options().dynamicPort());` started
+  in a static block (no `@Testcontainers` annotation; Ryuk
+  reaper handles lifecycle). `@DynamicPropertySource
+  baseProperties` registers `spring.kafka.bootstrap-servers`
+  + disables Eureka. `@BeforeEach resetWireMock()` clears
+  stubs + journal between tests.
+- Each subclass adds its own `@DynamicPropertySource` for the
+  channel-specific properties (Slack webhook URL, PagerDuty
+  routing key + events URL, Jira base URL + email + token +
+  project key). Credentials are neutral per LD123 (no
+  realistic `xoxb-...` / `ATATT3xFfGF0...` / `R0...` prefixes):
+  - Slack webhook path: `/services/IT/CROSS/PHASE`.
+  - PagerDuty routing key: `00000000000000000000000000000000`.
+  - Jira email: `test@example.com`; token:
+    `placeholder-token-not-real`; project key: `IT`.
+
+**Why per-channel kafka topics (LD125)**: a single shared
+`cortex.anomalies.v1` topic + `auto.offset.reset=earliest`
+caused the next channel's consumer to replay the previous
+channel's envelopes through different WireMock stubs, mis-
+classifying the outcome. Each subclass + each smoke run now
+publishes/consumes on `cortex.anomalies.v1.cross-phase.
+<channel>` (IT) or `cortex.anomalies.v1.<runId>.<channel>`
+(smoke) via the `CORTEX_REMEDIATION_TOPIC` env var (the
+application.yml default is preserved:
+`cortex.remediation.topic: ${CORTEX_REMEDIATION_TOPIC:cortex.
+anomalies.v1}`).
+
+**Failsafe runtime budget**: Tests run: 22 (16 prior + 6 new)
+in ~3:44 wall clock vs 16 in ~3:00 prior -- ~14 s/test
+marginal cost, well under the 25-40 s/test if each subclass
+booted its own Kafka container. Singleton Kafka + in-process
+WireMock are the only design that fits inside the existing
+budget.
+
+**Postman collection contract**: `postman/log-remediation.
+postman_collection.json` mirrors the smoke 1:1. The Admin
+folder hits `/actuator/health/{liveness,readiness}`, `/info`,
+`/metrics`, `/prometheus` (6 requests). Metrics-Baseline
+snapshots the per-channel `dispatched_total` sum into env
+vars `dispatched_baseline_{slack,pagerduty,jira}`. The
+Channel-Mock-Smoke folder POSTs to WireMock (Slack 200|404;
+PagerDuty 202|404; Jira 201|404) with
+`pm.execution.skipRequest()` when `wiremock_base_url` is
+empty. Metrics-After asserts non-decreasing counters vs the
+baseline. The top-level test asserts `responseTime < 5000ms`.
+Three env files: `local` (`wiremock_base_url=http://localhost:
+8094`), `staging` (blank), `prod` (blank).
 
 ## 5. SOLID + Clean Code notes
 
