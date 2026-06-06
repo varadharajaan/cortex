@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.0: log-indexer-service scaffold + `QuickwitIndexAdmin`
+  SPI + per-backend admin contract (PR for #98, ADR-0038).
+  Opens the P7 epic by shipping the SCAFFOLD-only module per
+  the LD104 scaffold-phase precedent (P3.0 + P6.0): module
+  compiles, Spring Boot context loads with Eureka + actuator
+  + Prometheus exposition on `:8097`, `QuickwitIndexAdmin`
+  SPI is in place with a default `NoopQuickwitIndexAdmin`
+  (gated `cortex.indexer.admin.backend=noop`,
+  `matchIfMissing=true`) so the service boots green with no
+  Quickwit dependency, one Micrometer counter family
+  (`cortex.indexer.index_admin_total{backend, outcome,
+  tenant_id}`) is bootstrap-registered at `@PostConstruct`
+  via an OCP-flipped loop over the injected
+  `List<QuickwitIndexAdmin>` so adding a new admin backend
+  ships zero edits in `IndexerMetrics`, and
+  `QuickwitHealthIndicator` surfaces on
+  `/actuator/health/quickwit`. Carves the OWNERSHIP BOUNDARY
+  against `log-processor-service` P5.3 + ADR-0030 in writing
+  + in code: this module owns Quickwit ADMIN (create / drop
+  / retention / cardinality / future search proxy); P5.3 +
+  ADR-0030's `QuickwitSink` keeps owning the WRITER side.
+  ADR-0038 documents the seven decision drivers + seven
+  considered options + decision outcome + consequences.
+  Mirror of the ADR-0032 (`RemediationDispatcher`) one-tier-up
+  pattern.
+  - **New module** `log-indexer-service/`: 11 production
+    java files (App + 3 admin SPI files
+    `QuickwitIndexAdmin`/`IndexAdminResult`/`IndexSpec` + 1
+    noop default `NoopQuickwitIndexAdmin` + 1 metrics
+    `IndexerMetrics` + 1 health `QuickwitHealthIndicator` +
+    4 `package-info` files) + 7 test files (`ArchitectureTest`,
+    `CortexIndexerApplicationTests`,
+    `NoopQuickwitIndexAdminTest`, `IndexAdminResultTest`,
+    `IndexSpecTest`, `IndexerMetricsTest`,
+    `QuickwitHealthIndicatorTest`) + 3 resources files
+    (`application.yml` main + test shadow + `logback-spring.xml`)
+    + README + ADR-0038 + INDEX bump 37 -> 38 + this
+    CHANGELOG entry.
+  - **Surface**: GET `/actuator/{health, liveness, readiness,
+    info, metrics, prometheus, beans}` + GET
+    `/actuator/health/quickwit` (UP for the noop backend with
+    `{"backend":"noop"}` detail). No data-path REST contract
+    at P7.0; the P7.4 search proxy + admin endpoints land
+    later.
+  - **Tests**: 29 tests / 0 failures /
+    0 Checkstyle violations / 0 SpotBugs / JaCoCo BUNDLE
+    0.80 line + 0.80 branch met from day one (no relaxed
+    override block in the child pom). ArchUnit layered
+    contract enforces App/Admin/Metrics/Health seams.
+  - **Roadmap** (locked by ADR-0038): P7.1 real
+    `QuickwitHttpIndexAdmin` HTTP client; P7.2 retention
+    sweeper; P7.3 per-tenant cardinality budgets; P7.4
+    search proxy; P7.1a cross-phase closer per LD104.
+
 - P6.1a: log-remediation-service cross-phase closer
   (PR for #93, ADR-0037). Closes the P6 epic by shipping the
   Leg B/C/D/E artifacts that P6.0..P6.3 + P6.0a deferred per

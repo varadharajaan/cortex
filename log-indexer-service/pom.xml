@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  log-indexer-service - owner of the Quickwit full-text index
+  lifecycle (P7 epic). P7.0 (this commit) is the SCAFFOLD: module
+  compiles, Spring Boot context loads with Eureka + actuator +
+  Prometheus exposition, QuickwitIndexAdmin SPI is in place with a
+  NoopQuickwitIndexAdmin default, one Micrometer counter publishes
+  to /actuator/prometheus, QuickwitHealthIndicator is wired (UP for
+  the noop backend).
+
+  Real adapters arrive in P7.1..P7.4:
+  - P7.1 Quickwit HTTP admin client (create / get / drop indexes)
+  - P7.2 Retention policy enforcement (drop splits older than N days)
+  - P7.3 Per-tenant cardinality budgets (reject create when over budget)
+  - P7.4 Search proxy + tenant-scoped query routing
+  - P7.1a closer (smoke + Postman + cross-phase IT per LD104)
+
+  Endpoint surface (P7.0):
+      GET  /actuator/health        - K8s probes
+      GET  /actuator/health/liveness
+      GET  /actuator/health/readiness
+      GET  /actuator/info
+      GET  /actuator/metrics
+      GET  /actuator/prometheus
+      GET  /actuator/beans
+
+  Registers with Eureka at http://localhost:8761/eureka/ as
+  application-id = "log-indexer-service".
+
+  Per LD3: this module is the sole owner of Quickwit administration.
+  log-processor-service P5.3 owns the WRITER (QuickwitSink); this
+  service owns the lifecycle ADMIN (create / drop / retention) plus
+  future search-side proxy. The ownership boundary is locked in
+  ADR-0038.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cortex</groupId>
+        <artifactId>cortex-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>log-indexer-service</artifactId>
+    <packaging>jar</packaging>
+    <name>CORTEX :: log-indexer-service</name>
+    <description>
+        CORTEX log-indexer-service - owner of the Quickwit full-text
+        index lifecycle (create / drop / retention). P7.0 ships the
+        scaffold + QuickwitIndexAdmin SPI stub + NoopQuickwitIndexAdmin
+        default + Micrometer counter + Quickwit health indicator.
+        Real Quickwit HTTP admin lands in P7.1..P7.4.
+    </description>
+
+    <dependencies>
+
+        <!-- Spring Boot core. Actuator is exposed on the same port
+             (:8097); starter-web brings the embedded servlet engine
+             actuator needs to serve HTTP. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Eureka client (ADR-0016). -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- Observability: Micrometer Prometheus registry (Part 17). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logs (rule A8.1). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Apache Commons Lang3 (StringUtils null/blank helpers,
+             LD111 prefer mature OSS over re-rolled one-liners). -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+        </dependency>
+
+        <!-- ==================== Test scope ==================== -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!--
+      No @Mapper interfaces yet (scaffold-only). Drop the MapStruct
+      annotation processor + -A options, keep Lombok. Same LD12 / LD14
+      override pattern used by log-gateway / log-echo-service /
+      log-ingest-service / log-processor-service / log-remediation-service.
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths combine.self="override">
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs combine.self="override">
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Parent default JaCoCo 0.80/0.80 line+branch gate
+                 applies from P7.0 day one (Part 12.5 / 13.4 / 0.4):
+                 no relaxed override block here. The scaffold's
+                 ArchitectureTest + IndexAdminResultTest + IndexSpecTest +
+                 NoopQuickwitIndexAdminTest + IndexerMetricsTest +
+                 QuickwitHealthIndicatorTest + the context-loads smoke
+                 cover every production branch above 0.80. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- No *IT.java in P7.0 (no real Quickwit HTTP yet, no
+                 Testcontainers footprint). Failsafe is still on at
+                 the parent level but finds no matching classes; that
+                 is fine (mirror P3.0 scaffold pattern). -->
+        </plugins>
+    </build>
+
+</project>

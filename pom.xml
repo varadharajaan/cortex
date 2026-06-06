@@ -102,7 +102,12 @@
              of cortex.anomalies.v1 + RemediationDispatcher SPI stub +
              Micrometer counters. -->
         <module>log-remediation-service</module>
-        <!-- Added in P7: <module>log-indexer-service</module> -->
+        <!-- Added in P7: log-indexer-service - Quickwit index admin
+             owner + retention enforcement + per-tenant cardinality
+             budgets. P7.0 ships the scaffold + QuickwitIndexAdmin
+             SPI stub + NoopQuickwitIndexAdmin default + Micrometer
+             counter. Real Quickwit HTTP admin lands in P7.1+. -->
+        <module>log-indexer-service</module>
         <!-- Added in P8: <module>log-monitoring-service</module> -->
     </modules>
 

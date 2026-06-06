@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-06 (P6.1a cross-phase closer, PR for #93).
-Total ADRs: 37 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037`).
+Last refreshed: 2026-06-06 (P7.0 log-indexer-service scaffold, PR for #98).
+Total ADRs: 38 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037` + `0038`).
 
 ---
 
@@ -81,6 +81,14 @@ Total ADRs: 37 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + 
 | [0035](0035-jira-remediation-adapter.md) | Jira `RemediationDispatcher` adapter -- REST API v3 create-issue + Basic-auth-with-API-token + ADF description + label-based severity (`anomaly-severity-<lower>`) + create-issue-only + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + four-field blank-credential tolerance (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 | [0036](0036-log-remediation-strict-rules-cleanup.md) | log-remediation-service P6.0a strict-rules cleanup -- `@Validated` on the three `*Properties` records + composition-based `RestDispatchTemplate` helper (shared try/catch + 429/5xx/4xx/timeout classification) consumed by every REST adapter via `template.dispatch(event, ::isConfigured, ::executePost)` + OCP-flipped `RemediationMetrics` (injects `List<RemediationDispatcher>`, loops over `channelId()` to bootstrap outcome series) + Lombok `@RequiredArgsConstructor` + `@Slf4j` adoption + `io.cortex.remediation.constants` package (`RemediationHttp.TOO_MANY_REQUESTS`) + LD5 universal-Javadoc enforcer SUPERSEDED by A2.3 (private-method Javadoc forbidden; `checkstyle.xml` scope flipped private -> public) | Accepted | log-remediation-service | supersedes the decision portion of memory.md LD5 |
 | [0037](0037-log-remediation-cross-phase-closer.md) | log-remediation-service P6.1a cross-phase closer -- singleton Testcontainers Kafka + in-process WireMock base + 3 `@SpringBootTest` subclasses (`Slack/PagerDuty/Jira CrossPhaseIT`) each on its own per-channel topic `cortex.anomalies.v1.cross-phase.<channel>` + neutral LD123 test credentials + full-stack PowerShell boot smoke `scripts/smoke-p6-1a.ps1` (per-channel topic isolation per LD125, docker cp + sh -c publish, `CORTEX_REMEDIATION_DISPATCHER_PROVIDER` env, InvariantCulture ISO 8601 timestamps, order-independent Prom counter scrape) + Postman collection `postman/log-remediation.postman_collection.json` (4 folders / 10 requests / 25 assertions, mirrors smoke 1:1, `pm.execution.skipRequest()` gate on `wiremock_base_url`) + ADR-0037 + INDEX bump 36 -> 37 + CHANGELOG + README banner flip; captures LD125 (per-channel kafka topic isolation) + LD126 (Javadoc `*/` terminator trap -- JDT does not catch, only javac does) | Accepted | log-remediation-service | -- |
+
+---
+
+## Indexer pipeline (P7)
+
+| ADR | Title | Status | Scope | Supersedes / Superseded by |
+| --- | --- | --- | --- | --- |
+| [0038](0038-log-indexer-service-quickwit-admin.md) | log-indexer-service P7.0 scaffold + `QuickwitIndexAdmin` SPI + per-backend admin contract -- single backend bean per profile selected by `cortex.indexer.admin.backend` + `@ConditionalOnProperty`; default `NoopQuickwitIndexAdmin` gated `matchIfMissing=true` so the scaffold boots green with no Quickwit dependency; bootstrap-registered `cortex.indexer.index_admin_total{backend, outcome, tenant_id}` counter family via OCP-flipped `IndexerMetrics` loop over `List<QuickwitIndexAdmin>`; `QuickwitHealthIndicator` bound to `/actuator/health/quickwit`; ArchUnit App/Admin/Metrics/Health layered contract; carves the ownership boundary against `log-processor-service` P5.3 + ADR-0030 (writer-side `QuickwitSink` stays in P5.3; this service owns admin / lifecycle / future search proxy) | Accepted | log-indexer-service | -- |
 
 ---
 
