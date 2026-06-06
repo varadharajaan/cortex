@@ -13,9 +13,15 @@
         + custom check for @Autowired on fields
       - No System.out.println (Rule 14.4)
       - No magic numbers (Rule 14.6, soft via MagicNumber)
-      - Javadoc REQUIRED on every class, interface, enum, record (Rule 0.1.6)
-      - Javadoc REQUIRED on every method, public or private (Rule 0.1.6)
-      - Javadoc REQUIRED to include @param, @return, @throws (Rule 0.1.6)
+      - Javadoc REQUIRED on every class, interface, enum, record (Rule A2.3 +
+        D1: every public type carries a class-level summary).
+      - Javadoc REQUIRED on public + protected methods (Rule A2.3: public APIs).
+      - Javadoc NEVER REQUIRED on private / package-private methods
+        (Rule A2.3: "Javadoc only on public APIs ... Never on private methods";
+        supersedes earlier 0.1.6 universal-Javadoc reading per P6.0a /
+        ADR-0036).
+      - When Javadoc IS present anywhere, @param / @return / @throws are
+        validated (Rule A2.3 hygiene).
 
     Severity = error. Build fails on any violation.
 -->
@@ -86,29 +92,30 @@
         <module name="SuppressWarningsHolder"/>
 
         <!-- ============================================================ -->
-        <!-- Javadoc enforcement (Rule 0.1.6)                              -->
-        <!-- Every class, every method (public AND private) must be doc'd. -->
+        <!-- Javadoc enforcement (Rule A2.3, supersedes 0.1.6 reading)     -->
+        <!-- Public APIs must be doc'd; private methods MUST NOT be.       -->
+        <!-- Tracked under P6.0a / ADR-0036.                               -->
         <!-- ============================================================ -->
 
         <module name="MissingJavadocType">
-            <property name="scope" value="private"/>
+            <property name="scope" value="protected"/>
             <property name="tokens"
                       value="INTERFACE_DEF, CLASS_DEF, ENUM_DEF, ANNOTATION_DEF, RECORD_DEF"/>
         </module>
 
         <module name="MissingJavadocMethod">
-            <property name="scope" value="private"/>
+            <property name="scope" value="public"/>
             <property name="allowMissingPropertyJavadoc" value="false"/>
             <property name="ignoreMethodNamesRegex"
                       value="^(equals|hashCode|toString|main)$"/>
         </module>
 
         <module name="JavadocType">
-            <property name="scope" value="private"/>
+            <property name="scope" value="protected"/>
         </module>
 
         <module name="JavadocMethod">
-            <property name="accessModifiers" value="public,protected,package,private"/>
+            <property name="accessModifiers" value="public,protected"/>
             <property name="validateThrows" value="true"/>
             <property name="allowMissingParamTags" value="false"/>
             <property name="allowMissingReturnTag" value="false"/>

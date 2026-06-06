@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-05 (P6.3 Jira adapter, PR for #91).
-Total ADRs: 35 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035`).
+Last refreshed: 2026-06-06 (P6.0a strict-rules cleanup, PR for #95).
+Total ADRs: 36 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036`).
 
 ---
 
@@ -79,6 +79,7 @@ Total ADRs: 35 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + 
 | [0033](0033-slack-remediation-adapter.md) | Slack `RemediationDispatcher` adapter -- Incoming Webhook + plain-text body + `RestClient` HTTP/1.1 pin + typed outcome classification (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 | [0034](0034-pagerduty-remediation-adapter.md) | PagerDuty `RemediationDispatcher` adapter -- Events API v2 enqueue + trigger-only `event_action` + deterministic `{tenantId}:{eventId}` dedup-key + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + severity-mapping fallback (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 | [0035](0035-jira-remediation-adapter.md) | Jira `RemediationDispatcher` adapter -- REST API v3 create-issue + Basic-auth-with-API-token + ADF description + label-based severity (`anomaly-severity-<lower>`) + create-issue-only + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + four-field blank-credential tolerance (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
+| [0036](0036-log-remediation-strict-rules-cleanup.md) | log-remediation-service P6.0a strict-rules cleanup -- `@Validated` on the three `*Properties` records + composition-based `RestDispatchTemplate` helper (shared try/catch + 429/5xx/4xx/timeout classification) consumed by every REST adapter via `template.dispatch(event, ::isConfigured, ::executePost)` + OCP-flipped `RemediationMetrics` (injects `List<RemediationDispatcher>`, loops over `channelId()` to bootstrap outcome series) + Lombok `@RequiredArgsConstructor` + `@Slf4j` adoption + `io.cortex.remediation.constants` package (`RemediationHttp.TOO_MANY_REQUESTS`) + LD5 universal-Javadoc enforcer SUPERSEDED by A2.3 (private-method Javadoc forbidden; `checkstyle.xml` scope flipped private -> public) | Accepted | log-remediation-service | supersedes the decision portion of memory.md LD5 |
 
 ---
 

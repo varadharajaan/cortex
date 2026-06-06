@@ -2,6 +2,7 @@ package io.cortex.remediation.dispatch;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Typed configuration for the {@link PagerDutyRemediationDispatcher}
@@ -54,6 +55,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                           {@code critical|error|warning|info}
  *                           (default {@value #DEFAULT_SEVERITY})
  */
+@Validated
 @ConfigurationProperties(prefix = "cortex.remediation.pagerduty")
 public record PagerDutyProperties(String routingKey, Duration requestTimeout,
                                   String eventsUrl, String dedupKeyTemplate,

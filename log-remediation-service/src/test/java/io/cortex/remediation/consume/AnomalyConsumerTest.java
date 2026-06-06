@@ -19,6 +19,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -52,7 +53,7 @@ class AnomalyConsumerTest {
         final AnomalyEnvelopeParser parser = Mockito.mock(AnomalyEnvelopeParser.class);
         final RemediationDispatcher dispatcher = Mockito.mock(RemediationDispatcher.class);
         final MeterRegistry registry = new SimpleMeterRegistry();
-        final RemediationMetrics metrics = new RemediationMetrics(registry);
+        final RemediationMetrics metrics = new RemediationMetrics(registry, List.of());
         final AnomalyConsumer consumer = new AnomalyConsumer(parser, dispatcher, metrics);
         final Acknowledgment ack = Mockito.mock(Acknowledgment.class);
 
@@ -75,7 +76,7 @@ class AnomalyConsumerTest {
                 .thenThrow(new ParseException(FailureReason.INVALID_ENVELOPE, "bad"));
         final RemediationDispatcher dispatcher = Mockito.mock(RemediationDispatcher.class);
         final MeterRegistry registry = new SimpleMeterRegistry();
-        final RemediationMetrics metrics = new RemediationMetrics(registry);
+        final RemediationMetrics metrics = new RemediationMetrics(registry, List.of());
         final AnomalyConsumer consumer = new AnomalyConsumer(parser, dispatcher, metrics);
         final Acknowledgment ack = Mockito.mock(Acknowledgment.class);
 
@@ -105,7 +106,7 @@ class AnomalyConsumerTest {
                 new DispatchResult(false, DispatchResult.CHANNEL_NOOP,
                         DispatchResult.OUTCOME_SKIPPED, "no-op"));
         final MeterRegistry registry = new SimpleMeterRegistry();
-        final RemediationMetrics metrics = new RemediationMetrics(registry);
+        final RemediationMetrics metrics = new RemediationMetrics(registry, List.of());
         final AnomalyConsumer consumer = new AnomalyConsumer(parser, dispatcher, metrics);
         final Acknowledgment ack = Mockito.mock(Acknowledgment.class);
 
@@ -139,7 +140,7 @@ class AnomalyConsumerTest {
         final RemediationDispatcher dispatcher = Mockito.mock(RemediationDispatcher.class);
         when(dispatcher.dispatch(any())).thenReturn(null);
         final MeterRegistry registry = new SimpleMeterRegistry();
-        final RemediationMetrics metrics = new RemediationMetrics(registry);
+        final RemediationMetrics metrics = new RemediationMetrics(registry, List.of());
         final AnomalyConsumer consumer = new AnomalyConsumer(parser, dispatcher, metrics);
         final Acknowledgment ack = Mockito.mock(Acknowledgment.class);
 
@@ -176,7 +177,7 @@ class AnomalyConsumerTest {
         when(dispatcher.dispatch(any()))
                 .thenThrow(new RuntimeException("boom"));
         final MeterRegistry registry = new SimpleMeterRegistry();
-        final RemediationMetrics metrics = new RemediationMetrics(registry);
+        final RemediationMetrics metrics = new RemediationMetrics(registry, List.of());
         final AnomalyConsumer consumer = new AnomalyConsumer(parser, dispatcher, metrics);
         final Acknowledgment ack = Mockito.mock(Acknowledgment.class);
 

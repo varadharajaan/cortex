@@ -1,16 +1,26 @@
 # log-remediation-service
 
-**Status: P6.0 .. P6.3 SHIPPED** -- P6.0 scaffold + Kafka
+**Status: P6.0 .. P6.3 + P6.0a SHIPPED** -- P6.0 scaffold + Kafka
 consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
 topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
 P6.1 first real adapter `SlackRemediationDispatcher` against
 Slack Incoming Webhook (PR for #87, ADR-0033); P6.2 second
 real adapter `PagerDutyRemediationDispatcher` against the
 PagerDuty Events API v2 enqueue endpoint (PR for #89,
-ADR-0034). Legs B-E (boot smoke + Postman + cross-phase
-regression) deferred to the P6.1a closer that ships them ONCE
-for Slack + PagerDuty + Jira together after P6.3 ships (LD104
-closer-pattern). P6.3 Jira / P6.4 DLQ + retry budgets follow.
+ADR-0034); P6.3 third real adapter
+`JiraRemediationDispatcher` against the Jira Cloud REST API v3
+create-issue endpoint (PR for #91, ADR-0035); P6.0a strict-rules
+cleanup -- composition-based `RestDispatchTemplate` helper +
+OCP-flipped `RemediationMetrics` (loops over
+`List<RemediationDispatcher>` via `channelId()`) + `@Validated`
+on every `@ConfigurationProperties` + Lombok
+`@RequiredArgsConstructor` + `@Slf4j` adoption + constants
+package + A2.3 private-method-Javadoc supersede of LD5 (PR for
+#95, ADR-0036; no behavioural change). Legs B-E (boot smoke +
+Postman + cross-phase regression) deferred to the P6.1a closer
+that ships them ONCE for Slack + PagerDuty + Jira together
+after P6.0a merges (LD104 closer-pattern). P6.4 DLQ + retry
+budgets follow.
 
 CORTEX log remediation. **Consume anomaly CloudEvents from
 Kafka -> decode the 8-field `data` block into a typed
