@@ -20,6 +20,10 @@ file per deployment target.
 | `log-processor.postman_environment_local.json`    | Local dev (`http://localhost:8095`; full stack via `scripts/p5-4/boot-full-stack.ps1`). |
 | `log-processor.postman_environment_staging.json`  | Staging cluster (P5.2a closer).                   |
 | `log-processor.postman_environment_prod.json`     | Production cluster (P5.2a closer).                |
+| `log-remediation.postman_collection.json`         | Actuator (`health,info,metrics,prometheus,beans`) + `cortex_remediation_dispatched_total{channel,outcome,tenant_id}` exposition (P6.0a OCP-bootstrap-registered, ADR-0036) + WireMock-shaped channel POSTs (`/services/SMK-postman/B/X` slack, `/v2/enqueue` pagerduty, `/rest/api/3/issue` jira) that mirror `scripts/smoke-p6-1a.ps1` LD23. NO business REST surface -- the service is a Kafka consumer of `cortex.anomalies.v1`. P6.1a closer. |
+| `log-remediation.postman_environment_local.json`  | Local dev (`http://localhost:8096`; smoke stack via `scripts/smoke-p6-1a.ps1 -Provider all`). |
+| `log-remediation.postman_environment_staging.json`| Staging cluster (P6.1a closer; `wiremock_base_url` disabled). |
+| `log-remediation.postman_environment_prod.json`   | Production cluster (P6.1a closer; `wiremock_base_url` disabled). |
 
 Additional services land here as P5-P8 progress.
 
@@ -197,3 +201,31 @@ Mirror in `scripts/smoke-p4-0.ps1` / `scripts/smoke-p4-1.ps1` / `scripts/smoke-p
   the happy path must produce a valid `{logql, confidence, explanation}`
   body with the LogQL starting with one of the allowed leading tokens
   (stream selector `{` or scalar aggregation).
+
+### log-remediation collection (P6.1a, 10 requests / 25 assertions)
+
+| Folder              | Request                                                                                   | Purpose                                                                                                              |
+|---------------------|-------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| Admin (actuator)    | GET `{{base_url}}/actuator/health`                                                        | 200 + `status: UP`.                                                                                                  |
+| Admin (actuator)    | GET `{{base_url}}/actuator/health/liveness`                                               | 200 + `status: UP` (K8s probe).                                                                                      |
+| Admin (actuator)    | GET `{{base_url}}/actuator/health/readiness`                                              | 200 + `status: UP` (K8s probe).                                                                                      |
+| Admin (actuator)    | GET `{{base_url}}/actuator/info`                                                          | 200 + JSON object.                                                                                                   |
+| Admin (actuator)    | GET `{{base_url}}/actuator/metrics`                                                       | 200 + `names` includes `cortex.remediation.dispatched_total` (P6.0a OCP bootstrap, ADR-0036).                        |
+| Admin (actuator)    | GET `{{base_url}}/actuator/prometheus`                                                    | 200 + exposition contains `cortex_remediation_dispatched_total` family with `# HELP` + `# TYPE counter` comments + the allowlisted `channel` / `outcome` / `tenant_id` tags (ADR-0032 D8 metric-cardinality contract). |
+| Metrics-Baseline    | GET `{{base_url}}/actuator/prometheus` (snapshot)                                         | 200 + capture per-channel sums (`slack`, `pagerduty`, `jira`) into `dispatched_baseline_{channel}` env vars for the Metrics-After non-decreasing check. |
+| Channel-Mock-Smoke  | POST `{{wiremock_base_url}}/services/SMK-postman/B/X` (slack-shaped payload)              | 200 or 404 (200 when smoke scenario stub is live for this Postman run, 404 when stub absent / scenario exhausted; LD23 mirror with smoke `Path = "/services/SMK-$runId/B/X"`). Skipped when `wiremock_base_url` is empty (staging / prod). |
+| Channel-Mock-Smoke  | POST `{{wiremock_base_url}}/v2/enqueue` (pagerduty-shaped payload)                        | 202 or 404 (202 when smoke scenario stub is live, 404 when stub absent; LD23 mirror with smoke `Path = "/v2/enqueue"`). Skipped when `wiremock_base_url` is empty. |
+| Channel-Mock-Smoke  | POST `{{wiremock_base_url}}/rest/api/3/issue` (jira-shaped payload + `Basic {{jira_basic_auth_b64}}` header) | 201 or 404 (201 when smoke scenario stub is live, 404 when stub absent; LD23 mirror with smoke `Path = "/rest/api/3/issue"`). Skipped when `wiremock_base_url` is empty. The `jira_basic_auth_b64` env var is intentionally blank in all 3 env files (operator fills it locally if the WireMock stub validates auth; the canonical smoke stub does NOT validate auth, so blank works). LD123: never commit realistic-looking Atlassian credential literals. |
+| Metrics-After       | GET `{{base_url}}/actuator/prometheus` (non-decreasing check)                             | 200 + family still exposed + per-channel sums monotonically non-decreasing vs Metrics-Baseline. NOT a strict delta -- Postman cannot publish to Kafka, so the closed-loop delta lives in `scripts/smoke-p6-1a.ps1`. |
+
+Folder order matters: `Admin (actuator)` first proves the surface is reachable + the counter family is registered (this gates everything downstream); `Metrics-Baseline` snapshots the per-channel sums; `Channel-Mock-Smoke` exercises the on-the-wire payload contract against the local WireMock (offline-safe, no real Slack / PagerDuty / Jira calls); `Metrics-After` verifies the counter family is still exposed and non-decreasing. Run with `--bail`. Boot the smoke stack first via `scripts/smoke-p6-1a.ps1 -Provider all` (which starts Kafka + WireMock + Postgres + Redis from `infra/local/docker-compose.smoke.yml` and runs the log-remediation-service on `:8096`) THEN run Newman against the still-running stack:
+
+```bash
+npx newman run postman\log-remediation.postman_collection.json \
+                -e postman\log-remediation.postman_environment_local.json \
+                --reporters cli --bail
+```
+
+The `Channel-Mock-Smoke` folder is intentionally NOT a counter-delta gate -- Postman / Newman alone cannot publish to the Kafka `cortex.anomalies.v1` topic, so it cannot trigger the dispatcher path that increments `cortex_remediation_dispatched_total`. That end-to-end delta is the closed-loop assertion in `scripts/smoke-p6-1a.ps1` (Leg B) which publishes a CloudEvents envelope through Kafka, waits for the dispatcher to drain it through the channel adapter into WireMock, and asserts the per-channel `outcome=dispatched` counter strictly increases. LD23 split-of-concerns: smoke = e2e Kafka -> dispatcher -> WireMock -> counter delta; Newman = HTTP contract + on-the-wire payload shape.
+
+Mirror in `scripts/smoke-p6-1a.ps1` (LD23 / Part 26.2 closed-loop rule): every HTTP-observable assertion in the collection above has a matching assertion in the smoke script (and vice versa). The actuator probes (health, liveness, readiness, metrics, prometheus) mirror the smoke health gate + counter scrape; the Channel-Mock-Smoke payloads mirror the per-channel WireMock stub bodies registered by the smoke (slack `Path = "/services/SMK-$runId/B/X"` + happy `200 ok`, pagerduty `Path = "/v2/enqueue"` + happy `202 {"status":"success"}`, jira `Path = "/rest/api/3/issue"` + happy `201 {"id":"10001","key":"SMK-1",...}`). The smoke-only assertions (per-channel kafka topic isolation via `cortex.anomalies.v1.<runId>.<channel>` + WireMock `__admin/requests` journal delta + service-log dispatch line grep + DLT stays empty) are intentionally not in Newman because they are not HTTP-observable from the Postman boundary.

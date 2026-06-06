@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-06 (P6.0a strict-rules cleanup, PR for #95).
-Total ADRs: 36 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036`).
+Last refreshed: 2026-06-06 (P6.1a cross-phase closer, PR for #93).
+Total ADRs: 37 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037`).
 
 ---
 
@@ -80,6 +80,7 @@ Total ADRs: 36 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + 
 | [0034](0034-pagerduty-remediation-adapter.md) | PagerDuty `RemediationDispatcher` adapter -- Events API v2 enqueue + trigger-only `event_action` + deterministic `{tenantId}:{eventId}` dedup-key + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + severity-mapping fallback (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 | [0035](0035-jira-remediation-adapter.md) | Jira `RemediationDispatcher` adapter -- REST API v3 create-issue + Basic-auth-with-API-token + ADF description + label-based severity (`anomaly-severity-<lower>`) + create-issue-only + `RestClient` HTTP/1.1 pin (LD42 + LD121 dual-timeout) + typed outcome classification + four-field blank-credential tolerance (no in-adapter retry; defers to P6.4 retry-budget) | Accepted | log-remediation-service | -- |
 | [0036](0036-log-remediation-strict-rules-cleanup.md) | log-remediation-service P6.0a strict-rules cleanup -- `@Validated` on the three `*Properties` records + composition-based `RestDispatchTemplate` helper (shared try/catch + 429/5xx/4xx/timeout classification) consumed by every REST adapter via `template.dispatch(event, ::isConfigured, ::executePost)` + OCP-flipped `RemediationMetrics` (injects `List<RemediationDispatcher>`, loops over `channelId()` to bootstrap outcome series) + Lombok `@RequiredArgsConstructor` + `@Slf4j` adoption + `io.cortex.remediation.constants` package (`RemediationHttp.TOO_MANY_REQUESTS`) + LD5 universal-Javadoc enforcer SUPERSEDED by A2.3 (private-method Javadoc forbidden; `checkstyle.xml` scope flipped private -> public) | Accepted | log-remediation-service | supersedes the decision portion of memory.md LD5 |
+| [0037](0037-log-remediation-cross-phase-closer.md) | log-remediation-service P6.1a cross-phase closer -- singleton Testcontainers Kafka + in-process WireMock base + 3 `@SpringBootTest` subclasses (`Slack/PagerDuty/Jira CrossPhaseIT`) each on its own per-channel topic `cortex.anomalies.v1.cross-phase.<channel>` + neutral LD123 test credentials + full-stack PowerShell boot smoke `scripts/smoke-p6-1a.ps1` (per-channel topic isolation per LD125, docker cp + sh -c publish, `CORTEX_REMEDIATION_DISPATCHER_PROVIDER` env, InvariantCulture ISO 8601 timestamps, order-independent Prom counter scrape) + Postman collection `postman/log-remediation.postman_collection.json` (4 folders / 10 requests / 25 assertions, mirrors smoke 1:1, `pm.execution.skipRequest()` gate on `wiremock_base_url`) + ADR-0037 + INDEX bump 36 -> 37 + CHANGELOG + README banner flip; captures LD125 (per-channel kafka topic isolation) + LD126 (Javadoc `*/` terminator trap -- JDT does not catch, only javac does) | Accepted | log-remediation-service | -- |
 
 ---
 

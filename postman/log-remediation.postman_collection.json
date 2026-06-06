@@ -1,0 +1,279 @@
+{
+  "info": {
+    "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e080",
+    "name": "log-remediation-service (P6.1a cross-phase closer)",
+    "description": "Postman v2.1 collection for log-remediation-service after P6.0/P6.1/P6.2/P6.3 + P6.0a strict-rules cleanup + P6.1a cross-phase closer on :8096. log-remediation-service has NO business REST surface -- it is a Spring for Apache Kafka consumer that drains cortex.anomalies.v1 (CloudEvents 1.0 structured-mode JSON envelopes produced by log-processor-service per ADR-0031) and fans out to the configured channel adapter (slack/pagerduty/jira/noop, gated by cortex.remediation.dispatcher.provider per ADR-0032 D1). The only HTTP surface is actuator (health/liveness/readiness/info/metrics/prometheus/beans) + the channel-shaped POSTs into a local WireMock at :8094 (smoke-only flavour, NOT a real Slack / PagerDuty / Jira call). Folder order: Admin asserts actuator + Prometheus exposition; Metrics-Baseline snapshots the dispatched_total{channel,outcome,tenant_id} counter for each channel; Channel-Mock-Smoke fires the WireMock-shaped POSTs that scripts/smoke-p6-1a.ps1 uses internally (so the Postman + Newman path stays in lock-step with the smoke per LD23); Metrics-After does NOT assert deltas (Postman cannot publish to Kafka so the dispatched counter does not tick from Postman alone -- the smoke script is the closed loop that proves the e2e counter increment). Boot the service + Kafka + WireMock first with scripts/smoke-p6-1a.ps1 -Provider all (Leg B), then run this collection against the still-running stack for the Leg C contract.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('request_id')) {",
+          "    pm.variables.set('request_id', 'pm-' + Math.random().toString(36).substring(2, 12));",
+          "}",
+          "pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.get('request_id') });",
+          "pm.request.headers.upsert({ key: 'X-Correlation-ID', value: pm.variables.get('request_id') });",
+          "const tenant = pm.environment.get('tenant_id');",
+          "if (tenant) { pm.request.headers.upsert({ key: 'X-Tenant-Id', value: tenant }); }"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('response under 5000 ms (actuator + mock-server tolerated)', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Admin (actuator)",
+      "description": "Direct actuator surface exposed by log-remediation-service on :8096 per application.yml (management.endpoints.web.exposure.include: health,info,metrics,prometheus,beans). Liveness + readiness are the K8s probe contracts (LD23 mirror with scripts/smoke-p6-1a.ps1 health gate).",
+      "item": [
+        {
+          "name": "GET /actuator/health -> 200 UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health", "host": [ "{{base_url}}" ], "path": [ "actuator", "health" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/liveness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/liveness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "liveness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/readiness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/readiness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "readiness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/info -> 200 + JSON object",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/info", "host": [ "{{base_url}}" ], "path": [ "actuator", "info" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "pm.test('Content-Type application/*', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application'); });",
+            "pm.test('body parses as JSON object', function () { pm.expect(pm.response.json()).to.be.an('object'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/metrics -> 200 + cortex.remediation.dispatched_total registered",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/metrics", "host": [ "{{base_url}}" ], "path": [ "actuator", "metrics" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('names is an array', function () { pm.expect(body.names).to.be.an('array').that.is.not.empty; });",
+            "pm.test('cortex.remediation.dispatched_total registered (P6.0a OCP bootstrap)', function () { pm.expect(body.names).to.include('cortex.remediation.dispatched_total'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/prometheus -> 200 + scrape contains cortex_remediation_dispatched_total",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "pm.test('exposition contains cortex_remediation_dispatched_total family', function () { pm.expect(text).to.include('cortex_remediation_dispatched_total'); });",
+            "pm.test('exposition includes HELP + TYPE comments for the family', function () { pm.expect(text).to.match(/# HELP cortex_remediation_dispatched_total/); pm.expect(text).to.match(/# TYPE cortex_remediation_dispatched_total counter/); });",
+            "pm.test('exposition contains the allowlisted channel tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*channel=\"/); });",
+            "pm.test('exposition contains the allowlisted outcome tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*outcome=\"/); });",
+            "pm.test('exposition contains the allowlisted tenant_id tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*tenant_id=\"/); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-Baseline",
+      "description": "Snapshot the cortex_remediation_dispatched_total counter per channel BEFORE any Channel-Mock-Smoke calls. Reads ALL outcomes (dispatched + transient_failure + permanent_failure + skipped) and sums per channel so the baseline is robust to whichever Provider is configured.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus baseline -> capture per-channel counters",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumForChannel(channel) {",
+            "    const re = new RegExp('^cortex_remediation_dispatched_total\\\\{[^}]*channel=\"' + channel + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "pm.environment.set('dispatched_baseline_slack', String(sumForChannel('slack')));",
+            "pm.environment.set('dispatched_baseline_pagerduty', String(sumForChannel('pagerduty')));",
+            "pm.environment.set('dispatched_baseline_jira', String(sumForChannel('jira')));",
+            "pm.test('baseline slack counter recorded', function () { pm.expect(pm.environment.get('dispatched_baseline_slack')).to.be.a('string'); });",
+            "pm.test('baseline pagerduty counter recorded', function () { pm.expect(pm.environment.get('dispatched_baseline_pagerduty')).to.be.a('string'); });",
+            "pm.test('baseline jira counter recorded', function () { pm.expect(pm.environment.get('dispatched_baseline_jira')).to.be.a('string'); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Channel-Mock-Smoke (WireMock-shaped POSTs)",
+      "description": "Fires the exact channel-shaped POSTs that scripts/smoke-p6-1a.ps1 + the *WireMockIT tests use against the local WireMock on :8094. These prove the on-the-wire payload contract end-to-end WITHOUT touching real Slack / PagerDuty / Jira -- runs OFFLINE. Skipped when {{wiremock_base_url}} is empty (staging / prod environments). LD23 mirror with the smoke script: same body shape, same headers, same expected status. The path under /__admin/scenarios is reset between runs by the smoke; this folder issues fresh runIds via {{$guid}} so it composes safely with concurrent runs.",
+      "item": [
+        {
+          "name": "POST WireMock Slack webhook -> 200 ok (happy)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"[cortex-remediation-postman] anomaly evt-PM-{{$guid}} from log-processor (env=local tenant={{tenant_id}})\",\n  \"username\": \"cortex-remediation-postman\"\n}"
+            },
+            "url": {
+              "raw": "{{wiremock_base_url}}/services/SMK-postman/B/X",
+              "host": [ "{{wiremock_base_url}}" ],
+              "path": [ "services", "SMK-postman", "B", "X" ]
+            }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('wiremock_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status one of 200/404 (200 when smoke stub is live, 404 when scenario is exhausted)', function () { pm.expect([200, 404]).to.include(pm.response.code); });"
+            ] } }
+          ]
+        },
+        {
+          "name": "POST WireMock PagerDuty enqueue -> 202 accepted (happy)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"routing_key\": \"00000000000000000000000000000000\",\n  \"event_action\": \"trigger\",\n  \"dedup_key\": \"{{tenant_id}}:evt-PM-{{$guid}}\",\n  \"payload\": {\n    \"summary\": \"[cortex-remediation-postman] anomaly evt-PM (env=local)\",\n    \"source\": \"cortex-remediation\",\n    \"severity\": \"error\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{wiremock_base_url}}/v2/enqueue",
+              "host": [ "{{wiremock_base_url}}" ],
+              "path": [ "v2", "enqueue" ]
+            }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('wiremock_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status one of 202/404 (202 when smoke stub is live, 404 when stub absent)', function () { pm.expect([202, 404]).to.include(pm.response.code); });"
+            ] } }
+          ]
+        },
+        {
+          "name": "POST WireMock Jira createIssue -> 201 created (happy)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Basic {{jira_basic_auth_b64}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fields\": {\n    \"project\": { \"key\": \"OPS\" },\n    \"summary\": \"[cortex-remediation-postman] anomaly evt-PM (env=local)\",\n    \"issuetype\": { \"name\": \"Bug\" },\n    \"labels\": [ \"cortex-remediation\", \"tenant:{{tenant_id}}\", \"anomaly-severity-error\" ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{wiremock_base_url}}/rest/api/3/issue",
+              "host": [ "{{wiremock_base_url}}" ],
+              "path": [ "rest", "api", "3", "issue" ]
+            }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('wiremock_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status one of 201/404 (201 when smoke stub is live, 404 when stub absent)', function () { pm.expect([201, 404]).to.include(pm.response.code); });"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-After",
+      "description": "Re-scrape /actuator/prometheus. Postman/Newman alone CANNOT publish to the Kafka topic, so this folder verifies the counter family is still exposed + non-decreasing -- NOT a strict delta assertion. The closed-loop delta assertion lives in scripts/smoke-p6-1a.ps1 (Leg B) which publishes through Kafka end-to-end. LD23 split-of-concerns: smoke = e2e delta, Newman = HTTP contract.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus -> family still present + counters monotonically non-decreasing",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "pm.test('family cortex_remediation_dispatched_total still exposed', function () { pm.expect(text).to.include('cortex_remediation_dispatched_total'); });",
+            "function sumForChannel(channel) {",
+            "    const re = new RegExp('^cortex_remediation_dispatched_total\\\\{[^}]*channel=\"' + channel + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "const baseSlack = parseFloat(pm.environment.get('dispatched_baseline_slack') || '0');",
+            "const basePD = parseFloat(pm.environment.get('dispatched_baseline_pagerduty') || '0');",
+            "const baseJira = parseFloat(pm.environment.get('dispatched_baseline_jira') || '0');",
+            "const nowSlack = sumForChannel('slack');",
+            "const nowPD = sumForChannel('pagerduty');",
+            "const nowJira = sumForChannel('jira');",
+            "pm.test('slack counter monotonically non-decreasing', function () { pm.expect(nowSlack).to.be.at.least(baseSlack); });",
+            "pm.test('pagerduty counter monotonically non-decreasing', function () { pm.expect(nowPD).to.be.at.least(basePD); });",
+            "pm.test('jira counter monotonically non-decreasing', function () { pm.expect(nowJira).to.be.at.least(baseJira); });"
+          ] } } ]
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- P6.1a: log-remediation-service cross-phase closer
+  (PR for #93, ADR-0037). Closes the P6 epic by shipping the
+  Leg B/C/D/E artifacts that P6.0..P6.3 + P6.0a deferred per
+  the LD104 closer-pattern -- ONE closer for all three real
+  channels. No production behaviour change; this PR is
+  100% test + script + doc additions.
+  - **Cross-phase Failsafe IT** under
+    `log-remediation-service/src/test/java/io/cortex/remediation/closer/`:
+    new abstract base `AnomalyCrossPhaseBaseIT` (~234 lines)
+    owns a singleton Testcontainers Kafka container
+    (`apache/kafka:3.8.0`) + an in-process WireMock server
+    (`WireMockServer(options().dynamicPort())`) shared across
+    all 3 subclasses. Static block starts both before any
+    Spring context boots. `@DynamicPropertySource baseProperties`
+    registers `spring.kafka.bootstrap-servers` + disables
+    Eureka. 3 sealed-shape `@SpringBootTest` subclasses
+    (`SlackCrossPhaseIT`, `PagerDutyCrossPhaseIT`,
+    `JiraCrossPhaseIT`), each on its own per-channel topic
+    `cortex.anomalies.v1.cross-phase.<channel>` + its own
+    unique consumer group-id + neutral LD123 credentials.
+    Each subclass ships 2 tests (happy 2xx ->
+    `outcome=dispatched` counter tick + WireMock POST
+    verified + DLT empty; transient 500 ->
+    `outcome=transient_failure` counter tick + same WireMock
+    + DLT checks). Failsafe count: 16 prior + 6 new = 22/22
+    PASS in ~3:44 wall clock; Surefire 76/76; 0 Checkstyle;
+    0 SpotBugs; JaCoCo BUNDLE 0.80/0.80 met.
+  - **Full-stack PowerShell boot smoke**
+    `scripts/smoke-p6-1a.ps1` -- starts the actual service
+    JAR three times (once per channel) against a per-channel
+    Kafka topic via `CORTEX_REMEDIATION_TOPIC` env (LD125,
+    eliminates cross-channel envelope replay from shared topic
+    + `auto.offset.reset=earliest`) + a per-channel WireMock
+    container. Publishes via `docker cp` + `docker exec sh -c
+    "...producer.sh < /tmp/..."` (avoids PowerShell pipeline
+    CRLF + trailing-newline mangling). Uses
+    `CORTEX_REMEDIATION_DISPATCHER_PROVIDER` (NOT
+    `CORTEX_REMEDIATION_DISPATCHER` -- the latter falls back
+    to noop and the smoke would silently pass). ISO 8601
+    timestamps formatted under `InvariantCulture` (en-IN
+    locale renders `:` as `.` and breaks CloudEvents `time`
+    schema). Order-independent `Get-PromCounter` filter walks
+    each label substring independently (PowerShell hashtable
+    enumeration is non-deterministic). All 3 channels GREEN
+    end-to-end; transcript
+    `scripts/logs/p6-1a/smoke-all-20260606-220655.log`.
+  - **Postman collection**
+    `postman/log-remediation.postman_collection.json` +
+    3 environment files (`local`, `staging`, `prod`). 4
+    folders / 10 requests / 25 assertions mirror the smoke
+    1:1: Admin (actuator probes) + Metrics-Baseline +
+    Channel-Mock-Smoke (Slack 200|404; PagerDuty 202|404;
+    Jira 201|404) + Metrics-After.
+    `pm.execution.skipRequest()` gates the WireMock folder
+    on `wiremock_base_url` so staging + prod env runs
+    exercise admin-only surfaces. Top-level test asserts
+    `responseTime < 5000ms`. `postman/README.md` updated
+    with the new collection's matrix + Newman snippet.
+  - **ADR-0037** documents the closer + INDEX bump 36 -> 37
+    + this CHANGELOG entry + `log-remediation-service/README.md`
+    banner flip `P6.0..P6.3 + P6.0a SHIPPED` ->
+    `P6.0..P6.3 + P6.0a + P6.1a SHIPPED` + new README
+    section 4d "Cross-phase closer (P6.1a, ADR-0037)".
+  - **Two new LDs** captured in `memory.md`:
+    - **LD125** -- per-channel kafka topic isolation in
+      multi-channel smoke runs. Root cause: shared
+      `cortex.anomalies.v1` topic + `auto.offset.reset=
+      earliest` causes the next channel's consumer to
+      replay the previous channel's envelopes through
+      different WireMock stubs, mis-classifying the
+      outcome. Fix: every channel publishes/consumes on
+      `cortex.anomalies.v1.<runId>.<channel>` via
+      `CORTEX_REMEDIATION_TOPIC`.
+    - **LD126** -- Javadoc comments CANNOT contain `*/`
+      anywhere, including inside `{@code ...}` blocks. The
+      Javadoc lexer terminates greedily on the first `*/`.
+      JDT (Eclipse / VS Code Java language server) does
+      NOT catch this; only `javac` does. Always run
+      `mvn compile` after Javadoc edits; rephrase to
+      avoid `*/` or use `*&#47;`.
+
 ### Changed
 
 - P6.0a: log-remediation-service strict-rules cleanup
