@@ -2,6 +2,7 @@ package io.cortex.remediation.dispatch;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Typed configuration for the {@link JiraRemediationDispatcher}
@@ -50,6 +51,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                             severity is {@code HIGH}; default
  *                             {@value #DEFAULT_SEVERITY_LABEL_PREFIX}
  */
+@Validated
 @ConfigurationProperties(prefix = "cortex.remediation.jira")
 public record JiraProperties(String baseUrl, String email, String apiToken,
                              Duration requestTimeout, String projectKey,

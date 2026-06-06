@@ -27,11 +27,16 @@ import org.springframework.stereotype.Component;
         name = "provider",
         havingValue = "noop",
         matchIfMissing = true)
-public class NoopRemediationDispatcher implements RemediationDispatcher {
+public final class NoopRemediationDispatcher implements RemediationDispatcher {
 
     /** Reason stamped on every skipped verdict from this scaffold dispatcher. */
     private static final String SKIP_REASON =
             "noop dispatcher (P6.0 scaffold); real adapters land in P6.1..P6.3";
+
+    @Override
+    public String channelId() {
+        return DispatchResult.CHANNEL_NOOP;
+    }
 
     @Override
     public DispatchResult dispatch(final AnomalyEvent event) {

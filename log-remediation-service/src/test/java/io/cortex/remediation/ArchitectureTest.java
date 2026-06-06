@@ -44,6 +44,7 @@ class ArchitectureTest {
                 .layer("Parse").definedBy("io.cortex.remediation.parse..")
                 .layer("Dispatch").definedBy("io.cortex.remediation.dispatch..")
                 .layer("Metrics").definedBy("io.cortex.remediation.metrics..")
+                .layer("Constants").definedBy("io.cortex.remediation.constants..")
 
                 // Consume orchestrates the parse + dispatch pipeline;
                 // only App scans the @KafkaListener.
@@ -53,10 +54,13 @@ class ArchitectureTest {
                 // reach in.
                 .whereLayer("Parse")
                 .mayOnlyBeAccessedByLayers("App", "Consume", "Dispatch")
-                // Dispatch is the SPI - accessed by Consume + tests.
-                .whereLayer("Dispatch").mayOnlyBeAccessedByLayers("App", "Consume")
+                // Dispatch is the SPI - accessed by Consume + Metrics + tests.
+                .whereLayer("Dispatch").mayOnlyBeAccessedByLayers("App", "Consume", "Metrics")
                 // Metrics is accessed by Consume.
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume");
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume")
+                // Constants are accessed by Dispatch (RestDispatchTemplate
+                // imports RemediationHttp.TOO_MANY_REQUESTS).
+                .whereLayer("Constants").mayOnlyBeAccessedByLayers("Dispatch");
 
         layered.check(classes);
     }

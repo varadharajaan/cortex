@@ -2,6 +2,7 @@ package io.cortex.remediation.dispatch;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Typed configuration for the {@link SlackRemediationDispatcher}
@@ -36,6 +37,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                       legacy hooks honour it; blank = use the
  *                       webhook's bound channel
  */
+@Validated
 @ConfigurationProperties(prefix = "cortex.remediation.slack")
 public record SlackProperties(String webhookUrl, Duration requestTimeout,
                               String username, String channelOverride) {

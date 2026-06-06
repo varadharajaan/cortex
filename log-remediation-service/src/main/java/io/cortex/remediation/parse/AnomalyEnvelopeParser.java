@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.format.EventDeserializationException;
 import io.cloudevents.jackson.JsonFormat;
+import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Component;
  * parallel.</p>
  */
 @Component
+@RequiredArgsConstructor
 public class AnomalyEnvelopeParser {
 
     /** CloudEvents 1.0 {@code specversion} the producer guarantees. */
@@ -39,19 +41,7 @@ public class AnomalyEnvelopeParser {
     public static final String EXPECTED_TYPE = "io.cortex.anomaly.v1";
 
     private final ObjectMapper objectMapper;
-    private final JsonFormat jsonFormat;
-
-    /**
-     * Spring constructor.
-     *
-     * @param objectMapper autoconfigured Jackson mapper used to
-     *                     deserialise the inner {@code data} object
-     *                     into the typed {@link AnomalyEvent}
-     */
-    public AnomalyEnvelopeParser(final ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-        this.jsonFormat = new JsonFormat();
-    }
+    private final JsonFormat jsonFormat = new JsonFormat();
 
     /**
      * Decode the supplied record value bytes into an
@@ -84,16 +74,6 @@ public class AnomalyEnvelopeParser {
         return event;
     }
 
-    /**
-     * Decodes the raw CloudEvents JSON envelope bytes; surfaces a
-     * {@link FailureReason#INVALID_ENVELOPE} on any wire-format
-     * decode failure.
-     *
-     * @param payload raw CloudEvent envelope bytes
-     * @return the decoded {@link CloudEvent}
-     * @throws ParseException with {@link FailureReason#INVALID_ENVELOPE}
-     *                        on decode failure
-     */
     private CloudEvent decodeEnvelope(final byte[] payload) throws ParseException {
         try {
             return this.jsonFormat.deserialize(payload);
@@ -103,15 +83,6 @@ public class AnomalyEnvelopeParser {
         }
     }
 
-    /**
-     * Enforces the static envelope contract: {@code specversion="1.0"}
-     * and {@code type="io.cortex.anomaly.v1"}. Misses raise
-     * {@link FailureReason#WRONG_TYPE}.
-     *
-     * @param envelope the decoded {@link CloudEvent} to validate
-     * @throws ParseException with {@link FailureReason#WRONG_TYPE}
-     *                        if {@code specversion} or {@code type} drifts
-     */
     private void validateEnvelopeShape(final CloudEvent envelope) throws ParseException {
         if (!EXPECTED_SPECVERSION.equals(envelope.getSpecVersion().toString())) {
             throw new ParseException(FailureReason.WRONG_TYPE,
@@ -124,16 +95,6 @@ public class AnomalyEnvelopeParser {
         }
     }
 
-    /**
-     * Reshapes the CloudEvents {@code data} block into the typed
-     * {@link AnomalyEvent}; raises {@link FailureReason#MISSING_DATA}
-     * on null / empty / undecodable payloads.
-     *
-     * @param envelope the decoded {@link CloudEvent} carrying the {@code data} block
-     * @return the typed {@link AnomalyEvent}
-     * @throws ParseException with {@link FailureReason#MISSING_DATA}
-     *                        when the data block is missing or undecodable
-     */
     private AnomalyEvent decodeData(final CloudEvent envelope) throws ParseException {
         if (envelope.getData() == null) {
             throw new ParseException(FailureReason.MISSING_DATA,

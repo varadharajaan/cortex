@@ -1,42 +1,45 @@
 package io.cortex.remediation.metrics;
 
+import io.cortex.remediation.dispatch.DispatchResult;
+import io.cortex.remediation.dispatch.RemediationDispatcher;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 /**
  * Micrometer counter published by the log-remediation-service
- * (P6.0 / Part 17 / ADR-0032 D3).
+ * (P6.0 / Part 17 / ADR-0032 D3; OCP-flipped P6.0a / ADR-0036).
  *
- * <p>One counter establishes the stable metric surface that
- * Grafana dashboards subscribe to from P6.0 onwards:
+ * <p>One counter establishes the stable metric surface that Grafana
+ * dashboards subscribe to from P6.0 onwards:
  * {@code cortex.remediation.dispatched_total{channel, outcome,
  * tenant_id}}. Bootstrap-registered at construct-time with all-three
  * placeholder values per LD106 + LD112 so the
  * {@code /actuator/prometheus} scrape sees the counter family before
- * the first anomaly ticks. The actual ticks during the consumer
- * pipeline use the {@code channel} + {@code outcome} from the
- * dispatcher's {@link io.cortex.remediation.dispatch.DispatchResult}
- * (e.g. {@code channel=noop, outcome=skipped} in P6.0;
- * {@code channel=slack, outcome=dispatched} when the Slack adapter
- * lands in P6.1) and the {@code tenantId} from the parsed
- * {@link io.cortex.remediation.parse.AnomalyEvent}.</p>
+ * the first anomaly ticks.</p>
  *
- * <p>Tag-key allowlist enforced per Part 17 rule: only {@code
- * channel}, {@code outcome}, and {@code tenant_id} are emitted on
- * this counter. Free-form values are bounded by the
- * {@link io.cortex.remediation.dispatch.DispatchResult} constants
+ * <p>P6.0a OCP refactor: the bootstrap loop iterates over the list
+ * of {@link RemediationDispatcher} beans active in the current
+ * profile (Spring injects an autowired {@code List<T>} bound by the
+ * conditionals on each adapter) and bootstraps the three failable
+ * outcome series for each adapter's {@link
+ * RemediationDispatcher#channelId()}. Adding a new channel adapter
+ * therefore requires zero edits here -- the Open/Closed Principle
+ * is honoured at the bootstrap boundary as well as at the dispatch
+ * boundary.</p>
+ *
+ * <p>Tag-key allowlist enforced per Part 17 rule: only
+ * {@code channel}, {@code outcome}, and {@code tenant_id} are
+ * emitted on this counter. Free-form values are bounded by the
+ * {@link DispatchResult} constants
  * ({@code CHANNEL_NOOP}, {@code OUTCOME_SKIPPED}, ...).</p>
- *
- * <p>Bean name is the default {@code remediationMetrics} (no
- * collision risk with Spring Boot autoconfig in this module).</p>
  */
 @Component
+@RequiredArgsConstructor
 public class RemediationMetrics {
-
-    private static final String TAG_CHANNEL = "channel";
-    private static final String TAG_OUTCOME = "outcome";
-    private static final String TAG_TENANT = "tenant_id";
 
     /** The dispatched counter metric name (kept public so tests can reference it). */
     public static final String METRIC_DISPATCHED_TOTAL =
@@ -45,64 +48,36 @@ public class RemediationMetrics {
     /** Placeholder tag value used for the bootstrap-registration counter (LD106). */
     public static final String UNKNOWN = "unknown";
 
+    private static final String TAG_CHANNEL = "channel";
+    private static final String TAG_OUTCOME = "outcome";
+    private static final String TAG_TENANT = "tenant_id";
+
+    private static final String COUNTER_DESCRIPTION =
+            "Anomaly events handled by RemediationDispatcher (P6.0 / ADR-0032)";
+
     private final MeterRegistry registry;
+    private final List<RemediationDispatcher> dispatchers;
 
     /**
-     * Spring constructor.
+     * Bootstrap the counter family per LD106 + LD112 so the
+     * {@code /actuator/prometheus} scrape sees a stable surface even
+     * before the first anomaly verdict ticks.
      *
-     * @param registry the autoconfigured Micrometer registry (Prometheus)
+     * <p>Loops over every active {@link RemediationDispatcher} bean
+     * and bootstraps the three failable outcome series for its
+     * channel id. The all-{@code unknown} placeholder series is
+     * always registered so the counter family is visible even when
+     * the dispatcher list is empty (test fixtures).</p>
      */
-    public RemediationMetrics(final MeterRegistry registry) {
-        this.registry = registry;
-        // Bootstrap the counter family per LD106 + LD112 so the
-        // /actuator/prometheus scrape sees a stable surface even
-        // before the first anomaly verdict ticks. All three tag
-        // values are "unknown" so the bootstrap series stays
-        // unambiguously distinct from real tag combinations.
+    @PostConstruct
+    void bootstrapMeters() {
         bootstrap(UNKNOWN, UNKNOWN);
-        // P6.1: bootstrap the three Slack outcome series so the
-        // scrape sees every Slack outcome row even before the
-        // first anomaly hits the Slack adapter. tenant_id stays
-        // "unknown" -- the real series for a given tenant lazy-
-        // registers on first tick per LD106 cardinality rules.
-        bootstrap("slack", "dispatched");
-        bootstrap("slack", "transient_failure");
-        bootstrap("slack", "permanent_failure");
-        // P6.2: bootstrap the three PagerDuty outcome series for the
-        // same reason -- the Events API v2 adapter (ADR-0034) plugs
-        // into the same metric family and must publish its full
-        // outcome surface before the first PagerDuty enqueue ticks.
-        bootstrap("pagerduty", "dispatched");
-        bootstrap("pagerduty", "transient_failure");
-        bootstrap("pagerduty", "permanent_failure");
-        // P6.3: bootstrap the three Jira outcome series for the
-        // same reason -- the Jira Cloud REST API v3 adapter
-        // (ADR-0035) plugs into the same metric family and must
-        // publish its full outcome surface before the first Jira
-        // create-issue call ticks.
-        bootstrap("jira", "dispatched");
-        bootstrap("jira", "transient_failure");
-        bootstrap("jira", "permanent_failure");
-    }
-
-    /**
-     * Register a single bootstrap counter series (count = 0) for
-     * the supplied {@code channel} + {@code outcome} pair with
-     * {@code tenant_id=unknown}. Counters are idempotent in
-     * Micrometer -- the production {@code incDispatched(...)} ticks
-     * re-use the same meter when the tag tuple matches.
-     *
-     * @param channel one of the {@code DispatchResult.CHANNEL_*} constants
-     * @param outcome one of the {@code DispatchResult.OUTCOME_*} constants
-     */
-    private void bootstrap(final String channel, final String outcome) {
-        Counter.builder(METRIC_DISPATCHED_TOTAL)
-                .description("Anomaly events handled by RemediationDispatcher"
-                        + " (P6.0 / ADR-0032)")
-                .tag(TAG_CHANNEL, channel)
-                .tag(TAG_OUTCOME, outcome)
-                .tag(TAG_TENANT, UNKNOWN)
-                .register(this.registry);
+        for (final RemediationDispatcher dispatcher : this.dispatchers) {
+            final String channel = dispatcher.channelId();
+            bootstrap(channel, DispatchResult.OUTCOME_DISPATCHED);
+            bootstrap(channel, DispatchResult.OUTCOME_TRANSIENT_FAILURE);
+            bootstrap(channel, DispatchResult.OUTCOME_PERMANENT_FAILURE);
+        }
     }
 
     /**
@@ -125,12 +100,20 @@ public class RemediationMetrics {
     public void incDispatched(final String channel, final String outcome,
                               final String tenantId) {
         Counter.builder(METRIC_DISPATCHED_TOTAL)
-                .description("Anomaly events handled by RemediationDispatcher"
-                        + " (P6.0 / ADR-0032)")
+                .description(COUNTER_DESCRIPTION)
                 .tag(TAG_CHANNEL, channel == null ? UNKNOWN : channel)
                 .tag(TAG_OUTCOME, outcome == null ? UNKNOWN : outcome)
                 .tag(TAG_TENANT, tenantId == null ? UNKNOWN : tenantId)
                 .register(this.registry)
                 .increment();
+    }
+
+    private void bootstrap(final String channel, final String outcome) {
+        Counter.builder(METRIC_DISPATCHED_TOTAL)
+                .description(COUNTER_DESCRIPTION)
+                .tag(TAG_CHANNEL, channel)
+                .tag(TAG_OUTCOME, outcome)
+                .tag(TAG_TENANT, UNKNOWN)
+                .register(this.registry);
     }
 }

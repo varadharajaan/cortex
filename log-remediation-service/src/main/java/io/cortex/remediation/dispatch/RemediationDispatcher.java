@@ -35,6 +35,19 @@ import io.cortex.remediation.parse.AnomalyEvent;
 public interface RemediationDispatcher {
 
     /**
+     * Stable channel identifier used by {@link DispatchResult} +
+     * {@link io.cortex.remediation.metrics.RemediationMetrics}
+     * bootstrap to publish the per-channel outcome series before
+     * the first event arrives (P6.0a / ADR-0036).
+     *
+     * @return the channel id; one of the
+     *         {@link DispatchResult}{@code .CHANNEL_*} constants
+     *         ({@code noop}, {@code slack}, {@code pagerduty},
+     *         {@code jira}); never {@code null}, never blank
+     */
+    String channelId();
+
+    /**
      * Dispatch a remediation playbook for the supplied anomaly.
      *
      * @param event the typed anomaly event decoded from the

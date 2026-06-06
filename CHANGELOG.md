@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- P6.0a: log-remediation-service strict-rules cleanup
+  (PR for #95, ADR-0036; no behavioural change — refactor only).
+  Brings `log-remediation-service` to the A2 / A3 / A4 / A6 / A7
+  conformance bar BEFORE the P6.1a closer ships, so the closer
+  cross-phase IT runs against the cleaned-up dispatcher surface
+  (LD104 closer-pattern).
+  - **A6.1 — `@Validated`** added to all three
+    `@ConfigurationProperties` records
+    (`SlackProperties`, `PagerDutyProperties`, `JiraProperties`)
+    so Spring's validation hook is wired at the configuration
+    boundary even though no field-level constraints exist yet.
+  - **A3.1 / A3.2 / DRY — composition over inheritance**: new
+    package-private `dispatch/RestDispatchTemplate` helper
+    (Effective Java item 18) owns the outer try/catch + HTTP
+    outcome classification (429 -> `transient`; 5xx ->
+    `transient`; other 4xx -> `permanent`; timeout ->
+    `transient`; IO -> `transient`; unknown -> `transient`) +
+    transport classification + no-throw-on-transient discipline
+    (ADR-0032 D6). Every real-channel adapter
+    (`Slack/PagerDuty/Jira RemediationDispatcher`) is now
+    `final class` with its `dispatch(event)` body collapsed to
+    `return template.dispatch(event, this::isConfigured, this::executePost);`.
+    Each adapter carries only its channel-specific concerns
+    (configured-check, endpoint, body builder, auth header).
+    Behaviour preserved bit-for-bit -- every WireMock IT
+    `DispatchResult` reason string is byte-identical to P6.3.
+  - **A3.2 — OCP `RemediationMetrics` refactor**: constructor
+    signature flipped to
+    `RemediationMetrics(MeterRegistry, List<RemediationDispatcher>)`;
+    `@PostConstruct bootstrapMeters()` loops over the injected
+    dispatcher list and calls `bootstrap(d.channelId(), OUTCOME_*)`
+    for each of the three failable outcomes. The hand-coded
+    9-call bootstrap block is gone. Adding the future P6.4
+    retry/DLQ channel now requires zero edits to this class.
+  - **A4.2 — Lombok constructor injection**: `AnomalyConsumer`,
+    `AnomalyEnvelopeParser`, `RemediationMetrics`, and all
+    three real-channel adapters now use
+    `@RequiredArgsConstructor` (+ `@Slf4j` where the logger
+    field was hand-rolled). Hand-rolled public constructors +
+    `this.x = x` blocks deleted.
+  - **A2.3 — Javadoc placement / LD5 SUPERSEDED**: every
+    private-method Javadoc block across the module deleted
+    (was an artifact of the universal-Javadoc enforcer recorded
+    as `memory.md` LD5). The Checkstyle enforcer itself
+    (`checkstyle.xml`) updated to honour A2.3: scope on
+    `MissingJavadocMethod` / `MissingJavadocType` / `JavadocType`
+    raised from `private` to `public`/`protected`,
+    `JavadocMethod.accessModifiers` reduced to
+    `"public,protected"`. Header comment cites A2.3 + the LD5
+    supersede.
+  - **A7 — constants centralisation**: new package
+    `io.cortex.remediation.constants` with `RemediationHttp.java`
+    (final utility class, private `UnsupportedOperationException`
+    ctor, single constant `TOO_MANY_REQUESTS = 429`) +
+    Part-9.5-shaped `package-info.java`. Removes the duplicated
+    `HTTP_TOO_MANY_REQUESTS = 429` declarations from each
+    real-channel adapter.
+  - **SPI extension**: new method
+    `String channelId()` on `RemediationDispatcher`; every
+    adapter returns its `DispatchResult.CHANNEL_*` constant.
+    Used by the OCP-flipped `RemediationMetrics` bootstrap
+    loop.
+  - **Test surface**: `RemediationMetricsTest` rewritten (8
+    tests) with a `fakeDispatcher(channelId)` helper +
+    `bootstrapIteratesOverMultipleDispatchers` regression pin
+    for the OCP loop semantics. `AnomalyConsumerTest` +
+    `AnomalyConsumerKafkaIT` updated to construct
+    `RemediationMetrics` with the new
+    `(registry, List<RemediationDispatcher>)` signature.
+    `ArchitectureTest` extended with a `Constants` ArchUnit
+    layer accessible only by `Dispatch`. All 16 ITs + every
+    unit test green; 0 Checkstyle errors; JaCoCo BUNDLE
+    0.80/0.80 met.
+  - ADR-0036 -- documents the supersede, the composition vs
+    inheritance decision, the OCP flip, and the four rejected
+    alternatives (abstract base, utility class, Spring AOP
+    aspect, hand-coded list with TODO). `docs/adr/INDEX.md`
+    row + count bump 35 -> 36 + refreshed-on date.
+
 ### Added
 
 - P6.3: log-remediation-service Jira Cloud REST API v3 adapter
