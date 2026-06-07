@@ -9,6 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.1: log-monitoring-service `EurekaActuatorHealthProbe`
+  HTTP probe via Eureka discovery + dual-timeout `RestClient`
+  (PR for #113, ADR-0045). New `EurekaActuatorHealthProbe
+  @Component @ConditionalOnProperty(prefix="cortex.monitoring.probe",
+  name="backend", havingValue="eureka-actuator")` adapter in
+  new package `io.cortex.monitoring.probe.eureka` that
+  resolves `ProbeRequest.serviceId()` via Spring Cloud
+  `DiscoveryClient`, picks the instance matching
+  `ProbeRequest.instanceId()` (or the first registered
+  entry), issues a single HTTP GET to
+  `<instance.uri>/actuator/health` via the
+  `eurekaActuatorRestClient` bean (HTTP/1.1-pinned via
+  `JdkClientHttpRequestFactory` per LD42 + dual connect+read
+  timeout per LD121, default 5 s) drawn from typed
+  `EurekaActuatorProperties(requestTimeout, actuatorPath)`
+  record bound to prefix `cortex.monitoring.eureka` with
+  defaults `5s` / `/actuator/health` and compact-ctor
+  defensive defaults on null/zero/negative timeouts and
+  null/blank paths. Happy-path JSON `status` field parsed at
+  the adapter: `UP` -> `HealthSnapshot.healthy("UP")`,
+  `OUT_OF_SERVICE` -> `degraded("OUT_OF_SERVICE")`, `DOWN`
+  -> `unhealthy("DOWN")`, any other / missing / non-textual /
+  empty body / parse error -> `degraded("unknown:<reason>")`.
+  HTTP outcome -> `HealthSnapshot` classification delegated
+  to new channel-agnostic `RestProbeTemplate` helper
+  symmetric with P7.1 `RestAdminTemplate` (`classifyHttp` ->
+  429 transient / 5xx transient / other 4xx permanent;
+  `classifyTransport` -> `HttpTimeoutException` /
+  `TimeoutException` cause transient `:timeout`, other
+  transport transient `:transport`; `classifyUnknown` ->
+  transient `:unknown`). Eureka returning null/empty
+  instances OR no `instanceId` match maps to
+  `unreachable / eureka-actuator:no-instance` (NOT
+  permanent/transient -- the bounded enum value reserved for
+  "we never got off the box" per ADR-0044 D3); null
+  `ProbeRequest` maps to
+  `permanent_failure / eureka-actuator:null-request`. Every
+  exit ticks `MonitoringMetrics.incProbe(backend, outcome,
+  serviceId)` via private `tick(...)` helper so the
+  bootstrap-registered counter family produces a continuous
+  signal at the `/actuator/prometheus` scrape surface. SPI
+  contract honoured -- `probe()` MUST NOT throw, four catch
+  arms in `scrape()` funnel every failure into the verdict
+  envelope per ADR-0044 D7. `@Lazy MonitoringMetrics` ctor
+  param breaks `MonitoringMetrics -> EurekaActuatorHealthProbe
+  -> MonitoringMetrics` bean cycle per LD131. Activation
+  gates noop + eureka-actuator beans mutually exclusive per
+  ADR-0044 D5 binder pattern. New `MonitoringHttp` final
+  constants holder (`TOO_MANY_REQUESTS=429`,
+  `SERVER_ERROR_FLOOR=500`, `NOT_FOUND=404`) in new package
+  `io.cortex.monitoring.constants` to defuse Checkstyle
+  `MagicNumber` warnings. New `EurekaActuatorHttpConfig
+  @Configuration @ConditionalOnProperty(backend=eureka-actuator)
+  @EnableConfigurationProperties(EurekaActuatorProperties.class)`
+  provides the `eurekaActuatorRestClient` bean. ArchUnit
+  layered contract gains the `Constants` layer + the
+  `Probe -> Metrics` back-edge. Part 17 tag-key allowlist
+  unchanged (3 keys, 7 outcomes -- bounded cardinality).
+  Tests: 5 new production files (incl. 2 package-info) + 4
+  new test files (`EurekaActuatorPropertiesTest` 6/0/0/0,
+  `RestProbeTemplateTest` 10/0/0/0 incl. `TimeoutException`
+  cause discrimination via `initCause()` pattern mirroring
+  P7.1 `RestAdminTemplateTest:113-122`,
+  `EurekaActuatorHealthProbeTest` 6/0/0/0 with hand-rolled
+  `StubDiscoveryClient` per Part 20 Mockito ban,
+  `EurekaActuatorHealthProbeWireMockIT` 9/0/0/0 mirroring
+  `QuickwitHttpAdminWireMockIT` shape -- dynamic port, full
+  D3 outcome table including LD120
+  `Fault.CONNECTION_RESET_BY_PEER` deterministic transport
+  fault, IT-local 30 s read-timeout bump per LD123).
+  Module-local `mvn verify` GREEN on first re-run after one
+  IT-assertion fix (50 surefire + 9 failsafe / 0F0E0S /
+  Checkstyle 0 violations / SpotBugs 0 violations / JaCoCo
+  0.80/0.80 met). Per LD104, P8.1 ships Leg A
+  (`mvn verify`) + per-adapter Leg D slice
+  (`EurekaActuatorHealthProbeWireMockIT`); Legs B/C/D-cross-
+  phase/E stay deferred to the P8.1a closer. Closes #113.
+
 - P8.0: log-monitoring-service scaffold + `ServiceHealthProbe`
   SPI + per-backend probe contract (PR for #111, ADR-0044).
   New Spring Boot module `log-monitoring-service` on port

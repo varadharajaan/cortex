@@ -140,6 +140,17 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- WireMock for the P8.1 EurekaActuatorHealthProbeWireMockIT
+             failsafe test (ADR-0045 D3 outcome table + LD120
+             Fault.CONNECTION_RESET_BY_PEER). Version inherited from
+             the parent POM dependency-management block
+             (wiremock.version=3.9.2). -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!--
