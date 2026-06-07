@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# CORTEX log-monitoring-service - test classpath defaults (P8.0 /
+# ADR-0044).
+#
+# Loaded with highest precedence under src/test/resources so unit
+# @SpringBootTest classes boot without env vars and without reaching
+# out to Eureka.
+#
+# Per LD100: src/test/resources/application.yml fully shadows the
+# src/main one under Spring Boot. We therefore re-declare every
+# placeholder the production beans dereference
+# (cortex.monitoring.probe.backend) so a bare
+# @SpringBootTest(classes = CortexMonitoringApplication.class)
+# bootstraps without external state.
+# ---------------------------------------------------------------------------
+
+# Eureka disabled at the property level so the test JVM does not
+# attempt to register with a registry that isn't running (ADR-0016).
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+spring:
+  application:
+    name: log-monitoring-service
+
+server:
+  port: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,beans
+
+# Production placeholder defaults required to wire
+# NoopServiceHealthProbe, MonitoringMetrics, MonitoringHealthIndicator
+# in a full context load. Values mirror application.yml defaults so
+# tests stay representative of dev.
+cortex:
+  monitoring:
+    probe:
+      # Force noop backend in tests - real Eureka-discovery probe
+      # lands in P8.1+ and will be exercised by its own opt-in
+      # @SpringBootTest slice.
+      backend: noop

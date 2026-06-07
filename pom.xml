@@ -108,7 +108,13 @@
              SPI stub + NoopQuickwitIndexAdmin default + Micrometer
              counter. Real Quickwit HTTP admin lands in P7.1+. -->
         <module>log-indexer-service</module>
-        <!-- Added in P8: <module>log-monitoring-service</module> -->
+        <!-- Added in P8: log-monitoring-service - cross-service health
+             aggregation owner + SLO budget engine. P8.0 ships the
+             scaffold + ServiceHealthProbe SPI stub +
+             NoopServiceHealthProbe default + Micrometer counter +
+             MonitoringHealthIndicator. Real Eureka-actuator probe
+             lands in P8.1+. -->
+        <module>log-monitoring-service</module>
     </modules>
 
     <properties>
