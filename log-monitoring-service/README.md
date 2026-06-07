@@ -1,6 +1,6 @@
 # log-monitoring-service
 
-**Status: P8.0 SHIPPED** -- scaffold carves the
+**Status: P8.0 + P8.1 + P8.2 SHIPPED** -- scaffold carves the
 `ServiceHealthProbe` SPI + `NoopServiceHealthProbe` default impl
 (binder-gated `cortex.monitoring.probe.backend=noop`,
 `matchIfMissing=true`) + bootstrap-registered
@@ -234,6 +234,10 @@ GET http://localhost:8098/actuator/beans
 | `cortex.monitoring.probe.backend`              | `noop`                               | `ServiceHealthProbe` binder gate (`noop` default; set to `eureka-actuator` to activate the P8.1 HTTP probe) |
 | `cortex.monitoring.eureka.request-timeout`     | `5s`                                 | Dual connect+read timeout for the P8.1 `EurekaActuatorHealthProbe` `RestClient` (LD121) |
 | `cortex.monitoring.eureka.actuator-path`       | `/actuator/health`                   | Per-instance actuator path the P8.1 probe scrapes (must start with `/`)        |
+| `cortex.monitoring.slo.enabled`                | `false`                              | Master switch for the P8.2 `SloEvaluator` scheduled tick (NOT gating the engine beans themselves) |
+| `cortex.monitoring.slo.backend`                | `noop`                               | `SloBudgetEngine` binder gate (`noop` default; set to `micrometer-derivation` to activate the P8.2 in-process Micrometer-derivation backend) |
+| `cortex.monitoring.slo.evaluation-interval`    | `30s`                                | Duration between `SloEvaluator` scheduled ticks (Spring `Duration` syntax: `30s`, `1m`, `2m30s`)            |
+| `cortex.monitoring.slo.definitions`            | (empty list)                         | Operator-supplied list of `SloDefinition(serviceId, sloName, targetSuccessRatio, window)` rows -- see commented example in `application.yml` |
 
 Environment-variable overrides (all profiles):
 
@@ -242,20 +246,30 @@ EUREKA_DEFAULT_ZONE=http://eureka:8761/eureka/
 CORTEX_MONITORING_PROBE_BACKEND=noop   # or "eureka-actuator" to activate the P8.1 HTTP probe
 CORTEX_MONITORING_EUREKA_REQUEST_TIMEOUT=5s
 CORTEX_MONITORING_EUREKA_ACTUATOR_PATH=/actuator/health
+CORTEX_MONITORING_SLO_ENABLED=false           # flip to "true" to start the SloEvaluator @Scheduled tick
+CORTEX_MONITORING_SLO_BACKEND=noop            # or "micrometer-derivation" to activate the P8.2 in-process derivation backend
+CORTEX_MONITORING_SLO_EVALUATION_INTERVAL=30s # Spring Duration syntax: "30s", "1m", "2m30s"
 ```
 
 ## 8. Observability
 
-**Metrics** -- one counter family at P8.0; incremented by the
-active probe per call:
+**Metrics** -- one counter family at P8.0 (incremented by the
+active probe per call) plus two SLO gauges at P8.2 (registered
+on first `recordSlo` call per `(serviceId, sloName)` key):
 
-| Metric                                  | Tags                            | Description                                                                                    |
-|-----------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------|
-| `cortex.monitoring.probe_total`         | `backend, outcome, service_id`  | Health probes handled by the active `ServiceHealthProbe` per backend per outcome per Eureka service id |
+| Metric                                            | Tags                            | Description                                                                                    |
+|---------------------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------|
+| `cortex.monitoring.probe_total`                   | `backend, outcome, service_id`  | Health probes handled by the active `ServiceHealthProbe` per backend per outcome per Eureka service id |
+| `cortex.monitoring.slo_budget_remaining`          | `service_id, slo_name`          | P8.2 -- error-budget remaining in `[-1.0, +1.0]` per `(serviceId, sloName)` (1.0 = full budget; 0.0 = exhausted; negative = over-burned). Defaulted to 1.0 for cold-start / no-data and the noop backend. |
+| `cortex.monitoring.slo_burn_rate`                 | `service_id, slo_name`          | P8.2 -- burn-rate ratio per `(serviceId, sloName)` (`errorRate / errorBudget`). 0.0 = no errors; 1.0 = burning at exactly the SLO target rate; >1.0 = burning faster than allowed. Defaulted to 0.0 for cold-start / no-data and the noop backend. |
 
-P8.2 will add SLO gauges
-(`cortex_monitoring_slo_budget_remaining` +
-`cortex_monitoring_slo_burn_rate`) on the same allowlist.
+Multi-window burn-rate alert rules ship in
+`infra/local/alerts/slo-burn-rate.rules.yml` -- mount that file
+into Prometheus's `rule_files` glob to get
+`CortexSloFastBurn` (5m+1h > 14.4x, page),
+`CortexSloSlowBurn` (1h+6h > 6x, ticket), and
+`CortexSloBudgetExhausted` (budget < 0, ticket) per the SRE
+workbook chapter 5.
 
 **Health** -- composite + per-indicator:
 
@@ -273,22 +287,57 @@ GET /actuator/health/liveness    -> probed by K8s liveness gate
 
 ## 9. Tests
 
-P8.0 ships 27 tests across 7 classes:
+P8.0+P8.1+P8.2 ship 104 unit tests across 14 classes (and 9
+Failsafe IT tests in 1 class):
 
 - `ArchitectureTest` -- 1 test; ArchUnit
-  App/Probe/Metrics/Health layers.
+  App/Probe/Metrics/Health/Slo/Constants layers.
 - `CortexMonitoringApplicationTests` -- 1 test; context-loads
   smoke.
 - `NoopServiceHealthProbeTest` -- 2 tests; noop returns
   `HealthSnapshot.noop(...)` for the SPI call.
-- `HealthSnapshotTest` -- 12 tests; covers every factory
-  method + the constant surface + null/blank coercions.
-- `ProbeRequestTest` -- 5 tests; canonical-constructor
-  validation on the `serviceId` field + `instanceId`
-  nullable.
-- `MonitoringMetricsTest` -- 7 tests; bootstrap-loop
-  registers the full counter family + idempotency +
-  `incProbe` tag triple + null/blank coercion to `unknown`.
+- `HealthSnapshotTest` -- 11 tests; every factory + the
+  constant surface + null/blank coercions.
+- `ProbeRequestTest` -- 5 tests; compact-ctor validation.
+- `EurekaActuatorPropertiesTest` -- 6 tests; defensive
+  defaults + LD42 + LD121 dual-timeout + actuator-path
+  guards.
+- `EurekaActuatorHealthProbeTest` -- 6 tests; hand-rolled
+  `DiscoveryClient` doubles drive the SPI through every
+  classification arm without WireMock.
+- `RestProbeTemplateTest` -- 10 tests; full HTTP outcome
+  classification matrix (200/429/5xx/4xx/timeout/transport)
+  mirrored from P7.1 `RestAdminTemplate`.
+- `EurekaActuatorHealthProbeWireMockIT` -- 9 Failsafe tests;
+  singleton in-process WireMock proves the adapter end-to-end
+  including `Fault.CONNECTION_RESET_BY_PEER` transport-fault
+  injection per LD120.
+- `SloDefinitionTest` -- 11 tests; compact-ctor rejection
+  matrix (null/blank serviceId/sloName,
+  target<=0/>=1, null/zero/negative window).
+- `SloSnapshotTest` -- 13 tests; every factory shape per
+  LD133 + `classifyBand` boundaries (0.501/0.5/0.11/0.1)
+  + null coercion.
+- `SloPropertiesTest` -- 8 tests; defensive defaults (blank
+  backend / null/zero/negative interval / null definitions)
+  + defensive `List.copyOf` on definitions.
+- `NoopSloBudgetEngineTest` -- 3 tests; `backendId`
+  constant, noop verdict, gauge defaults to all-clear.
+- `MicrometerSloBudgetEngineTest` -- 10 tests; Micrometer
+  derivation table (no-data unknown, all-success healthy,
+  banded healthy/at_risk/exhausted, over-burn clamps -1.0,
+  cross-service counter isolation, `DEGRADED` counts as
+  success, `NOOP/UNKNOWN` ignored).
+- `SloEvaluatorTest` -- 5 tests; hand-rolled
+  `SloBudgetEngine` doubles drive the scheduled-tick loop
+  (empty defs no-op, per-def-per-engine ticks, throwing
+  engine doesn't stall the loop, null snapshot logged +
+  skipped, snapshot reaches `MonitoringMetrics.recordSlo`).
+- `MonitoringMetricsTest` -- 11 tests; bootstrap loop
+  registers the probe counter family + `incProbe` tag
+  triple + null/blank coercion + 4 new tests for the P8.2
+  `recordSlo` gauge surface (registration / idempotency /
+  null rejection / blank tag coercion to `unknown`).
 - `MonitoringHealthIndicatorTest` -- 1 test; UP + `backend`
   detail surfaces.
 
@@ -305,9 +354,13 @@ one (no relaxed override block in the child pom).
 - **P8.2** -- SLO budget engine
   (`cortex_monitoring_slo_budget_remaining` +
   `cortex_monitoring_slo_burn_rate` gauges + alert rules
-  under `infra/local/alerts/`). DEFERRED.
+  under `infra/local/alerts/`). SHIPPED (#115, ADR-0046).
 - **P8.1a** -- cross-phase closer (Failsafe IT singleton
   WireMock per-instance actuator stubs + Postman + smoke
   per LD104). DEFERRED.
+- **P8.2a** -- cross-phase closer (real Prometheus container
+  scrapes the gauges + fires the alert rules end-to-end +
+  Postman covers the `/actuator/prometheus` evidence per
+  LD104). DEFERRED.
 
 Grafana dashboards stay scheduled for P17, NOT P8.

@@ -9,6 +9,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.2: log-monitoring-service SLO budget engine +
+  `MicrometerSloBudgetEngine` derivation backend +
+  multi-window burn-rate alert rules (PR for #115,
+  ADR-0046). New `SloBudgetEngine` SPI in new
+  `io.cortex.monitoring.slo` package (single method
+  `SloSnapshot evaluate(SloDefinition)` plus
+  `String backendId()`, MUST NOT throw -- mirrors
+  `ServiceHealthProbe` + `QuickwitIndexAdmin` +
+  `RemediationDispatcher` SPI discipline). New immutable
+  `SloDefinition(serviceId, sloName, targetSuccessRatio,
+  window)` operator-input record (compact-ctor rejects
+  null/blank/out-of-range/zero-duration so misconfigured
+  yml fast-fails at context refresh) + new immutable
+  `SloSnapshot(backend, serviceId, sloName, outcome,
+  budgetRemainingRatio, burnRate, reason)` verdict envelope
+  with `BACKEND_NOOP` / `BACKEND_MICROMETER_DERIVATION`
+  constants + 7 `OUTCOME_*` constants (`NOOP / HEALTHY /
+  AT_RISK / EXHAUSTED / UNKNOWN / TRANSIENT_FAILURE /
+  PERMANENT_FAILURE`) + factories `noop / unknown /
+  banded / transientFailure / permanentFailure` + static
+  `classifyBand(double)` per SRE workbook bands
+  (>0.5 healthy, >0.1 at_risk, <=0.1 exhausted).
+  `NoopSloBudgetEngine @ConditionalOnProperty(backend=noop,
+  matchIfMissing=true)` default keeps the cold-start
+  operator all-clear; new `MicrometerSloBudgetEngine
+  @ConditionalOnProperty(backend=micrometer-derivation)`
+  real adapter introspects the existing
+  `cortex.monitoring.probe_total{backend, outcome,
+  service_id}` counter family (P8.1 / ADR-0045), sums
+  successes vs failures by outcome tag
+  (`HEALTHY+DEGRADED` -> success;
+  `UNHEALTHY+UNREACHABLE+TRANSIENT_FAILURE+PERMANENT_FAILURE`
+  -> failure; `NOOP+UNKNOWN` -> ignored), derives
+  `errorBudget = 1 - target`,
+  `errorRate = failures / total`,
+  `burnRate = errorRate / errorBudget`, and clamps
+  `budgetRemaining = clamp((errorBudget - errorRate) /
+  errorBudget, -1.0, 1.0)`. No-data path returns
+  `unknown / micrometer-derivation:no-data` with gauges
+  defaulted to all-clear (`1.0 / 0.0`); thrown
+  `RuntimeException` is caught and mapped to
+  `transientFailure / micrometer-derivation:exception:<class>`
+  so a registry bug cannot stall the loop. New
+  `SloEvaluator @ConditionalOnProperty(enabled=true,
+  matchIfMissing=false)` with `@Scheduled(fixedRateString =
+  "${cortex.monitoring.slo.evaluation-interval:30s}")`
+  ticks every engine x every definition pair, calls
+  `MonitoringMetrics.recordSlo(snapshot)` on each
+  non-null verdict, WARN-logs throws + null-snapshots
+  and continues so a single bad pair cannot stall the
+  loop (explicit ctor per Checkstyle Rule 14.1 + LD110).
+  New `SloProperties @ConfigurationProperties("cortex.
+  monitoring.slo")` immutable record with defensive
+  defaults (blank backend -> noop / null/zero/negative
+  interval -> 30s / null definitions -> emptyList else
+  defensive `List.copyOf`). New `SloEngineConfig
+  @EnableConfigurationProperties(SloProperties.class)`
+  (properties bean unconditional so engine beans can wire
+  without flipping the master switch -- mirrors P8.1
+  `EurekaActuatorHttpConfig` pattern).
+  `MonitoringMetrics.recordSlo(SloSnapshot)` registers
+  two new gauges
+  `cortex.monitoring.slo_budget_remaining{service_id,
+  slo_name}` and `cortex.monitoring.slo_burn_rate{service_id,
+  slo_name}` on first contact per `(serviceId, sloName)`
+  key via `AtomicReference<SloSnapshot>` holder; subsequent
+  contacts swap the holder value in place so exactly one
+  time-series per key for the JVM lifetime. New
+  `infra/local/alerts/slo-burn-rate.rules.yml` with 3
+  SRE-workbook multi-window alerts:
+  `CortexSloFastBurn` (5m+1h burn-rate > 14.4x for 2m,
+  severity `page`), `CortexSloSlowBurn` (1h+6h burn-rate
+  > 6x for 15m, severity `ticket`), and
+  `CortexSloBudgetExhausted` (budget remaining < 0 for 5m,
+  severity `ticket`); operator runbook comments inline at
+  the top of the file. Two new env-var escape hatches
+  `CORTEX_MONITORING_SLO_ENABLED` +
+  `CORTEX_MONITORING_SLO_BACKEND` +
+  `CORTEX_MONITORING_SLO_EVALUATION_INTERVAL`.
+  `@EnableScheduling` added to
+  `CortexMonitoringApplication`. ArchUnit `Slo` layer
+  added (`io.cortex.monitoring.slo..`) with allowed access
+  `App` + `Metrics`. Verification triangle Leg A green:
+  Surefire 104 (50 prior + 54 new -- 11 `SloDefinitionTest`
+  + 13 `SloSnapshotTest` + 8 `SloPropertiesTest` + 3
+  `NoopSloBudgetEngineTest` + 10
+  `MicrometerSloBudgetEngineTest` + 5 `SloEvaluatorTest` +
+  4 new `recordSlo` tests on the existing
+  `MonitoringMetricsTest`) + Failsafe 9 unchanged
+  (`EurekaActuatorHealthProbeWireMockIT` 9/0/0/0,
+  39.47 s) + Checkstyle 0 + SpotBugs 0 + JaCoCo BUNDLE
+  0.80/0.80 met. Per LD104, P8.2 ships Leg A only; Legs
+  B (boot smoke) / C (Postman + Newman) / D (cross-phase
+  `@SpringBootTest`) / E (per-module README runbook
+  smoke) stay deferred to the P8.2a closer where a real
+  Prometheus + Compose stack scrapes the gauges and fires
+  the alert rules. Closes #115.
+
 - P8.1: log-monitoring-service `EurekaActuatorHealthProbe`
   HTTP probe via Eureka discovery + dual-timeout `RestClient`
   (PR for #113, ADR-0045). New `EurekaActuatorHealthProbe
