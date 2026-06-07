@@ -9,6 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.0: log-monitoring-service scaffold + `ServiceHealthProbe`
+  SPI + per-backend probe contract (PR for #111, ADR-0044).
+  New Spring Boot module `log-monitoring-service` on port
+  `:8098` (LD92 -- next free after `:8097` indexer) that owns
+  the cross-service health-aggregation surface + the future
+  SLO budget engine for the CORTEX platform. Carves the
+  ownership boundary against per-service `/actuator/health`
+  endpoints: each service keeps owning its own actuator;
+  this module is a **consumer + aggregator**, NOT a
+  replacement. Mirrors the P7.0 log-indexer-service scaffold
+  shape (ADR-0038). New `ServiceHealthProbe` SPI in
+  `io.cortex.monitoring.probe` with `String backendId()` +
+  `HealthSnapshot probe(ProbeRequest)`; new immutable
+  `ProbeRequest(serviceId, instanceId)` record with
+  compact-ctor null/blank rejection on `serviceId`
+  (`instanceId` nullable for fan-out probes); new immutable
+  `HealthSnapshot(backend, outcome, reason, detail)` record
+  with constants `BACKEND_NOOP/EUREKA_ACTUATOR` +
+  `OUTCOME_{NOOP,HEALTHY,DEGRADED,UNHEALTHY,UNREACHABLE,TRANSIENT_FAILURE,PERMANENT_FAILURE}`
+  and factories `noop/healthy/degraded/unhealthy/unreachable/transientFailure/permanentFailure`
+  all coercing null backend -> `BACKEND_NOOP` + null reason
+  / detail -> `""` (D3 -- bounded enum-like strings keep
+  the Part 17 tag allowlist holdable by construction);
+  `NoopServiceHealthProbe` `@ConditionalOnProperty(prefix="cortex.monitoring.probe",
+  name="backend", havingValue="noop", matchIfMissing=true)`
+  default that returns `HealthSnapshot.noop(...)` for every
+  call so the scaffold boots green with no Eureka dependency
+  (D6); single-counter-family `cortex.monitoring.probe_total{backend,
+  outcome, service_id}` published by `MonitoringMetrics`
+  (`@Component @RequiredArgsConstructor` injects
+  `MeterRegistry` + `List<ServiceHealthProbe>`,
+  `@PostConstruct bootstrapMeters()` walks the probe list
+  and pre-registers the failable-outcome series per backend
+  per LD106 + LD112 + LD125 so the `/actuator/prometheus`
+  scrape sees the family from cold start; `incProbe(backend,
+  outcome, serviceId)` coerces null/blank tag values to
+  `"unknown"` so the counter cannot NPE on adapter bugs);
+  `MonitoringHealthIndicator @Component("monitoring")` bound
+  to `/actuator/health/monitoring` reporting `UP` for the
+  noop backend at P8.0 + surfacing the active
+  `probe.backendId()` as a detail (D4 -- operator can verify
+  the binder gate at a glance without parsing
+  `/actuator/prometheus`). New `pom.xml` with full parent
+  inheritance (`cortex-parent` 0.1.0-SNAPSHOT) + explicit
+  `<maven-failsafe-plugin>` declaration per LD129; deps
+  match indexer (spring-boot-starter, validation, actuator,
+  web, spring-cloud-starter-netflix-eureka-client,
+  micrometer-registry-prometheus, logstash-logback-encoder,
+  lombok, spotbugs-annotations, commons-lang3,
+  spring-boot-starter-test, archunit-junit5) WITHOUT
+  WireMock (P8.0 has no outbound HTTP per LD104 closer
+  pattern). New `application.yml` (Eureka client +
+  `cortex.monitoring.probe.backend=${CORTEX_MONITORING_PROBE_BACKEND:noop}`),
+  `logback-spring.xml` (dev console pattern + JSON via
+  logstash-logback-encoder with `customFields={"service":"log-monitoring-service"}`),
+  `src/test/resources/application.yml` LD100 full shadow
+  (`eureka.client.{enabled,register-with-eureka,fetch-registry}=false`
+  + `server.port=0` + `cortex.monitoring.probe.backend=noop`).
+  Tests: 27 across 7 classes (`ArchitectureTest`,
+  `CortexMonitoringApplicationTests`,
+  `NoopServiceHealthProbeTest`, `HealthSnapshotTest`,
+  `ProbeRequestTest`, `MonitoringMetricsTest`,
+  `MonitoringHealthIndicatorTest`); JaCoCo BUNDLE 0.80 line +
+  0.80 branch met from day one. Root `pom.xml` adds the new
+  `<module>log-monitoring-service</module>` line; `docs/adr/INDEX.md`
+  bumped 43 -> 44 with a new "Monitoring pipeline (P8)"
+  section; `docs/p7-to-p8-handoff.md` lands as the cross-
+  epic handoff doc; module README ships with the standard
+  10-section layout + `P8.0 SHIPPED` banner. P8.1 (real
+  `EurekaActuatorHealthProbe`), P8.2 (SLO budget engine +
+  Alertmanager rules), and P8.1a (cross-phase closer per
+  LD104) stay deferred; Grafana dashboards stay scheduled
+  for P17. Leg A only at P8.0 per LD104 closer pattern
+  (`mvn verify` BUILD SUCCESS on the per-module
+  unit-test suite). Four-file tracking flip (`plan.md` row 8
+  P8 + `todo.md` P8 + `checkpoint.md` Last/Next + `memory.md`
+  LD entry) lands in the same PR.
+
 - P7.1a: log-indexer-service cross-phase closer (PR for #109,
   ADR-0043). Closes the P7 epic by adding the **Leg B/C/D/E
   artifacts** that the per-phase ships (P7.0..P7.4) deferred
