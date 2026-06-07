@@ -2,6 +2,8 @@ package io.cortex.indexer.metrics;
 
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.QuickwitIndexAdmin;
+import io.cortex.indexer.search.LogSearchClient;
+import io.cortex.indexer.search.SearchResult;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
@@ -45,6 +47,16 @@ public class IndexerMetrics {
     public static final String METRIC_INDEX_ADMIN_TOTAL =
             "cortex.indexer.index_admin_total";
 
+    /**
+     * The search counter metric name (P7.4 / ADR-0042 D7;
+     * kept public so tests can reference it). Tagged with the
+     * same {@code backend, outcome, tenant_id} Part 17 allowlist
+     * as {@link #METRIC_INDEX_ADMIN_TOTAL} so the existing
+     * Grafana cardinality guard rails apply uniformly.
+     */
+    public static final String METRIC_SEARCH_TOTAL =
+            "cortex.indexer.search_total";
+
     /** Placeholder tag value used for the bootstrap-registration counter (LD106). */
     public static final String UNKNOWN = "unknown";
 
@@ -55,8 +67,12 @@ public class IndexerMetrics {
     private static final String COUNTER_DESCRIPTION =
             "Quickwit index admin calls handled by QuickwitIndexAdmin (P7.0 / ADR-0038)";
 
+    private static final String SEARCH_COUNTER_DESCRIPTION =
+            "Tenant-scoped search calls handled by LogSearchClient (P7.4 / ADR-0042)";
+
     private final MeterRegistry registry;
     private final List<QuickwitIndexAdmin> admins;
+    private final List<LogSearchClient> searchClients;
 
     /**
      * Bootstrap the counter family per LD106 + LD112 so the
@@ -80,6 +96,13 @@ public class IndexerMetrics {
             bootstrap(backend, IndexAdminResult.OUTCOME_RETENTION_APPLIED);
             bootstrap(backend, IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
             bootstrap(backend, IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        }
+        bootstrapSearch(UNKNOWN, UNKNOWN);
+        for (final LogSearchClient client : this.searchClients) {
+            final String backend = client.backendId();
+            bootstrapSearch(backend, SearchResult.OUTCOME_SEARCH_OK);
+            bootstrapSearch(backend, SearchResult.OUTCOME_TRANSIENT_FAILURE);
+            bootstrapSearch(backend, SearchResult.OUTCOME_PERMANENT_FAILURE);
         }
     }
 
@@ -112,6 +135,32 @@ public class IndexerMetrics {
     }
 
     /**
+     * Increment the search counter for the supplied tag triple
+     * (P7.4 / ADR-0042 D7). Counter series are lazy-registered by
+     * Micrometer on first call; the bootstrap series with
+     * all-unknown tags remains so dashboards never flatline.
+     *
+     * @param backend  one of the {@code SearchResult.BACKEND_*}
+     *                 constants ({@code noop}, {@code quickwit})
+     * @param outcome  one of the {@code SearchResult.OUTCOME_*}
+     *                 constants ({@code noop}, {@code search_ok},
+     *                 {@code transient_failure},
+     *                 {@code permanent_failure})
+     * @param tenantId tenant id from the
+     *                 {@link io.cortex.indexer.search.SearchRequest}
+     */
+    public void incSearch(final String backend, final String outcome,
+                          final String tenantId) {
+        Counter.builder(METRIC_SEARCH_TOTAL)
+                .description(SEARCH_COUNTER_DESCRIPTION)
+                .tag(TAG_BACKEND, coerce(backend))
+                .tag(TAG_OUTCOME, coerce(outcome))
+                .tag(TAG_TENANT, coerce(tenantId))
+                .register(this.registry)
+                .increment();
+    }
+
+    /**
      * Registers a zero-valued counter for the {@code backend} /
      * {@code outcome} pair with a placeholder tenant tag so the
      * series is visible to {@code /actuator/prometheus} before any
@@ -120,6 +169,22 @@ public class IndexerMetrics {
     private void bootstrap(final String backend, final String outcome) {
         Counter.builder(METRIC_INDEX_ADMIN_TOTAL)
                 .description(COUNTER_DESCRIPTION)
+                .tag(TAG_BACKEND, coerce(backend))
+                .tag(TAG_OUTCOME, coerce(outcome))
+                .tag(TAG_TENANT, UNKNOWN)
+                .register(this.registry);
+    }
+
+    /**
+     * Registers a zero-valued search counter for the
+     * {@code backend} / {@code outcome} pair with a placeholder
+     * tenant tag so the series is visible to
+     * {@code /actuator/prometheus} before any search call has
+     * incremented it (P7.4 / ADR-0042 D7).
+     */
+    private void bootstrapSearch(final String backend, final String outcome) {
+        Counter.builder(METRIC_SEARCH_TOTAL)
+                .description(SEARCH_COUNTER_DESCRIPTION)
                 .tag(TAG_BACKEND, coerce(backend))
                 .tag(TAG_OUTCOME, coerce(outcome))
                 .tag(TAG_TENANT, UNKNOWN)

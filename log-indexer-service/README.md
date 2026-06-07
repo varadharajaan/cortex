@@ -1,6 +1,6 @@
 # log-indexer-service
 
-**Status: P7.0 + P7.1 + P7.2 + P7.3 SHIPPED** -- P7.0 carved the
+**Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 SHIPPED** -- P7.0 carved the
 `QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
 bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
 the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
@@ -28,12 +28,28 @@ and counts entries whose `index_config.index_id` starts with
 `permanent_failure / quickwit:budget-exceeded` (REUSES the
 existing outcome with a new reason -- no new outcome constant,
 Part 17 allowlist holds, `IndexerMetrics` bootstrap loop
-unchanged) (ADR-0041). Mutually exclusive with the noop default
+unchanged) (ADR-0041). P7.4 lands the **read-side** SPI
+`LogSearchClient` (sibling of `QuickwitIndexAdmin`) with a noop
+default + `QuickwitHttpSearch` adapter forwarding to
+`POST /api/v1/{indexId}/search` with body
+`{"query":"...","max_hits":N}` and parsing the
+`{"num_hits":N,"hits":[...]}` response. The adapter enforces a
+**strict client-side tenant-routing guardrail** -- `indexId`
+MUST start with `cortex-<tenantId>-` or the call returns
+`permanent_failure / quickwit:tenant-mismatch` WITHOUT
+contacting Quickwit, stopping cross-tenant query leaks at the
+lowest possible cost. Reuses the P7.1
+`quickwitAdminRestClient` bean (HTTP/1.1 pin + dual timeout)
+so the wire posture matches the admin path. A new sibling
+counter `cortex.indexer.search_total{backend, outcome,
+tenant_id}` joins the Prometheus surface on the same Part 17
+allowlist (ADR-0042). Mutually exclusive with the noop default
 at the `@ConditionalOnProperty` level. The IndexerMetrics OCP
-bootstrap loop picks up the new backend with zero edits. ADR-0039
-+ ADR-0040 + ADR-0041 document the decision drivers + rejected
-alternatives. P7.4 follows with the search proxy; P7.1a closer
-ships the cross-phase IT.
+bootstrap loop picks up new admin and search backends with
+zero edits. ADR-0039 + ADR-0040 + ADR-0041 + ADR-0042 document
+the decision drivers + rejected alternatives. P7.1a closer
+ships the cross-phase IT + smoke + Postman for all of
+P7.0..P7.4.
 
 CORTEX log-indexer-service is the **operator-facing leg of the
 search tier**. There is no inbound REST contract for the data path
@@ -163,6 +179,22 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
   `AnomaliesPublisher`. The 404 status here is
   **permanent failure** (config error == missing index),
   distinct from `dropIndex`'s 404-is-success semantic.
+- **ADR-0042** -- P7.4 tenant-scoped Quickwit search proxy.
+  New read-side `LogSearchClient` SPI (mirror of P7.0
+  `QuickwitIndexAdmin`) in `io.cortex.indexer.search`;
+  `NoopLogSearchClient` default + `QuickwitHttpSearch`
+  `@ConditionalOnProperty(backend="quickwit")` adapter
+  posting `{"query":"...","max_hits":N}` to
+  `/api/v1/{indexId}/search` and parsing
+  `{"num_hits":N,"hits":[...]}`. Strict client-side
+  tenant-routing guardrail (`indexId` MUST start with
+  `cortex-<tenantId>-` or `permanent_failure /
+  quickwit:tenant-mismatch` WITHOUT contacting Quickwit).
+  New sibling counter
+  `cortex.indexer.search_total{backend, outcome,
+  tenant_id}` joins the Part 17 allowlist;
+  `IndexerMetrics` ctor gains `List<LogSearchClient>`
+  injection; `ArchitectureTest` gains the `Search` layer.
 - **ADR-0036** -- the `RestDispatchTemplate` composition
   pattern P7.1's `RestAdminTemplate` mirrors.
 - **ADR-0030** -- writer side of the Quickwit fan-out lives in
@@ -217,10 +249,17 @@ io.cortex.indexer
             QuickwitHttpConfig      - @Configuration; publishes the HTTP/1.1 RestClient bean
             RestAdminTemplate       - package-private classify{Http,Transport,Unknown}
             QuickwitHttpAdmin       - @Component; real Quickwit HTTP admin impl (gated quickwit)
+    search/
+        LogSearchClient             - SPI (search, backendId); read-side sibling of QuickwitIndexAdmin (ADR-0042)
+        SearchRequest               - immutable input record (tenantId, indexId, query, maxHits)
+        SearchResult                - immutable envelope (backend, outcome, reason, numHits, hits); BACKEND/OUTCOME constants + factories
+        NoopLogSearchClient         - default impl (gated noop, matchIfMissing=true)
+        quickwit/
+            QuickwitHttpSearch      - @Component; real Quickwit HTTP search impl (gated quickwit); tenant-prefix guardrail per ADR-0042 D3
     constants/
         IndexerHttp                 - TOO_MANY_REQUESTS, SERVER_ERROR_FLOOR, NOT_FOUND
     metrics/
-        IndexerMetrics              - bootstrap-registered counter family
+        IndexerMetrics              - bootstrap-registered counter families (index_admin_total + search_total)
     health/
         QuickwitHealthIndicator     - /actuator/health/quickwit
 ```
@@ -230,8 +269,14 @@ ArchUnit layered-architecture contract (see
 
 - **App** (`io.cortex.indexer`) -- bootstrap layer.
 - **Admin** (`io.cortex.indexer.admin..`) -- SPI seam; reached
-  by App + Metrics + Health.
-- **Metrics** (`io.cortex.indexer.metrics..`) -- reached by App.
+  by App + Metrics + Health + Search (Search and Admin are
+  siblings -- Search reaches Admin only via the shared
+  `quickwitAdminRestClient` bean published by
+  `admin/quickwit/QuickwitHttpConfig`).
+- **Search** (`io.cortex.indexer.search..`) -- read-side SPI
+  seam; reached by App + Metrics (ADR-0042).
+- **Metrics** (`io.cortex.indexer.metrics..`) -- reached by
+  App + Admin + Search.
 - **Health** (`io.cortex.indexer.health..`) -- reached by App.
 
 ## 6. Running locally
@@ -264,6 +309,7 @@ GET http://localhost:8097/actuator/beans
 | `server.port`                                  | `8097`                               | LD92                                                                          |
 | `eureka.client.service-url.defaultZone`        | `http://localhost:8761/eureka/`      | Local Eureka                                                                  |
 | `cortex.indexer.admin.backend`                 | `noop`                               | `QuickwitIndexAdmin` binder gate (`noop` default; set to `quickwit` to activate `QuickwitHttpAdmin`) |
+| `cortex.indexer.search.backend`                | `noop`                               | `LogSearchClient` binder gate (`noop` default; set to `quickwit` to activate `QuickwitHttpSearch`; ADR-0042) |
 | `cortex.indexer.quickwit.base-url`             | `http://localhost:7280`              | Quickwit cluster root URL consumed by `QuickwitHttpAdmin` when `backend=quickwit` (P7.1) |
 | `cortex.indexer.quickwit.request-timeout`      | `5s`                                 | Dual connect+read timeout for the Quickwit admin `RestClient` (LD121, ADR-0039) |
 | `cortex.indexer.quickwit.doc-mapping-version`  | `v1`                                 | Stable doc-mapping schema id stamped into every `index_id` (ADR-0038 D2)         |
@@ -273,6 +319,7 @@ Environment-variable overrides (all profiles):
 ```bash
 EUREKA_DEFAULT_ZONE=http://eureka:8761/eureka/
 CORTEX_INDEXER_BACKEND=noop                       # or "quickwit" to activate the P7.1 HTTP admin
+CORTEX_INDEXER_SEARCH_BACKEND=noop                # or "quickwit" to activate the P7.4 HTTP search
 CORTEX_QUICKWIT_BASE_URL=http://quickwit:7280
 CORTEX_QUICKWIT_REQUEST_TIMEOUT=5s                # ISO-8601 duration
 CORTEX_QUICKWIT_DOC_MAPPING_VERSION=v1
@@ -280,13 +327,13 @@ CORTEX_QUICKWIT_DOC_MAPPING_VERSION=v1
 
 ## 8. Observability
 
-**Metrics** -- one counter family at P7.0; the same family is
-incremented by P7.1 `QuickwitHttpAdmin` for the
-`backend=quickwit` series:
+**Metrics** -- two sibling counter families at P7.4; both
+incremented by the active backend per call:
 
 | Metric                                  | Tags                            | Description                                                                                    |
 |-----------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------|
 | `cortex.indexer.index_admin_total`      | `backend, outcome, tenant_id`   | Index admin calls handled by the active `QuickwitIndexAdmin` per backend per outcome per tenant |
+| `cortex.indexer.search_total`           | `backend, outcome, tenant_id`   | Search calls handled by the active `LogSearchClient` per backend per outcome per tenant (ADR-0042) |
 
 **Health** -- composite + per-indicator:
 
@@ -330,11 +377,13 @@ one (no relaxed override block in the child pom).
   `/api/v1/indexes` (create / get / drop) with LD42 + LD121
   dual-timeout `RestClient` + composition-based
   `RestAdminTemplate` (#100, ADR-0039). DONE.
-- **P7.2** -- retention policy enforcement (scheduled sweeper
-  drops splits older than N days per tenant).
-- **P7.3** -- per-tenant cardinality budgets (reject
-  `ensureIndex` when over budget).
-- **P7.4** -- search proxy + tenant-scoped query routing
-  against the Quickwit search API.
+- **P7.2** -- `applyRetention(IndexSpec, RetentionPolicy)`
+  via Quickwit Delete API (#102, ADR-0040). DONE.
+- **P7.3** -- per-tenant cardinality budgets via
+  `ensureIndex(IndexSpec, CardinalityBudget)` (#105,
+  ADR-0041). DONE.
+- **P7.4** -- tenant-scoped Quickwit search proxy via
+  `LogSearchClient` SPI + `QuickwitHttpSearch` adapter
+  (#107, ADR-0042). DONE.
 - **P7.1a** -- cross-phase closer (Failsafe IT singleton
   Testcontainers Quickwit + Postman + smoke per LD104).

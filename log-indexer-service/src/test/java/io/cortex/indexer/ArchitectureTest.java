@@ -35,18 +35,30 @@ class ArchitectureTest {
                 .consideringAllDependencies()
                 .layer("App").definedBy("io.cortex.indexer")
                 .layer("Admin").definedBy("io.cortex.indexer.admin..")
+                .layer("Search").definedBy("io.cortex.indexer.search..")
                 .layer("Metrics").definedBy("io.cortex.indexer.metrics..")
                 .layer("Health").definedBy("io.cortex.indexer.health..")
 
-                // Admin is the SPI - reached by App + Metrics (bootstrap
-                // loops over List<QuickwitIndexAdmin>) + Health
-                // (surfaces backendId as a detail).
+                // Admin is the SPI - reached by App + Search (P7.4
+                // QuickwitHttpSearch reuses QuickwitProperties for the
+                // shared baseUrl) + Metrics (bootstrap loops over
+                // List<QuickwitIndexAdmin>) + Health (surfaces backendId
+                // as a detail).
                 .whereLayer("Admin")
-                .mayOnlyBeAccessedByLayers("App", "Metrics", "Health")
+                .mayOnlyBeAccessedByLayers("App", "Search", "Metrics", "Health")
+                // Search is the query SPI - reached by App + Metrics (P7.4 -
+                // IndexerMetrics bootstrap loops over List<LogSearchClient>
+                // to pre-register the cortex.indexer.search_total series for
+                // every active search backend, identical pattern to the
+                // P7.0 Admin reach-in).
+                .whereLayer("Search").mayOnlyBeAccessedByLayers("App", "Metrics")
                 // Metrics is reached by App + Admin (P7.1 -
                 // QuickwitHttpAdmin ticks the cortex.indexer.index_admin_total
-                // counter after every admin call per ADR-0039).
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Admin")
+                // counter after every admin call per ADR-0039) + Search
+                // (P7.4 - QuickwitHttpSearch ticks the
+                // cortex.indexer.search_total counter after every search).
+                .whereLayer("Metrics")
+                .mayOnlyBeAccessedByLayers("App", "Admin", "Search")
                 // Health is reached by App only.
                 .whereLayer("Health").mayOnlyBeAccessedByLayers("App");
 
