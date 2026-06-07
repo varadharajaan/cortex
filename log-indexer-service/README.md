@@ -1,6 +1,6 @@
 # log-indexer-service
 
-**Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 SHIPPED** -- P7.0 carved the
+**Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 + P7.1a SHIPPED** -- P7.0 carved the
 `QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
 bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
 the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
@@ -49,7 +49,12 @@ bootstrap loop picks up new admin and search backends with
 zero edits. ADR-0039 + ADR-0040 + ADR-0041 + ADR-0042 document
 the decision drivers + rejected alternatives. P7.1a closer
 ships the cross-phase IT + smoke + Postman for all of
-P7.0..P7.4.
+P7.0..P7.4. ADR-0043 documents the closer's design + the
+`@Lazy` bean-creation cycle fix on `QuickwitHttpAdmin` +
+`QuickwitHttpSearch` that the closer's `QuickwitCrossPhaseIT`
+surfaced (the per-phase WireMock ITs structurally cannot
+detect it because they instantiate adapters with `new`,
+bypassing Spring).
 
 CORTEX log-indexer-service is the **operator-facing leg of the
 search tier**. There is no inbound REST contract for the data path
@@ -195,6 +200,25 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
   tenant_id}` joins the Part 17 allowlist;
   `IndexerMetrics` ctor gains `List<LogSearchClient>`
   injection; `ArchitectureTest` gains the `Search` layer.
+- **ADR-0043** -- P7.1a cross-phase closer. Adds
+  `QuickwitCrossPhaseIT` (`@SpringBootTest` with BOTH
+  binder gates flipped to `quickwit`; singleton in-process
+  `WireMockServer`; 12 tests covering every P7.0..P7.4 SPI
+  flow through autowired beans) + `scripts/smoke-p7-1a.ps1`
+  + `postman/log-indexer.postman_collection.json` +
+  `infra/local/docker-compose.smoke.yml quickwit:` service.
+  Surfaced a real production startup defect:
+  `BeanCurrentlyInCreationException` from the cycle
+  `IndexerMetrics -> List<QuickwitIndexAdmin|LogSearchClient>
+  -> QuickwitHttp{Admin,Search} -> IndexerMetrics` fires
+  whenever the binder gates are flipped to `quickwit`. Fix:
+  `@Lazy` on the `IndexerMetrics` ctor parameter of BOTH
+  adapters (Spring substitutes a JDK proxy that resolves the
+  real bean on first method call, breaking the cycle without
+  changing the SPI or the bootstrap-loop semantics). The
+  per-phase `*WireMockIT` classes could not detect this
+  because they construct adapters with `new`, never going
+  through Spring's bean factory. See section 4z + LD131.
 - **ADR-0036** -- the `RestDispatchTemplate` composition
   pattern P7.1's `RestAdminTemplate` mirrors.
 - **ADR-0030** -- writer side of the Quickwit fan-out lives in
@@ -232,6 +256,134 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
   `tenant_id`. The `IndexAdminResult.BACKEND_*` +
   `IndexAdminResult.OUTCOME_*` constants bound the first two
   axes by construction.
+
+## 4z. Cross-phase closer (P7.1a, ADR-0043)
+
+P7.1a is the cross-phase closer that retires the P7 epic.
+Per the LD104 closer-pattern precedent, every P7.x scaffold /
+feature phase (P7.0..P7.4) shipped **Leg A only** (`mvn
+verify` BUILD SUCCESS on the per-phase code + per-phase unit
++ WireMock ITs). The cross-phase / smoke / Postman / docs
+artifacts (Legs B..E) were deferred to this single closer
+PR so they land ONCE for the full P7.0..P7.4 SPI surface
+together.
+
+### What ships in P7.1a
+
+1. **Cross-phase Failsafe IT**
+   `log-indexer-service/src/test/java/io/cortex/indexer/closer/QuickwitCrossPhaseIT.java`
+   -- ONE `@SpringBootTest` class with BOTH binder gates
+   flipped to `quickwit`
+   (`cortex.indexer.admin.backend=quickwit` +
+   `cortex.indexer.search.backend=quickwit`); singleton
+   in-process `WireMockServer` started in a static block;
+   `@TestConstructor(autowireMode = TestConstructor.AutowireMode.ALL)`
+   + `private final` fields + package-private constructor
+   (Checkstyle Rule 14.1 forbids field `@Autowired`); 12
+   test methods exercising every P7.0..P7.4 SPI flow
+   through autowired Spring beans (2 binder-gate proofs +
+   4 P7.1 admin tests + 1 P7.2 retention test + 2 P7.3
+   budget tests + 3 P7.4 search tests). Runs inside the
+   normal `mvn verify` Failsafe cycle so CI catches
+   cross-phase regressions on every PR (Leg D).
+2. **Full-stack PowerShell smoke** `scripts/smoke-p7-1a.ps1`
+   -- boots a real Quickwit 0.8.1 docker container on
+   `:7280` from `infra/local/docker-compose.smoke.yml`,
+   waits for `/health/livez` to flip green, boots
+   log-indexer-service on `:8097` with both binder gates
+   set to `quickwit`, asserts `/actuator/health/quickwit`
+   returns `status=UP` + `details.backend=quickwit`,
+   asserts `/actuator/prometheus` exposes BOTH counter
+   families with `# HELP` + `# TYPE counter` + at least
+   one `backend="quickwit"` series for each, tears down
+   via `pidFile` + `Register-EngineEvent`
+   `PowerShell.Exiting` exit trap so the JVM cannot leak
+   on Ctrl-C. Transcripts under `scripts/logs/p7-1a/`
+   (Leg B).
+3. **Postman collection**
+   `postman/log-indexer.postman_collection.json` (5
+   folders / 13 requests / 55 assertions) -- Admin
+   (actuator: health + liveness + readiness +
+   `health/quickwit` binder-gate proof + info + metrics +
+   prometheus with HELP+TYPE) + Metrics-Baseline +
+   Quickwit-Admin (`/health/quickwit` re-check + direct
+   Quickwit `/health/livez` + `/api/v1/indexes`) +
+   Quickwit-Search (404-permanent wire contract probe) +
+   Metrics-After (non-decreasing counter check). Three
+   env files: `local`
+   (`base_url=http://localhost:8097` +
+   `quickwit_base_url=http://localhost:7280` +
+   `tenant_id=tenant-IT`), `staging` (blank
+   `quickwit_base_url`), `prod` (blank
+   `quickwit_base_url`). Mirrors the smoke 1:1 (Leg C).
+4. **`@Lazy` bean-creation cycle fix on `QuickwitHttpAdmin`
+   AND `QuickwitHttpSearch`** -- the closer's
+   `QuickwitCrossPhaseIT` surfaced a real production
+   defect on first boot:
+   `BeanCurrentlyInCreationException` from the cycle
+   `IndexerMetrics` (ctor injects
+   `List<QuickwitIndexAdmin>` +
+   `List<LogSearchClient>` to drive the LD106 + LD112
+   bootstrap loop in `@PostConstruct`) ->
+   `QuickwitHttpAdmin` / `QuickwitHttpSearch` (each
+   injects `IndexerMetrics` to tick on outcomes) ->
+   `IndexerMetrics`. The cycle only fires when both
+   binder gates are flipped to `quickwit`; the per-phase
+   `QuickwitHttpAdminWireMockIT` /
+   `QuickwitHttpSearchWireMockIT` could not detect it
+   because they construct the adapter directly with
+   `new`, bypassing Spring's bean factory. Fix:
+   `@Lazy` on the `IndexerMetrics metrics` ctor parameter
+   of both adapters; Spring substitutes a JDK proxy that
+   resolves the real bean on first method call. The
+   proxy-vs-real-bean swap is transparent at the call
+   site -- the adapters continue to call
+   `metrics.incIndexAdmin(...)` / `metrics.incSearch(...)`
+   without caring whether the reference is a proxy or
+   the real bean. Multi-paragraph Javadoc added to both
+   ctors cross-referencing ADR-0043 D2 + LD131. This is
+   the canonical pattern for any future module where a
+   `<X>Metrics`-style bootstrap loop injects
+   `List<SomeSpi>` AND the SPI adapters inject the same
+   metrics bean.
+5. **ADR-0043** (this closer's ADR) + INDEX bump 42 -> 43
+   + CHANGELOG `### Added` (P7.1a) + `### Fixed`
+   (`@Lazy`) entries + this README banner flip +
+   `infra/local/docker-compose.smoke.yml quickwit:`
+   service entry + `postman/README.md` matrix bump
+   (LD116) (Leg E docs).
+
+### 5-leg gate
+
+```bash
+# Leg A
+./mvnw verify -pl log-indexer-service -am
+# Surefire 106 unit tests PASS, Failsafe Tests run: 41
+# (29 prior P7.0..P7.4 + 12 new closer ITs all PASS),
+# 0 Checkstyle, 0 SpotBugs, JaCoCo BUNDLE 0.80/0.80 met,
+# BUILD SUCCESS.
+
+# Leg B
+./scripts/smoke-p7-1a.ps1
+# Boots Quickwit on :7280 + log-indexer-service on :8097;
+# asserts /actuator/health/quickwit UP + details.backend=quickwit;
+# asserts /actuator/prometheus exposes both counter families.
+
+# Leg C
+npx newman run postman/log-indexer.postman_collection.json `
+  -e postman/log-indexer.postman_environment_local.json `
+  --reporters cli --bail
+# 55 assertions across 13 requests in 5 folders, all PASS
+# against the running smoke stack.
+
+# Leg D
+# (subset of Leg A) -- the cross-phase IT class:
+./mvnw verify -Dit.test='closer.QuickwitCrossPhaseIT' -pl log-indexer-service
+
+# Leg E
+# Manual: ADR-0043 + INDEX + CHANGELOG + README banner +
+# 4-file flip + LD131 reviewed in the PR diff.
+```
 
 ## 5. Package layout
 

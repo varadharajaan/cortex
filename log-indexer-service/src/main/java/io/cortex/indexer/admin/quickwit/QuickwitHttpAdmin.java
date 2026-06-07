@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
@@ -117,15 +118,32 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
      * Spring constructor. Delegates to the test-seam ctor with the
      * system UTC clock.
      *
+     * <p><strong>{@code @Lazy} on {@code metrics}</strong> (P7.1a /
+     * ADR-0043 D2 / LD131): {@link IndexerMetrics} injects
+     * {@code List<QuickwitIndexAdmin>} for the OCP bootstrap loop,
+     * which would otherwise close the cycle
+     * {@code IndexerMetrics -> QuickwitHttpAdmin -> IndexerMetrics}
+     * and trip Spring's {@link
+     * org.springframework.beans.factory.BeanCurrentlyInCreationException}
+     * the moment {@code cortex.indexer.admin.backend=quickwit} is
+     * set. {@code @Lazy} hands this adapter a JDK proxy for
+     * {@code IndexerMetrics} that resolves the real bean on first
+     * method call -- by then both ends of the cycle are fully
+     * constructed. The latent production bug was discovered by
+     * {@code QuickwitCrossPhaseIT} (ADR-0043) because the per-phase
+     * WireMock ITs bypass Spring entirely by constructing this
+     * adapter with {@code new}.</p>
+     *
      * @param properties bound configuration block
      * @param restClient the {@link QuickwitHttpConfig#quickwitAdminRestClient
      *                   quickwitAdminRestClient} bean (HTTP/1.1 + dual timeout)
-     * @param metrics    shared indexer metrics registry
+     * @param metrics    shared indexer metrics registry; {@code @Lazy}
+     *                   to break the cycle (ADR-0043 D2)
      * @param mapper     shared Jackson mapper (autoconfigured by Spring Boot)
      */
     @Autowired public QuickwitHttpAdmin(final QuickwitProperties properties,
                                         final RestClient restClient,
-                                        final IndexerMetrics metrics,
+                                        @Lazy final IndexerMetrics metrics,
                                         final ObjectMapper mapper) {
         this(properties, restClient, metrics, mapper, Clock.systemUTC());
     }
