@@ -3,6 +3,9 @@ package io.cortex.indexer.metrics;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.NoopQuickwitIndexAdmin;
 import io.cortex.indexer.admin.QuickwitIndexAdmin;
+import io.cortex.indexer.search.LogSearchClient;
+import io.cortex.indexer.search.NoopLogSearchClient;
+import io.cortex.indexer.search.SearchResult;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -29,6 +32,14 @@ class IndexerMetricsTest {
      */
     private static final long EXPECTED_BOOTSTRAP_SERIES = 7L;
 
+    /**
+     * Expected lower bound on the bootstrapped search counter
+     * family size: 3 outcomes for the noop search backend
+     * ({@code search_ok, transient_failure,
+     * permanent_failure}) + 1 all-unknown placeholder = 4.
+     */
+    private static final long EXPECTED_SEARCH_BOOTSTRAP_SERIES = 4L;
+
     private MeterRegistry registry;
     private IndexerMetrics metrics;
 
@@ -37,7 +48,10 @@ class IndexerMetricsTest {
         this.registry = new SimpleMeterRegistry();
         final List<QuickwitIndexAdmin> admins =
                 List.of(new NoopQuickwitIndexAdmin());
-        this.metrics = new IndexerMetrics(this.registry, admins);
+        final List<LogSearchClient> searchClients =
+                List.of(new NoopLogSearchClient());
+        this.metrics = new IndexerMetrics(
+                this.registry, admins, searchClients);
         this.metrics.bootstrapMeters();
     }
 
@@ -108,5 +122,49 @@ class IndexerMetricsTest {
                 IndexerMetrics.METRIC_INDEX_ADMIN_TOTAL).counters().size();
         // Same as after first call (6 + 1 = 7).
         assertThat(count).isGreaterThanOrEqualTo(EXPECTED_BOOTSTRAP_SERIES);
+    }
+
+    @Test
+    void bootstrapRegistersAllFailableSearchOutcomeSeriesForEveryClient() {
+        // Three outcomes per backend + one all-unknown bootstrap.
+        // {search_ok, transient_failure, permanent_failure}
+        // for the noop search backend = 3 series; + 1 all-unknown = 4.
+        final long count = this.registry.find(
+                IndexerMetrics.METRIC_SEARCH_TOTAL).counters().size();
+        assertThat(count).isGreaterThanOrEqualTo(
+                EXPECTED_SEARCH_BOOTSTRAP_SERIES);
+    }
+
+    @Test
+    void incSearchTicksTheCorrectTagTriple() {
+        this.metrics.incSearch(
+                SearchResult.BACKEND_QUICKWIT,
+                SearchResult.OUTCOME_SEARCH_OK,
+                "tenant-a");
+
+        final Counter counter = this.registry
+                .find(IndexerMetrics.METRIC_SEARCH_TOTAL)
+                .tag("backend", SearchResult.BACKEND_QUICKWIT)
+                .tag("outcome", SearchResult.OUTCOME_SEARCH_OK)
+                .tag("tenant_id", "tenant-a")
+                .counter();
+
+        assertThat(counter).isNotNull();
+        assertThat(counter.count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void incSearchCoercesNullTagValuesToUnknown() {
+        this.metrics.incSearch(null, null, null);
+
+        final Counter counter = this.registry
+                .find(IndexerMetrics.METRIC_SEARCH_TOTAL)
+                .tag("backend", IndexerMetrics.UNKNOWN)
+                .tag("outcome", IndexerMetrics.UNKNOWN)
+                .tag("tenant_id", IndexerMetrics.UNKNOWN)
+                .counter();
+
+        assertThat(counter).isNotNull();
+        assertThat(counter.count()).isEqualTo(1.0);
     }
 }

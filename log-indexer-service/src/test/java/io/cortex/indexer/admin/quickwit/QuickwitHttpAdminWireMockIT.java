@@ -138,7 +138,7 @@ class QuickwitHttpAdminWireMockIT {
                 .requestFactory(factory)
                 .build();
         final IndexerMetrics metrics = new IndexerMetrics(
-                new SimpleMeterRegistry(), List.of());
+                new SimpleMeterRegistry(), List.of(), List.of());
         return new QuickwitHttpAdmin(props, client, metrics, new ObjectMapper());
     }
 

@@ -44,7 +44,7 @@ class QuickwitHttpAdminTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final IndexerMetrics metrics = new IndexerMetrics(
-            new SimpleMeterRegistry(), List.of());
+            new SimpleMeterRegistry(), List.of(), List.of());
     private final QuickwitProperties properties = new QuickwitProperties(
             QuickwitProperties.DEFAULT_BASE_URL,
             QuickwitProperties.DEFAULT_REQUEST_TIMEOUT,

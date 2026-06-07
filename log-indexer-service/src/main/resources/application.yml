@@ -74,6 +74,21 @@ cortex:
     # minimal.
     admin:
       backend: ${CORTEX_INDEXER_BACKEND:noop}
+    # LogSearchClient SPI binder gate (P7.4 / ADR-0042).
+    #
+    # `backend` is the binder gate read by @ConditionalOnProperty on
+    #           each search impl:
+    #             noop     -> NoopLogSearchClient (default;
+    #                          returns SearchResult.noop() for every
+    #                          call; zero outbound HTTP)
+    #             quickwit -> QuickwitHttpSearch (P7.4+; real HTTP
+    #                          search client against the Quickwit
+    #                          /api/v1/{indexId}/search surface)
+    # The QuickwitProperties block below is shared with the admin
+    # adapter (same base-url + request-timeout); the search adapter
+    # does not introduce a new properties block.
+    search:
+      backend: ${CORTEX_INDEXER_SEARCH_BACKEND:noop}
     # Quickwit HTTP admin client config (P7.1 / ADR-0039).
     # Bound to QuickwitProperties when `cortex.indexer.admin.backend=quickwit`.
     # The noop backend (P7.0 default) never reads these keys.

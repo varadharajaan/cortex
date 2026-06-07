@@ -9,6 +9,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.4: log-indexer-service tenant-scoped Quickwit search
+  proxy via `LogSearchClient` SPI (PR for #107, ADR-0042).
+  Adds the **read-side** of the indexer-service alongside the
+  existing P7.0..P7.3 admin-side SPI. New `LogSearchClient`
+  SPI in a brand-new `io.cortex.indexer.search` package with
+  the same shape as `QuickwitIndexAdmin` -- one
+  `String backendId()` + one
+  `SearchResult search(SearchRequest)` method. A noop default
+  `NoopLogSearchClient` `@ConditionalOnProperty(matchIfMissing=true)`
+  ships gated by `cortex.indexer.search.backend=noop` so the
+  scaffold boots green with zero Quickwit dependency; flipping
+  the property to `quickwit` activates the real
+  `QuickwitHttpSearch` adapter (mutually exclusive at the
+  `@ConditionalOnProperty` level). New `SearchRequest(String
+  tenantId, String indexId, String query, int maxHits)`
+  immutable record in the same package with compact-ctor
+  null/blank rejection on every String field plus `maxHits >
+  0` rejection -- configuration bugs surface at construction
+  time. New `SearchResult(String backend, String outcome,
+  String reason, long numHits, List<Map<String,Object>> hits)`
+  envelope with backend constants `BACKEND_NOOP/QUICKWIT`,
+  outcome constants
+  `OUTCOME_NOOP/SEARCH_OK/TRANSIENT_FAILURE/PERMANENT_FAILURE`,
+  factory methods `noop/searchOk/transientFailure/permanentFailure`,
+  defensive `List.copyOf(hits)` in the compact constructor so
+  the published list is immutable and a mutation of the caller
+  list after construction does not leak into the verdict.
+  `QuickwitHttpSearch` adapter shares the existing
+  `quickwitAdminRestClient` bean from `QuickwitHttpConfig`
+  (P7.1) -- the wire posture is HTTP/1.1 pinned via
+  `JdkClientHttpRequestFactory` (LD42) with dual connect+read
+  timeout (LD121) for free. The adapter posts
+  `{"query":"...","max_hits":N}` to
+  `POST /api/v1/{indexId}/search` and parses the
+  `{"num_hits":N,"hits":[...]}` response. **Strict client-side
+  tenant-routing guardrail** per ADR-0042 D3: every request's
+  `indexId` MUST start with `cortex-<tenantId>-` (mirror of
+  `QuickwitHttpAdmin.INDEX_ID_PREFIX="cortex-"`); a mismatch
+  returns `permanent_failure / quickwit:tenant-mismatch`
+  WITHOUT contacting Quickwit at all, fail-closed at the
+  lowest possible cost so a future controller that forgets
+  to validate the input cannot leak across tenants. Full
+  outcome table mirrors ADR-0039 / ADR-0040 with one explicit
+  deviation: a **404** on the search endpoint is permanent
+  (`quickwit:4xx:404`), NOT idempotent-success like
+  `dropIndex` -- a missing index at search time is a
+  caller-side configuration bug and must surface loudly to
+  the operator. New sibling counter
+  `cortex.indexer.search_total{backend, outcome, tenant_id}`
+  joins the existing
+  `cortex.indexer.index_admin_total{...}` family on the SAME
+  Part 17 allowlist (3 tag keys); `IndexerMetrics` ctor gains
+  `List<LogSearchClient> searchClients` injection and the
+  `@PostConstruct` bootstrap loop registers
+  `search_ok / transient_failure / permanent_failure` per
+  backend's `backendId()` plus one all-`unknown` placeholder
+  per LD106 + LD112 so `/actuator/prometheus` exposes the
+  family on the very first scrape. ArchUnit contract gains
+  a new `Search` layer as a sibling of `Admin`; both reach
+  `Metrics`. SPI MUST NOT throw -- every error path
+  (null-request, tenant-mismatch, JSON-serialise failure,
+  HTTP non-2xx, transport failure, unexpected RuntimeException)
+  is funneled into a `SearchResult` envelope and ticked into
+  the counter (ADR-0042 D6).
+  - **New production code** (`log-indexer-service/src/main/java/`):
+    `io.cortex.indexer.search.LogSearchClient` SPI;
+    `io.cortex.indexer.search.SearchRequest` immutable record;
+    `io.cortex.indexer.search.SearchResult` envelope;
+    `io.cortex.indexer.search.NoopLogSearchClient`
+    `@ConditionalOnProperty(matchIfMissing=true)` default;
+    `io.cortex.indexer.search.quickwit.QuickwitHttpSearch`
+    `@ConditionalOnProperty(backend=quickwit)` real adapter
+    (~360 lines incl. Javadoc; reuses the
+    `quickwitAdminRestClient` bean, `ObjectMapper`, and
+    `IndexerMetrics`); `io.cortex.indexer.metrics.IndexerMetrics`
+    ctor gains `List<LogSearchClient>` parameter +
+    `bootstrapSearch(backend, outcome)` helper +
+    `incSearch(backend, outcome, tenantId)` public increment
+    method + new `METRIC_SEARCH_TOTAL =
+    "cortex.indexer.search_total"` constant.
+    `application.yml` adds the
+    `cortex.indexer.search.backend: ${CORTEX_INDEXER_SEARCH_BACKEND:noop}`
+    binder gate.
+  - **New tests** (`log-indexer-service/src/test/java/`):
+    `SearchRequestTest` (9 tests: happy path + null/blank
+    rejection per field + zero/negative `maxHits` rejection);
+    `SearchResultTest` (9 tests: factory shape + defensive
+    `List.copyOf` + null-hits coerced to empty + null-backend
+    coerced to noop + negative-`numHits` clamped to zero);
+    `NoopLogSearchClientTest` (3 tests: `backendId` + happy
+    `search` + null-request permissive);
+    `QuickwitHttpSearchTest` (5 Mockito-free unit tests:
+    `backendId` + null-request guard + tenant-mismatch
+    guard + missing-prefix guard + body-shape canonical
+    keys); `QuickwitHttpSearchWireMockIT` (5 IT cases against
+    in-process `WireMockServer` on dynamic port: happy 200
+    with 2-hit body + JSON-path verify of `$.query` +
+    `$.max_hits` + 404 permanent + 500 transient + 429
+    transient + `Fault.CONNECTION_RESET_BY_PEER` transport
+    per LD120 -- LD123 30s IT-local read-timeout applies);
+    `IndexerMetricsTest` gains 2 tests for the new search
+    counter (bootstrap series count >= 4 + `incSearch` tags
+    + null-coerce to unknown); `QuickwitHttpAdminTest` and
+    `QuickwitHttpAdminWireMockIT` updated to construct
+    `IndexerMetrics` with the new 3-arg ctor (extra
+    `List.of()` for `searchClients`); `ArchitectureTest`
+    adds the `Search` layer + tightens access rules so
+    `Admin` and `Search` are siblings with no mutual
+    reference outside the shared `RestClient` bean.
+  - **Docs**: `docs/adr/0042-quickwit-search-proxy.md` MADR
+    D1-D7 + 4 rejected alternatives (native Quickwit Java
+    SDK, gRPC search client, direct passthrough without
+    tenant resolver, server-side multi-tenant view) +
+    explicit rejection of a separate "validation" SPI
+    method; `docs/adr/INDEX.md` total ADRs 41 -> 42 + new
+    P7 row;
+    `log-indexer-service/README.md` banner flipped to
+    `Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 SHIPPED`;
+    section 5 package layout adds the new `search/`
+    subtree; section 7 properties table adds
+    `cortex.indexer.search.backend`; section 8 metrics
+    table adds the new `cortex.indexer.search_total`
+    counter family; section 4 design-decisions adds
+    the ADR-0042 row; section 10 roadmap marks P7.4
+    DONE.
+
 - P7.3: log-indexer-service per-tenant cardinality budgets
   via `ensureIndex(spec, budget)` (PR for #105, ADR-0041).
   Adds a budget-aware overload of `ensureIndex` on the P7.0
