@@ -6,8 +6,8 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-06 (P7.0 log-indexer-service scaffold, PR for #98).
-Total ADRs: 38 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037` + `0038`).
+Last refreshed: 2026-06-07 (P7.1 log-indexer-service QuickwitHttpAdmin real HTTP client, PR for #100).
+Total ADRs: 39 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037` + `0038` + `0039`).
 
 ---
 
@@ -89,6 +89,7 @@ Total ADRs: 38 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + 
 | ADR | Title | Status | Scope | Supersedes / Superseded by |
 | --- | --- | --- | --- | --- |
 | [0038](0038-log-indexer-service-quickwit-admin.md) | log-indexer-service P7.0 scaffold + `QuickwitIndexAdmin` SPI + per-backend admin contract -- single backend bean per profile selected by `cortex.indexer.admin.backend` + `@ConditionalOnProperty`; default `NoopQuickwitIndexAdmin` gated `matchIfMissing=true` so the scaffold boots green with no Quickwit dependency; bootstrap-registered `cortex.indexer.index_admin_total{backend, outcome, tenant_id}` counter family via OCP-flipped `IndexerMetrics` loop over `List<QuickwitIndexAdmin>`; `QuickwitHealthIndicator` bound to `/actuator/health/quickwit`; ArchUnit App/Admin/Metrics/Health layered contract; carves the ownership boundary against `log-processor-service` P5.3 + ADR-0030 (writer-side `QuickwitSink` stays in P5.3; this service owns admin / lifecycle / future search proxy) | Accepted | log-indexer-service | -- |
+| [0039](0039-quickwit-http-admin-client.md) | log-indexer-service P7.1 real `QuickwitHttpAdmin` HTTP client -- first real impl behind the P7.0 SPI gated `cortex.indexer.admin.backend=quickwit`; mutually exclusive with the noop default via `@ConditionalOnProperty`; `ensureIndex` is GET-then-POST (D4 -- avoids parsing Quickwit's unstable `IndexAlreadyExists` 400 body); `dropIndex` is DELETE-and-classify-404-as-success per the ADR-0038 D5 SPI idempotence contract; composition-based `RestAdminTemplate` mirrors the P6.0a `RestDispatchTemplate` outcome classification (429/5xx/4xx/timeout/transport/unknown buckets -- D3); HTTP/1.1 pin (LD42) + dual connect+read timeout (LD121) via `JdkClientHttpRequestFactory`; static Quickwit `IndexConfig` v0.7 body mirrors the P5.3 `QuickwitSink.renderDoc` field set (D6); zero SPI edits required -- IndexerMetrics OCP bootstrap loop picks up the new backend's `backendId()=quickwit` automatically; WireMock 3.9.2 IT covers full outcome table for both `ensureIndex` + `dropIndex` including LD120 `Fault.CONNECTION_RESET_BY_PEER` transport-fault injection | Accepted | log-indexer-service | -- |
 
 ---
 

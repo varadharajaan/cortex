@@ -1,18 +1,21 @@
 # log-indexer-service
 
-**Status: P7.0 SHIPPED** -- P7.0 scaffold (this module): Spring
-Boot context loads with Eureka + actuator + Prometheus exposition,
-`QuickwitIndexAdmin` SPI is in place with a default
-`NoopQuickwitIndexAdmin` (gated
-`cortex.indexer.admin.backend=noop`, `matchIfMissing=true`) so the
-service boots green with no Quickwit dependency, one Micrometer
-counter family (`cortex.indexer.index_admin_total{backend, outcome,
-tenant_id}`) is bootstrap-registered, and `QuickwitHealthIndicator`
-surfaces on `/actuator/health/quickwit`. ADR-0038 documents the
-ownership boundary against `log-processor-service` P5.3 (which owns
-the writer-side `QuickwitSink`). P7.1..P7.4 follow with real HTTP
-admin + retention + cardinality budgets + search proxy; P7.1a
-closer ships the cross-phase IT.
+**Status: P7.0 + P7.1 SHIPPED** -- P7.0 carved the
+`QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
+bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
+the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
+(`@ConditionalOnProperty(backend="quickwit")`) talks to the real
+Quickwit REST surface (`POST /api/v1/indexes`, `GET
+/api/v1/indexes/<id>`, `DELETE /api/v1/indexes/<id>`) with the
+P5.3 + P6.x HTTP/1.1 pin (LD42) + dual connect+read timeout
+(LD121) + outcome-classification template mirroring the P6.0a
+`RestDispatchTemplate` (ADR-0036). Mutually exclusive with the
+noop default at the `@ConditionalOnProperty` level. The
+IndexerMetrics OCP bootstrap loop picks up the new backend with
+zero edits. ADR-0039 documents the seven decision drivers + five
+rejected alternatives. P7.2..P7.4 follow with retention +
+cardinality budgets + search proxy; P7.1a closer ships the
+cross-phase IT.
 
 CORTEX log-indexer-service is the **operator-facing leg of the
 search tier**. There is no inbound REST contract for the data path
@@ -110,11 +113,12 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
 | Framework                  | Spring Boot 3.3.6 / Spring Cloud 2023.0.4                            |
 | Service registry           | Spring Cloud Netflix Eureka client (`lb://`)                           |
 | Index admin SPI            | `QuickwitIndexAdmin` + `IndexAdminResult` + `IndexSpec` (ADR-0038)                   |
+| Quickwit HTTP admin client | `QuickwitHttpAdmin` + `RestAdminTemplate` + `RestClient` HTTP/1.1 pin + dual timeout (ADR-0039) |
 | Metrics                    | Micrometer Prometheus with Part 17 allowlist (`backend`, `outcome`, `tenant_id`)      |
 | Health / probes            | Spring Boot Actuator (`health,info,metrics,prometheus,beans`)                      |
 | Persistence                | None                                                                 |
 | Build                      | Maven 3.9.9 wrapper, JaCoCo BUNDLE 0.80 line + 0.80 branch                       |
-| Integration tests          | None at P7.0 (real Quickwit HTTP arrives in P7.1+)                           |
+| Integration tests          | WireMock 3.9.2 IT for `QuickwitHttpAdmin` (P7.1); cross-phase Testcontainers Quickwit IT in P7.1a closer |
 
 ## 4. Design decisions (ADR pointers)
 
@@ -124,6 +128,16 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
   default `NoopQuickwitIndexAdmin` gated `matchIfMissing=true`
   so the scaffold boots green. Ownership boundary documented
   against P5.3 / ADR-0030 (writer side).
+- **ADR-0039** -- P7.1 real `QuickwitHttpAdmin` impl behind
+  the same SPI gate, activated by
+  `cortex.indexer.admin.backend=quickwit`. `ensureIndex` is
+  GET-then-POST (avoids parsing Quickwit's unstable
+  `IndexAlreadyExists` 400 body); `dropIndex` is
+  DELETE-and-classify-404-as-success per the SPI idempotence
+  contract. Composition-based `RestAdminTemplate` mirrors the
+  P6.0a `RestDispatchTemplate` outcome table.
+- **ADR-0036** -- the `RestDispatchTemplate` composition
+  pattern P7.1's `RestAdminTemplate` mirrors.
 - **ADR-0030** -- writer side of the Quickwit fan-out lives in
   `log-processor-service` (`QuickwitSink`). This service owns
   the admin / lifecycle side only; ADR-0030 + ADR-0038 carve
@@ -170,6 +184,13 @@ io.cortex.indexer
         IndexAdminResult            - immutable verdict (backend, outcome, reason)
         IndexSpec                   - immutable input record (tenantId, indexId, docMappingVersion)
         NoopQuickwitIndexAdmin      - default impl (gated noop, matchIfMissing=true)
+        quickwit/
+            QuickwitProperties      - @ConfigurationProperties(prefix=cortex.indexer.quickwit)
+            QuickwitHttpConfig      - @Configuration; publishes the HTTP/1.1 RestClient bean
+            RestAdminTemplate       - package-private classify{Http,Transport,Unknown}
+            QuickwitHttpAdmin       - @Component; real Quickwit HTTP admin impl (gated quickwit)
+    constants/
+        IndexerHttp                 - TOO_MANY_REQUESTS, SERVER_ERROR_FLOOR, NOT_FOUND
     metrics/
         IndexerMetrics              - bootstrap-registered counter family
     health/
@@ -210,24 +231,30 @@ GET http://localhost:8097/actuator/beans
 
 ## 7. Configuration
 
-| Property                                  | Default                              | Purpose                                                                       |
-|-------------------------------------------|--------------------------------------|-------------------------------------------------------------------------------|
-| `server.port`                             | `8097`                               | LD92                                                                          |
-| `eureka.client.service-url.defaultZone`   | `http://localhost:8761/eureka/`      | Local Eureka                                                                  |
-| `cortex.indexer.admin.backend`            | `noop`                               | `QuickwitIndexAdmin` binder gate (`noop` in P7.0; `quickwit` in P7.1+)        |
-| `cortex.indexer.quickwit.base-url`        | `http://localhost:7280`              | Placeholder for the P7.1 HTTP admin client; unused by the P7.0 noop backend   |
+| Property                                       | Default                              | Purpose                                                                       |
+|------------------------------------------------|--------------------------------------|-------------------------------------------------------------------------------|
+| `server.port`                                  | `8097`                               | LD92                                                                          |
+| `eureka.client.service-url.defaultZone`        | `http://localhost:8761/eureka/`      | Local Eureka                                                                  |
+| `cortex.indexer.admin.backend`                 | `noop`                               | `QuickwitIndexAdmin` binder gate (`noop` default; set to `quickwit` to activate `QuickwitHttpAdmin`) |
+| `cortex.indexer.quickwit.base-url`             | `http://localhost:7280`              | Quickwit cluster root URL consumed by `QuickwitHttpAdmin` when `backend=quickwit` (P7.1) |
+| `cortex.indexer.quickwit.request-timeout`      | `5s`                                 | Dual connect+read timeout for the Quickwit admin `RestClient` (LD121, ADR-0039) |
+| `cortex.indexer.quickwit.doc-mapping-version`  | `v1`                                 | Stable doc-mapping schema id stamped into every `index_id` (ADR-0038 D2)         |
 
 Environment-variable overrides (all profiles):
 
 ```bash
 EUREKA_DEFAULT_ZONE=http://eureka:8761/eureka/
-CORTEX_INDEXER_BACKEND=noop          # or "quickwit" in P7.1+
+CORTEX_INDEXER_BACKEND=noop                       # or "quickwit" to activate the P7.1 HTTP admin
 CORTEX_QUICKWIT_BASE_URL=http://quickwit:7280
+CORTEX_QUICKWIT_REQUEST_TIMEOUT=5s                # ISO-8601 duration
+CORTEX_QUICKWIT_DOC_MAPPING_VERSION=v1
 ```
 
 ## 8. Observability
 
-**Metrics** -- one counter family at P7.0:
+**Metrics** -- one counter family at P7.0; the same family is
+incremented by P7.1 `QuickwitHttpAdmin` for the
+`backend=quickwit` series:
 
 | Metric                                  | Tags                            | Description                                                                                    |
 |-----------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------|
@@ -270,10 +297,11 @@ one (no relaxed override block in the child pom).
 
 ## 10. Roadmap
 
-- **P7.0** -- scaffold (this commit; #98).
-- **P7.1** -- real `QuickwitHttpIndexAdmin` HTTP client against
+- **P7.0** -- scaffold (#98, ADR-0038). DONE.
+- **P7.1** -- real `QuickwitHttpAdmin` HTTP client against
   `/api/v1/indexes` (create / get / drop) with LD42 + LD121
-  dual-timeout `RestClient`.
+  dual-timeout `RestClient` + composition-based
+  `RestAdminTemplate` (#100, ADR-0039). DONE.
 - **P7.2** -- retention policy enforcement (scheduled sweeper
   drops splits older than N days per tenant).
 - **P7.3** -- per-tenant cardinality budgets (reject

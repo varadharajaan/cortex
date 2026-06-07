@@ -9,6 +9,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.1: log-indexer-service real `QuickwitHttpAdmin`
+  REST API adapter + WireMock IT (PR for #100, ADR-0039).
+  Lands the FIRST real backend impl behind the P7.0
+  `QuickwitIndexAdmin` SPI (ADR-0038): a Quickwit HTTP admin
+  client gated `cortex.indexer.admin.backend=quickwit`,
+  mutually exclusive with the noop default at the
+  `@ConditionalOnProperty` level. Talks to the real Quickwit
+  REST admin surface (`POST /api/v1/indexes`, `GET
+  /api/v1/indexes/<id>`, `DELETE /api/v1/indexes/<id>`) with
+  the cluster-standard HTTP/1.1 pin (LD42) + dual connect+read
+  timeout (LD121) via `JdkClientHttpRequestFactory` -- same
+  wire-format shape as the P5.3 `QuickwitSink` writer + every
+  P6 dispatcher. `ensureIndex` is GET-then-POST (D4 -- avoids
+  parsing Quickwit's unstable `IndexAlreadyExists` 400 body);
+  `dropIndex` is DELETE-and-classify-404-as-success per the
+  ADR-0038 D5 SPI idempotence contract. Outcome classification
+  lives in a composition-based `RestAdminTemplate` that mirrors
+  the P6.0a `RestDispatchTemplate` pattern: 429 -> transient
+  `quickwit:429`; 5xx -> transient `quickwit:5xx:<n>`; other
+  4xx -> permanent `quickwit:4xx:<n>`; timeout cause ->
+  transient `quickwit:timeout`; other transport -> transient
+  `quickwit:transport`; unknown -> transient `quickwit:unknown`.
+  Body shape (D6) is a static Quickwit `IndexConfig` v0.7
+  doc-mapping mirroring the P5.3 `QuickwitSink.renderDoc`
+  field set (id + tenant_id + event_id + ts + level + service +
+  message + anomaly + severity + reason) so the indexer's
+  create call produces an index that accepts the processor's
+  writes. The IndexerMetrics OCP bootstrap loop picks up the
+  new backend's `backendId()=quickwit` automatically -- zero
+  edits in `IndexerMetrics`.
+  - **New production code** (`log-indexer-service/src/main/java/`):
+    `io.cortex.indexer.admin.quickwit` package with
+    `QuickwitProperties` (`@Validated`
+    `@ConfigurationProperties(prefix=cortex.indexer.quickwit)`
+    record carrying `baseUrl` + `requestTimeout` +
+    `docMappingVersion` with defensive defaults),
+    `QuickwitHttpConfig` (`@Configuration` publishing the
+    HTTP/1.1-pinned `RestClient` bean), `RestAdminTemplate`
+    (package-private composition helper with `classifyHttp` /
+    `classifyTransport` / `classifyUnknown` methods),
+    `QuickwitHttpAdmin` (`@Component implements
+    QuickwitIndexAdmin`, gated `havingValue=quickwit`).
+    Plus the new `io.cortex.indexer.constants.IndexerHttp`
+    holder (`TOO_MANY_REQUESTS=429`, `SERVER_ERROR_FLOOR=500`,
+    `NOT_FOUND=404`) -- mirror of
+    `io.cortex.remediation.constants.RemediationHttp`.
+  - **New tests** (`log-indexer-service/src/test/java/`):
+    `QuickwitPropertiesTest` (9 tests covering happy-path +
+    null/blank/zero/negative coercion to defaults),
+    `RestAdminTemplateTest` (12 tests covering 429 / 500 / 503
+    / 400 / 401 / 403 / 415 + HttpTimeoutException +
+    TimeoutException + non-timeout transport + bare transport
+    + unknown RuntimeException), `QuickwitHttpAdminTest`
+    (9 tests covering backendId + properties accessor +
+    null-spec + null/blank-indexId guard rails + create body
+    shape), and the headline
+    `QuickwitHttpAdminWireMockIT` -- 14 Failsafe IT tests
+    against an in-process WireMock dynamic-port server
+    covering the full outcome table for both `ensureIndex`
+    (creates when absent / short-circuits when exists / 429
+    / 500 / 401 / POST 400 / POST 503 / transport fault) and
+    `dropIndex` (happy 200 / idempotent 404 / 429 / 500 / 403
+    / transport fault). Transport-fault tests use
+    `Fault.CONNECTION_RESET_BY_PEER` per LD120 deterministic
+    transport-fault forward rule (vs timing-based stub).
+    LD123 cold-start 30 s read-timeout bump in the IT-local
+    `RestClient` to absorb JIT-cold WireMock dispatch.
+  - **Modified files**: `log-indexer-service/pom.xml` adds
+    `org.wiremock:wiremock-standalone` test-scope dep
+    (version inherited from parent's `${wiremock.version}`
+    = 3.9.2); both main + test `application.yml` add the
+    `request-timeout` + `doc-mapping-version` placeholders
+    under `cortex.indexer.quickwit` per LD100 shadow rule;
+    `ArchitectureTest` re-asserts the layered contract to
+    allow `Admin -> Metrics` (P7.0 left that edge App-only
+    with a `P7.1` follow-up comment that this PR now
+    discharges). `NoopQuickwitIndexAdmin` is UNTOUCHED --
+    its `matchIfMissing=true` still wins when the property
+    is unset, so the default-dev boot is identical to P7.0.
+  - **New ADR**: `docs/adr/0039-quickwit-http-admin-client.md`
+    with 7 decision drivers (D1-D7) + 5 considered options
+    rejected (reactive WebClient; auto-config bean discovery;
+    throw-on-failure semantics; POST-and-classify-409-as-exists;
+    native Quickwit Java SDK). `docs/adr/INDEX.md` row
+    appended under Indexer pipeline (P7); count bumped
+    38 -> 39; `Last refreshed:` bumped.
+  - **Tests**: 44 unit/IT tests across 11 classes / 0 failures
+    / 0 Checkstyle / 0 SpotBugs / JaCoCo BUNDLE 0.80 line
+    + 0.80 branch met. Scope-of-work covers Leg A only per
+    LD104 -- Postman + boot smoke + cross-phase Testcontainers
+    Quickwit IT deferred to the P7.1a closer.
+  - **README banner**: `Status: P7.0 + P7.1 SHIPPED`; tech-stack
+    + design-decisions + config + observability + tests + roadmap
+    sections all reflect the new `QuickwitHttpAdmin` surface.
+
 - P7.0: log-indexer-service scaffold + `QuickwitIndexAdmin`
   SPI + per-backend admin contract (PR for #98, ADR-0038).
   Opens the P7 epic by shipping the SCAFFOLD-only module per

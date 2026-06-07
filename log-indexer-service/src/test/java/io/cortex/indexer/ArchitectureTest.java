@@ -43,10 +43,10 @@ class ArchitectureTest {
                 // (surfaces backendId as a detail).
                 .whereLayer("Admin")
                 .mayOnlyBeAccessedByLayers("App", "Metrics", "Health")
-                // Metrics is reached by App only (P7.0 - the metric
-                // will be touched by P7.1+ admin call sites, which
-                // ArchUnit will be re-asserted to allow then).
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App")
+                // Metrics is reached by App + Admin (P7.1 -
+                // QuickwitHttpAdmin ticks the cortex.indexer.index_admin_total
+                // counter after every admin call per ADR-0039).
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Admin")
                 // Health is reached by App only.
                 .whereLayer("Health").mayOnlyBeAccessedByLayers("App");
 

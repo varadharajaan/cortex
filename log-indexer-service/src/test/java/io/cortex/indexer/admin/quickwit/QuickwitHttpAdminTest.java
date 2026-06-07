@@ -1,0 +1,124 @@
+package io.cortex.indexer.admin.quickwit;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortex.indexer.admin.IndexAdminResult;
+import io.cortex.indexer.admin.IndexSpec;
+import io.cortex.indexer.metrics.IndexerMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.web.client.RestClient;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Pure unit tests for {@link QuickwitHttpAdmin} -- backend id,
+ * null-spec guard rails, and {@code renderCreateBody} body shape
+ * (P7.1 / ADR-0039 D6).
+ *
+ * <p>The HTTP outcome table is exercised end-to-end by
+ * {@link QuickwitHttpAdminWireMockIT} against a real
+ * {@link RestClient} talking to an in-process WireMock; this
+ * unit class focuses on the helpers + guard rails that don't
+ * need wire traffic.</p>
+ */
+@DisplayName("QuickwitHttpAdmin")
+class QuickwitHttpAdminTest {
+
+    /** Sample IndexSpec reused across body-shape tests. */
+    private static final IndexSpec SAMPLE_SPEC =
+            new IndexSpec("tenant-A", "cortex-tenantA-v1", "v1");
+
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final IndexerMetrics metrics = new IndexerMetrics(
+            new SimpleMeterRegistry(), List.of());
+    private final QuickwitProperties properties = new QuickwitProperties(
+            QuickwitProperties.DEFAULT_BASE_URL,
+            QuickwitProperties.DEFAULT_REQUEST_TIMEOUT,
+            QuickwitProperties.DEFAULT_DOC_MAPPING_VERSION);
+    private final RestClient restClient = RestClient.builder().build();
+
+    private final QuickwitHttpAdmin admin = new QuickwitHttpAdmin(
+            this.properties, this.restClient, this.metrics, this.mapper);
+
+    @Test
+    void backendIdReportsQuickwit() {
+        assertThat(this.admin.backendId())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void propertiesAccessorReturnsBoundConfig() {
+        assertThat(this.admin.properties()).isSameAs(this.properties);
+    }
+
+    @Test
+    void nullSpecOnEnsureIndexReturnsPermanentFailure() {
+        final IndexAdminResult result = this.admin.ensureIndex(null);
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-spec");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void nullIndexIdOnDropIndexReturnsPermanentFailure() {
+        final IndexAdminResult result = this.admin.dropIndex(null);
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-index-id");
+    }
+
+    @Test
+    void blankIndexIdOnDropIndexReturnsPermanentFailure() {
+        final IndexAdminResult result = this.admin.dropIndex("  ");
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-index-id");
+    }
+
+    @Test
+    void renderCreateBodyStampsTheConfigVersion() {
+        final Map<String, Object> body = this.admin.renderCreateBody(SAMPLE_SPEC);
+        assertThat(body.get("version"))
+                .isEqualTo(QuickwitHttpAdmin.QUICKWIT_INDEX_CONFIG_VERSION);
+    }
+
+    @Test
+    void renderCreateBodyEchoesTheSpecIndexId() {
+        final Map<String, Object> body = this.admin.renderCreateBody(SAMPLE_SPEC);
+        assertThat(body.get("index_id")).isEqualTo(SAMPLE_SPEC.indexId());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void renderCreateBodyCarriesTheFullFieldMappingSet() {
+        final Map<String, Object> body = this.admin.renderCreateBody(SAMPLE_SPEC);
+        final Map<String, Object> docMapping =
+                (Map<String, Object>) body.get("doc_mapping");
+        assertThat(docMapping.get("timestamp_field")).isEqualTo("ts");
+        final List<Map<String, Object>> fields =
+                (List<Map<String, Object>>) docMapping.get("field_mappings");
+        // Mirror of P5.3 QuickwitSink.renderDoc field set.
+        assertThat(fields).hasSize(10);
+        assertThat(fields).extracting(f -> f.get("name"))
+                .containsExactly("id", "tenant_id", "event_id", "ts",
+                        "level", "service", "message", "anomaly",
+                        "severity", "reason");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void renderCreateBodyCarriesDefaultSearchFields() {
+        final Map<String, Object> body = this.admin.renderCreateBody(SAMPLE_SPEC);
+        final Map<String, Object> searchSettings =
+                (Map<String, Object>) body.get("search_settings");
+        final List<String> defaultSearch =
+                (List<String>) searchSettings.get("default_search_fields");
+        assertThat(defaultSearch)
+                .containsExactly("message", "service", "reason");
+    }
+}

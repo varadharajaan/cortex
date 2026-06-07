@@ -48,3 +48,8 @@ cortex:
       backend: noop
     quickwit:
       base-url: http://localhost:7280
+      # Mirror application.yml so QuickwitProperties has a binding
+      # source under @SpringBootTest even when the noop backend
+      # is active and the bean never gets instantiated (LD100).
+      request-timeout: 5s
+      doc-mapping-version: v1

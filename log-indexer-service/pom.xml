@@ -135,6 +135,15 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- WireMock for the P7.1 QuickwitHttpAdminWireMockIT failsafe
+             test (ADR-0039). Version inherited from the parent POM
+             dependency-management block (wiremock.version=3.9.2). -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!--
@@ -175,10 +184,20 @@
                 <artifactId>jacoco-maven-plugin</artifactId>
             </plugin>
 
-            <!-- No *IT.java in P7.0 (no real Quickwit HTTP yet, no
-                 Testcontainers footprint). Failsafe is still on at
-                 the parent level but finds no matching classes; that
-                 is fine (mirror P3.0 scaffold pattern). -->
+            <!-- Activate Failsafe so the *IT.java classes run during
+                 `verify`. P7.1 adds QuickwitHttpAdminWireMockIT
+                 (real HTTP against an in-process WireMock server,
+                 ADR-0039). P7.1a closer will add the cross-phase
+                 Testcontainers IT against a real Quickwit image.
+                 Mirrors the log-remediation-service P6.x pattern -
+                 without this plugin block, Failsafe stays dormant
+                 (pluginManagement alone does not bind it to the
+                 integration-test/verify phases). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+
         </plugins>
     </build>
 
