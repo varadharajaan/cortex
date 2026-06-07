@@ -35,6 +35,7 @@ class ArchitectureTest {
         final ArchRule layered = layeredArchitecture()
                 .consideringAllDependencies()
                 .layer("App").definedBy("io.cortex.monitoring")
+                .layer("Constants").definedBy("io.cortex.monitoring.constants..")
                 .layer("Probe").definedBy("io.cortex.monitoring.probe..")
                 .layer("Metrics").definedBy("io.cortex.monitoring.metrics..")
                 .layer("Health").definedBy("io.cortex.monitoring.health..")
@@ -44,10 +45,13 @@ class ArchitectureTest {
                 // Health (surfaces backendId as a detail).
                 .whereLayer("Probe")
                 .mayOnlyBeAccessedByLayers("App", "Metrics", "Health")
-                // Metrics is reached by App only at P8.0; P8.1 will
-                // add Probe -> Metrics edge when the real adapter
-                // ticks the counter after every probe call.
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App")
+                // Metrics is reached by App + Probe (P8.1 adapters tick
+                // the counter after every probe call via the @Lazy
+                // back-edge -- LD131).
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Probe")
+                // Constants is reached by Probe (RestProbeTemplate uses
+                // the HTTP status floors).
+                .whereLayer("Constants").mayOnlyBeAccessedByLayers("Probe")
                 // Health is reached by App only.
                 .whereLayer("Health").mayOnlyBeAccessedByLayers("App");
 

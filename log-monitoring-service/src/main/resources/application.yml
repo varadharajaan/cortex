@@ -69,12 +69,24 @@ cortex:
     #                                for every call; zero outbound
     #                                HTTP)
     #             eureka-actuator -> EurekaActuatorHealthProbe
-    #                                (P8.1+; real Eureka-discovery
-    #                                REST scrape of
+    #                                (P8.1 / ADR-0045; real
+    #                                Eureka-discovery REST scrape of
     #                                /actuator/health on every
     #                                registered cortex service)
-    # The real backend property block (probe.timeout, retry policy,
-    # etc.) lands alongside the P8.1 probe impl so the P8.0 yml
-    # stays minimal.
     probe:
       backend: ${CORTEX_MONITORING_PROBE_BACKEND:noop}
+
+    # EurekaActuatorHealthProbe configuration (P8.1 / ADR-0045 D2).
+    #
+    # Only consumed when `probe.backend=eureka-actuator`. Defensive
+    # defaults in EurekaActuatorProperties coerce null/zero/negative
+    # request-timeout to 5 s and null/blank actuator-path to
+    # `/actuator/health` so a partially-filled yml still wires.
+    #
+    # request-timeout binds connect + read on the JDK HttpClient per
+    # LD42 HTTP/1.1 pin + LD121 dual-timeout. On expiry the probe
+    # returns transient_failure with reason
+    # `eureka-actuator:timeout`.
+    eureka:
+      request-timeout: ${CORTEX_MONITORING_EUREKA_REQUEST_TIMEOUT:5s}
+      actuator-path: ${CORTEX_MONITORING_EUREKA_ACTUATOR_PATH:/actuator/health}

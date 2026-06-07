@@ -232,12 +232,16 @@ GET http://localhost:8098/actuator/beans
 | `server.port`                                  | `8098`                               | LD92                                                                          |
 | `eureka.client.service-url.defaultZone`        | `http://localhost:8761/eureka/`      | Local Eureka                                                                  |
 | `cortex.monitoring.probe.backend`              | `noop`                               | `ServiceHealthProbe` binder gate (`noop` default; set to `eureka-actuator` to activate the P8.1 HTTP probe) |
+| `cortex.monitoring.eureka.request-timeout`     | `5s`                                 | Dual connect+read timeout for the P8.1 `EurekaActuatorHealthProbe` `RestClient` (LD121) |
+| `cortex.monitoring.eureka.actuator-path`       | `/actuator/health`                   | Per-instance actuator path the P8.1 probe scrapes (must start with `/`)        |
 
 Environment-variable overrides (all profiles):
 
 ```bash
 EUREKA_DEFAULT_ZONE=http://eureka:8761/eureka/
 CORTEX_MONITORING_PROBE_BACKEND=noop   # or "eureka-actuator" to activate the P8.1 HTTP probe
+CORTEX_MONITORING_EUREKA_REQUEST_TIMEOUT=5s
+CORTEX_MONITORING_EUREKA_ACTUATOR_PATH=/actuator/health
 ```
 
 ## 8. Observability
@@ -297,7 +301,7 @@ one (no relaxed override block in the child pom).
 - **P8.1** -- real `EurekaActuatorHealthProbe` HTTP client
   against per-service `/actuator/health` via Eureka
   discovery (LD42 + LD121 dual-timeout `RestClient`).
-  DEFERRED.
+  SHIPPED (#113, ADR-0045).
 - **P8.2** -- SLO budget engine
   (`cortex_monitoring_slo_budget_remaining` +
   `cortex_monitoring_slo_burn_rate` gauges + alert rules
