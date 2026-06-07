@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
@@ -119,16 +120,29 @@ public final class QuickwitHttpSearch implements LogSearchClient {
     /**
      * Spring constructor.
      *
+     * <p><strong>{@code @Lazy} on {@code metrics}</strong> (P7.1a /
+     * ADR-0043 D2 / LD131): {@link IndexerMetrics} injects
+     * {@code List<LogSearchClient>} for the OCP bootstrap loop,
+     * which would otherwise close the cycle
+     * {@code IndexerMetrics -> QuickwitHttpSearch -> IndexerMetrics}
+     * the moment {@code cortex.indexer.search.backend=quickwit} is
+     * set. Same rationale as the sibling {@code @Lazy} on
+     * {@code QuickwitHttpAdmin}; see ADR-0043 D2 for the full
+     * discussion. Discovered by {@code QuickwitCrossPhaseIT}
+     * (ADR-0043) -- {@code QuickwitHttpSearchWireMockIT} bypasses
+     * Spring by constructing this adapter with {@code new}.</p>
+     *
      * @param properties bound configuration block
      * @param restClient the {@link QuickwitHttpConfig#quickwitAdminRestClient
      *                   quickwitAdminRestClient} bean (HTTP/1.1 + dual timeout);
      *                   shared with the P7.1+ admin adapter
-     * @param metrics    shared indexer metrics registry
+     * @param metrics    shared indexer metrics registry; {@code @Lazy}
+     *                   to break the cycle (ADR-0043 D2)
      * @param mapper     shared Jackson mapper (autoconfigured by Spring Boot)
      */
     @Autowired public QuickwitHttpSearch(final QuickwitProperties properties,
                                          final RestClient restClient,
-                                         final IndexerMetrics metrics,
+                                         @Lazy final IndexerMetrics metrics,
                                          final ObjectMapper mapper) {
         this.properties = properties;
         this.restClient = restClient;

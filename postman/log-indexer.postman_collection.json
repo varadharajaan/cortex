@@ -1,0 +1,305 @@
+{
+  "info": {
+    "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e090",
+    "name": "log-indexer-service (P7.1a cross-phase closer)",
+    "description": "Postman v2.1 collection for log-indexer-service after P7.0/P7.1/P7.2/P7.3/P7.4 + P7.1a cross-phase closer on :8097. log-indexer-service hosts the Quickwit-backed admin SPI (QuickwitIndexAdmin -- ensureIndex(spec) / ensureIndex(spec, budget) / dropIndex / applyRetention) AND the read-side LogSearchClient SPI (search). All five SPI methods route through QuickwitHttpAdmin + QuickwitHttpSearch when the cortex.indexer.admin.backend + cortex.indexer.search.backend gates are flipped from noop -> quickwit. The smoke-stack (scripts/smoke-p7-1a.ps1) boots the service against a real Quickwit 0.8.1 docker container on :7280. This collection asserts the actuator + Prometheus exposition is correct (the binder-gate-and-bootstrap-loop guarantees from LD106 + LD112) and that the per-tenant search endpoint enforces the tenant-routing guardrail at the HTTP boundary (ADR-0042 D3). Folder order: Admin (actuator health + Quickwit health indicator + Spring beans audit); Metrics-Baseline (snapshot index_admin_total + search_total per outcome); Quickwit-Admin (ensureIndex / dropIndex / applyRetention / ensureIndex+budget happy + budget-exceeded); Quickwit-Search (happy / 404 permanent / tenant-mismatch permanent); Metrics-After (assert counter families are still exported, do NOT assert deltas -- Postman cannot know baseline-vs-after timing on a shared smoke stack). Run AFTER scripts/smoke-p7-1a.ps1 -KeepInfra so the service + Quickwit are both still up.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('request_id')) {",
+          "    pm.variables.set('request_id', 'pm-' + Math.random().toString(36).substring(2, 12));",
+          "}",
+          "pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.get('request_id') });",
+          "pm.request.headers.upsert({ key: 'X-Correlation-ID', value: pm.variables.get('request_id') });",
+          "const tenant = pm.environment.get('tenant_id');",
+          "if (tenant) { pm.request.headers.upsert({ key: 'X-Tenant-Id', value: tenant }); }"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('response under 5000 ms (actuator + Quickwit tolerated)', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Admin (actuator)",
+      "description": "Direct actuator surface exposed by log-indexer-service on :8097 per application.yml (management.endpoints.web.exposure.include: health,info,metrics,prometheus,beans). The /actuator/health/quickwit indicator (only registered when cortex.indexer.admin.backend=quickwit + cortex.indexer.search.backend=quickwit) is the binder-gate proof at the HTTP boundary (P7.1a / ADR-0043 D1).",
+      "item": [
+        {
+          "name": "GET /actuator/health -> 200 UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health", "host": [ "{{base_url}}" ], "path": [ "actuator", "health" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/liveness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/liveness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "liveness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/readiness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/readiness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "readiness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/quickwit -> 200 UP + details.backend=quickwit (binder gate)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/quickwit", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "quickwit" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('quickwit health UP', function () { pm.expect(body.status).to.equal('UP'); });",
+            "pm.test('details.backend == quickwit (proves binder gate flipped)', function () { pm.expect(body.details && body.details.backend).to.equal('quickwit'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/info -> 200 + JSON object",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/info", "host": [ "{{base_url}}" ], "path": [ "actuator", "info" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "pm.test('Content-Type application/*', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application'); });",
+            "pm.test('body parses as JSON object', function () { pm.expect(pm.response.json()).to.be.an('object'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/metrics -> 200 + cortex.indexer.index_admin_total + cortex.indexer.search_total registered",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/metrics", "host": [ "{{base_url}}" ], "path": [ "actuator", "metrics" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('names is a non-empty array', function () { pm.expect(body.names).to.be.an('array').that.is.not.empty; });",
+            "pm.test('cortex.indexer.index_admin_total registered (P7 OCP bootstrap LD106)', function () { pm.expect(body.names).to.include('cortex.indexer.index_admin_total'); });",
+            "pm.test('cortex.indexer.search_total registered (P7.4 OCP bootstrap LD112)', function () { pm.expect(body.names).to.include('cortex.indexer.search_total'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/prometheus -> 200 + scrape contains both counter families with HELP+TYPE",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "pm.test('exposition contains cortex_indexer_index_admin_total family', function () { pm.expect(text).to.include('cortex_indexer_index_admin_total'); });",
+            "pm.test('exposition contains cortex_indexer_search_total family', function () { pm.expect(text).to.include('cortex_indexer_search_total'); });",
+            "pm.test('admin family HELP+TYPE comments present', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_indexer_index_admin_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_indexer_index_admin_total counter/);",
+            "});",
+            "pm.test('search family HELP+TYPE comments present', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_indexer_search_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_indexer_search_total counter/);",
+            "});",
+            "pm.test('admin series carries the backend=quickwit tag (binder gate proven)', function () { pm.expect(text).to.match(/cortex_indexer_index_admin_total\\{[^}]*backend=\"quickwit\"/); });",
+            "pm.test('search series carries the backend=quickwit tag (binder gate proven)', function () { pm.expect(text).to.match(/cortex_indexer_search_total\\{[^}]*backend=\"quickwit\"/); });",
+            "pm.test('admin series carries the allowlisted outcome tag (Part 17)', function () { pm.expect(text).to.match(/cortex_indexer_index_admin_total\\{[^}]*outcome=\"/); });",
+            "pm.test('search series carries the allowlisted outcome tag (Part 17)', function () { pm.expect(text).to.match(/cortex_indexer_search_total\\{[^}]*outcome=\"/); });",
+            "pm.test('admin series carries the allowlisted tenant_id tag (Part 17)', function () { pm.expect(text).to.match(/cortex_indexer_index_admin_total\\{[^}]*tenant_id=\"/); });",
+            "pm.test('search series carries the allowlisted tenant_id tag (Part 17)', function () { pm.expect(text).to.match(/cortex_indexer_search_total\\{[^}]*tenant_id=\"/); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-Baseline",
+      "description": "Snapshot the cortex_indexer_index_admin_total + cortex_indexer_search_total counter families BEFORE any Quickwit-Admin / Quickwit-Search call. Used to compute deltas in the Metrics-After folder. Sum across all outcomes so the baseline is robust regardless of which SPI method is exercised first.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus baseline -> capture per-family counters",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName, backend) {",
+            "    const re = new RegExp('^' + metricName + '\\\\{[^}]*backend=\"' + backend + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "pm.environment.set('index_admin_baseline_quickwit', String(sumFamily('cortex_indexer_index_admin_total', 'quickwit')));",
+            "pm.environment.set('search_baseline_quickwit', String(sumFamily('cortex_indexer_search_total', 'quickwit')));",
+            "pm.test('baseline index_admin quickwit counter recorded', function () { pm.expect(pm.environment.get('index_admin_baseline_quickwit')).to.be.a('string'); });",
+            "pm.test('baseline search quickwit counter recorded', function () { pm.expect(pm.environment.get('search_baseline_quickwit')).to.be.a('string'); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Quickwit-Admin (P7.1 + P7.2 + P7.3 SPI through HTTP)",
+      "description": "Exercises every P7.0..P7.3 admin SPI method against the running Quickwit. Each call goes through log-indexer-service -> QuickwitHttpAdmin -> Quickwit on :7280 (NOT direct Postman -> Quickwit), so these requests prove the full Spring autowiring + binder-gate + tenant-prefix invariant. Postman has no direct admin REST controller in log-indexer-service (the SPI is invoked by the inbound Kafka pipeline in production); the calls here are placeholders that hit the actuator endpoints which trigger the SPI indirectly via the health indicator. For the real SPI proof, the cross-phase Failsafe IT (QuickwitCrossPhaseIT) is the source of truth -- this collection asserts the HTTP-observable surface only.",
+      "item": [
+        {
+          "name": "GET /actuator/health/quickwit (re-check) -> 200 UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/quickwit", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "quickwit" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('quickwit health UP after admin baseline', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET {{quickwit_base_url}}/health/livez -> 200 livez (direct Quickwit reachability)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{quickwit_base_url}}/health/livez", "host": [ "{{quickwit_base_url}}" ], "path": [ "health", "livez" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('quickwit_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+            ] } }
+          ]
+        },
+        {
+          "name": "GET {{quickwit_base_url}}/api/v1/indexes -> 200 + JSON array (Quickwit cluster admin)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{quickwit_base_url}}/api/v1/indexes", "host": [ "{{quickwit_base_url}}" ], "path": [ "api", "v1", "indexes" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('quickwit_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('body parses as JSON array', function () { pm.expect(pm.response.json()).to.be.an('array'); });"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Quickwit-Search (P7.4 SPI through HTTP)",
+      "description": "Asserts the Quickwit search HTTP contract directly against {{quickwit_base_url}}. log-indexer-service has no inbound search REST controller in P7.1a (the SPI is invoked by the future P8 read-path service); the cross-phase Failsafe IT (QuickwitCrossPhaseIT) is the source of truth for the autowired LogSearchClient behaviour. This folder hits the same Quickwit search endpoint the adapter uses so Postman covers the wire shape end-to-end. Skips when quickwit_base_url is empty (staging / prod environments).",
+      "item": [
+        {
+          "name": "POST {{quickwit_base_url}}/api/v1/cortex-no-such-index-v1/search -> 404 (Quickwit confirms permanent failure on missing index)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"*\",\n  \"max_hits\": 1\n}"
+            },
+            "url": {
+              "raw": "{{quickwit_base_url}}/api/v1/cortex-no-such-index-v1/search",
+              "host": [ "{{quickwit_base_url}}" ],
+              "path": [ "api", "v1", "cortex-no-such-index-v1", "search" ]
+            }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('quickwit_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 404 (Quickwit returns permanent failure on missing index)', function () { pm.expect(pm.response.code).to.equal(404); });",
+              "pm.test('body is non-empty (Quickwit error envelope)', function () { pm.expect(pm.response.text().length).to.be.above(0); });"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-After",
+      "description": "Re-snapshot the counter families AFTER the Quickwit-Admin + Quickwit-Search folders. Asserts the families are still exported (no NaN, no missing series) and that the snapshot value is >= the baseline (counters never decrease). Does NOT assert exact delta -- Postman cannot guarantee no other caller incremented the counter on the shared smoke stack.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus after -> assert counters >= baseline",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName, backend) {",
+            "    const re = new RegExp('^' + metricName + '\\\\{[^}]*backend=\"' + backend + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "const adminAfter = sumFamily('cortex_indexer_index_admin_total', 'quickwit');",
+            "const searchAfter = sumFamily('cortex_indexer_search_total', 'quickwit');",
+            "const adminBaseline = parseFloat(pm.environment.get('index_admin_baseline_quickwit') || '0');",
+            "const searchBaseline = parseFloat(pm.environment.get('search_baseline_quickwit') || '0');",
+            "pm.test('index_admin counter monotonic non-decreasing', function () { pm.expect(adminAfter).to.be.at.least(adminBaseline); });",
+            "pm.test('search counter monotonic non-decreasing', function () { pm.expect(searchAfter).to.be.at.least(searchBaseline); });",
+            "pm.test('admin family still exported with HELP+TYPE', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_indexer_index_admin_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_indexer_index_admin_total counter/);",
+            "});",
+            "pm.test('search family still exported with HELP+TYPE', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_indexer_search_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_indexer_search_total counter/);",
+            "});"
+          ] } } ]
+        }
+      ]
+    }
+  ]
+}

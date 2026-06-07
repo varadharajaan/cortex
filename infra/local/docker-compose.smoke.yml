@@ -3,8 +3,19 @@
 #
 # What this brings up:
 #   - redis      : rate-limit + idempotency store (used by P3.2 + P4.2).
-#   - wiremock   : Ollama stub used by P3.3 (NL -> LogQL).
+#   - wiremock   : Ollama stub used by P3.3 (NL -> LogQL) AND the
+#                  Quickwit fake used by scripts/smoke-p5-1.ps1 cold
+#                  path before the real Quickwit container landed.
 #   - postgres   : ingestion durable system-of-record (used by P4.0+).
+#   - kafka      : SCSt CloudEvents broker (P4.4b / ADR-0026).
+#   - quickwit   : real Quickwit cluster for the indexer admin +
+#                  search closed loop (P7.1a / ADR-0043 cross-phase
+#                  closer; scripts/smoke-p7-1a.ps1 boots
+#                  log-indexer-service against this service with
+#                  cortex.indexer.admin.backend=quickwit AND
+#                  cortex.indexer.search.backend=quickwit). The same
+#                  service is reused for the P5.3 QuickwitSink writer
+#                  closed loop when needed.
 #
 # What this DELIBERATELY does NOT bring up:
 #   - eureka     : booted by the per-phase smoke script via
@@ -18,6 +29,9 @@
 #                  changes are picked up without an image rebuild.
 #   - log-ingest-service : same pattern -- booted from source by the
 #                  P4.0+ smoke scripts so iteration is rebuild-free.
+#   - log-indexer-service : same pattern -- booted from source by
+#                  scripts/smoke-p7-1a.ps1 against the quickwit
+#                  service below (ADR-0043).
 #
 # Per LD24 this file is a temporary BRIDGE. The full multi-service
 # compose stack lands at P10 (`infra/docker/`).
@@ -112,4 +126,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
+
+  # P7.1a (ADR-0043): real Quickwit cluster for the log-indexer-service
+  # cross-phase closer smoke + Postman + Newman gates. Boots with the
+  # default single-node config so admin (create / list / drop /
+  # delete-tasks) + search (POST /api/v1/<index>/search) work
+  # out-of-the-box on :7280. Storage at /quickwit/qwdata (ephemeral
+  # to the container -- no volume mount on purpose, smoke is
+  # always-clean).
+  #
+  # The smoke contract (scripts/smoke-p7-1a.ps1) boots
+  # log-indexer-service against this container with
+  # cortex.indexer.admin.backend=quickwit AND
+  # cortex.indexer.search.backend=quickwit so the
+  # QuickwitHttpAdmin + QuickwitHttpSearch beans fire and produce
+  # real wire traffic against the cluster.
+  quickwit:
+    image: quickwit/quickwit:0.8.1
+    container_name: cortex-smoke-quickwit
+    ports:
+      - "7280:7280"
+    command: ["run"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7280/health/livez || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
     restart: unless-stopped

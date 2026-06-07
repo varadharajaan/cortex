@@ -9,6 +9,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.1a: log-indexer-service cross-phase closer (PR for #109,
+  ADR-0043). Closes the P7 epic by adding the **Leg B/C/D/E
+  artifacts** that the per-phase ships (P7.0..P7.4) deferred
+  per the LD104 closer-pattern precedent: a full-stack
+  PowerShell boot smoke + a Postman collection + a cross-phase
+  Failsafe IT that exercises every P7.0..P7.4 SPI flow through
+  autowired Spring beans + ADR-0043 + INDEX bump 42 -> 43 +
+  README banner flip + four-file tracking flip. New
+  `log-indexer-service/src/test/java/io/cortex/indexer/closer/QuickwitCrossPhaseIT.java`
+  (~500 lines) -- ONE `@SpringBootTest` class with BOTH
+  binder gates flipped to `quickwit`
+  (`cortex.indexer.admin.backend=quickwit` +
+  `cortex.indexer.search.backend=quickwit`), singleton
+  in-process `WireMockServer` started in a static block,
+  `@TestConstructor(autowireMode = TestConstructor.AutowireMode.ALL)`
+  + `private final` fields + package-private constructor for
+  `QuickwitIndexAdmin admin` + `LogSearchClient search` +
+  `MeterRegistry registry` (Checkstyle Rule 14.1 forbids
+  field `@Autowired`; pattern mirrors
+  `SlackCrossPhaseIT` / `PagerDutyCrossPhaseIT` /
+  `JiraCrossPhaseIT` from log-remediation-service per
+  ADR-0037). 12 test methods: 2 binder-gate proofs
+  (`adminBeanIsQuickwitBackend` + `searchBeanIsQuickwitBackend`);
+  4 P7.1 admin tests (`ensureIndex` create / `ensureIndex`
+  exists / `dropIndex` present / `dropIndex` idempotent on
+  404); 1 P7.2 retention test (`applyRetention` POSTs delete-
+  tasks with the correct cutoff); 2 P7.3 budget tests
+  (under-ceiling allow / over-ceiling reject); 3 P7.4 search
+  tests (happy path with 2 hits / 404 permanent /
+  tenant-mismatch permanent without contacting Quickwit). Per-
+  test `@BeforeEach` resets WireMock; `@DynamicPropertySource`
+  maps `cortex.indexer.quickwit.base-url` to
+  `WIRE_MOCK::baseUrl`. The IT asserts on observable
+  production surfaces only: `IndexAdminResult` + `SearchResult`
+  envelope shape + the
+  `cortex_indexer_index_admin_total{backend,outcome,tenant_id}`
+  + `cortex_indexer_search_total{backend,outcome,tenant_id}`
+  counter deltas (Part 17 allowlist) + the wire shape of
+  every POST/GET/DELETE/search call via WireMock `verify()`
+  with JSON-path body matchers. New full-stack PowerShell
+  smoke `scripts/smoke-p7-1a.ps1` (~280 lines) -- `Start-
+  Transcript`, params `-SkipInfra` / `-KeepInfra` /
+  `-SkipEureka`, `docker compose -f infra/local/docker-
+  compose.smoke.yml up -d quickwit` then
+  `Wait-Url $quickwit/health/livez 90s` +
+  `Wait-Url $quickwit/api/v1/version 30s`, optional
+  Eureka boot, boots log-indexer-service with env bag
+  (`CORTEX_INDEXER_BACKEND=quickwit`,
+  `CORTEX_INDEXER_SEARCH_BACKEND=quickwit`,
+  `CORTEX_QUICKWIT_BASE_URL=http://localhost:7280`,
+  `CORTEX_QUICKWIT_REQUEST_TIMEOUT=10s`,
+  `CORTEX_QUICKWIT_DOC_MAPPING_VERSION=v1`,
+  `EUREKA_DEFAULT_ZONE=http://localhost:8761/eureka/`),
+  asserts `/actuator/health/quickwit` returns `status=UP` +
+  `details.backend=quickwit`, asserts
+  `/actuator/prometheus` exposes BOTH counter families with
+  `# HELP` + `# TYPE counter` + at least one
+  `backend="quickwit"` series for each, tears down via
+  `pidFile` + `Register-EngineEvent`
+  `PowerShell.Exiting` exit trap so the JVM cannot leak
+  on Ctrl-C. New `infra/local/docker-compose.smoke.yml
+  quickwit:` service entry (`image:
+  quickwit/quickwit:0.8.1`, `container_name:
+  cortex-smoke-quickwit`, `ports: ["7280:7280"]`, `command:
+  ["run"]`, `healthcheck: /health/livez 10s/18/30s`,
+  `restart: unless-stopped`). New
+  `postman/log-indexer.postman_collection.json` (5 folders /
+  13 requests / 55 assertions) -- Admin (actuator: health +
+  liveness + readiness + `health/quickwit` binder-gate proof
+  + info + metrics + prometheus with HELP+TYPE +
+  `backend="quickwit"` series on both families) +
+  Metrics-Baseline (snapshot per-family sums into
+  `index_admin_baseline_quickwit` + `search_baseline_quickwit`
+  env vars) + Quickwit-Admin (`/health/quickwit` re-check +
+  direct Quickwit `/health/livez` + `/api/v1/indexes`;
+  `pm.execution.skipRequest()` when `quickwit_base_url`
+  empty) + Quickwit-Search (404-permanent wire contract probe
+  at `/api/v1/cortex-no-such-index-v1/search` body `{"query":"*",
+  "max_hits":1}`; same skip-gate) + Metrics-After (both
+  families still exposed with HELP+TYPE + monotonically non-
+  decreasing sums vs baseline). Three env files: `local`
+  (`base_url=http://localhost:8097` +
+  `quickwit_base_url=http://localhost:7280` +
+  `tenant_id=tenant-IT`), `staging` (blank
+  `quickwit_base_url`), `prod` (blank `quickwit_base_url`).
+  `postman/README.md` matrix bump (LD116) adds a 12-row
+  matrix for the new collection + a folder-order rationale
+  block + the Newman invocation incantation. Boot order
+  matters: `scripts/smoke-p7-1a.ps1 -KeepInfra` then
+  `npx newman run postman/log-indexer.postman_collection.json
+  -e postman/log-indexer.postman_environment_local.json
+  --reporters cli --bail`. ADR-0043 ships in this PR with 4
+  rejected alternatives (per-test `@RegisterExtension`
+  WireMock, Testcontainers Quickwit-as-IT-backend, 3-5
+  `@SpringBootTest` subclasses, inbound REST controller for
+  the SPI) + the `@Lazy` cycle-break decision recorded as
+  D2 + LD131 captured (canonical pattern for any future
+  module where a `<X>Metrics`-style bootstrap loop injects
+  `List<SomeSpi>` AND the SPI adapters inject the same
+  metrics bean).
+  - **New production fix code** (`log-indexer-service/src/main/java/`):
+    `io.cortex.indexer.admin.quickwit.QuickwitHttpAdmin` ctor
+    parameter `IndexerMetrics metrics` gains `@Lazy` (see the
+    `### Fixed` entry below for full context);
+    `io.cortex.indexer.search.quickwit.QuickwitHttpSearch`
+    ctor parameter `IndexerMetrics metrics` gains the same
+    `@Lazy` treatment.
+  - **New test code** (`log-indexer-service/src/test/java/`):
+    `io.cortex.indexer.closer.QuickwitCrossPhaseIT` (cross-
+    phase Failsafe IT, 12 tests).
+  - **New infra / scripts / Postman**:
+    `infra/local/docker-compose.smoke.yml` (`quickwit:`
+    service); `scripts/smoke-p7-1a.ps1`;
+    `postman/log-indexer.postman_collection.json`;
+    `postman/log-indexer.postman_environment_{local,staging,prod}.json`;
+    `postman/README.md` matrix bump.
+  - **Docs / ADR**: `docs/adr/0043-log-indexer-cross-phase-
+    closer.md` (this ADR); `docs/adr/INDEX.md` count bump
+    42 -> 43 + new ADR-0043 row under "Indexer pipeline
+    (P7)" + `Last refreshed: 2026-06-08`;
+    `log-indexer-service/README.md` banner flipped
+    `P7.0+P7.1+P7.2+P7.3+P7.4 SHIPPED` ->
+    `P7.0+P7.1+P7.2+P7.3+P7.4+P7.1a SHIPPED` + new section
+    4z "Cross-phase closer (P7.1a, ADR-0043)".
+
+### Fixed
+
+- P7.1a: log-indexer-service production startup
+  `BeanCurrentlyInCreationException` when
+  `cortex.indexer.admin.backend=quickwit` and/or
+  `cortex.indexer.search.backend=quickwit` (PR for #109,
+  ADR-0043 D2, LD131). Spring closes the cycle
+  `IndexerMetrics` (ctor injects `List<QuickwitIndexAdmin>`
+  + `List<LogSearchClient>` to drive the LD106 + LD112
+  bootstrap loop in `@PostConstruct`) -> `QuickwitHttpAdmin`
+  / `QuickwitHttpSearch` (each injects `IndexerMetrics` to
+  tick on outcomes) -> `IndexerMetrics`, and fails bean
+  construction at startup. The per-phase
+  `QuickwitHttpAdminWireMockIT` / `QuickwitHttpSearchWireMockIT`
+  did NOT catch this -- they construct the adapter directly
+  with `new`, completely bypassing Spring's bean factory.
+  The defect was surfaced for the first time by the new
+  `QuickwitCrossPhaseIT` (P7.1a closer), which is exactly
+  the LD104 closer-pattern value proposition: cross-phase
+  closers structurally catch wiring defects that per-phase
+  unit + WireMock ITs cannot detect by construction. Fix:
+  `@Lazy` on the `IndexerMetrics metrics` ctor parameter
+  of both `QuickwitHttpAdmin` AND `QuickwitHttpSearch`.
+  Spring substitutes a JDK proxy for the `IndexerMetrics`
+  injection that resolves the real bean on first method
+  call, by which time both ends of the cycle are fully
+  constructed. The proxy-vs-real-bean swap is transparent
+  at the call site -- the adapters continue to call
+  `metrics.incIndexAdmin(...)` / `metrics.incSearch(...)`
+  without caring whether the reference is a proxy or the
+  real bean. Single-import + single-annotation change per
+  adapter; no public API change to the SPI; no behaviour
+  change in the metrics bootstrap loop. Multi-paragraph
+  Javadoc added to both ctors cross-referencing ADR-0043
+  D2 and LD131 so the next maintainer understands why
+  `@Lazy` is essential and why removing it would re-
+  introduce the cycle. This is canonical: any future module
+  whose `<X>Metrics` bootstrap loop injects `List<SomeSpi>`
+  AND whose SPI adapters inject the same metrics bean MUST
+  apply the same `@Lazy` pattern, AND MUST add a cross-
+  phase closer to detect the cycle by construction.
+
+### Added
+
 - P7.4: log-indexer-service tenant-scoped Quickwit search
   proxy via `LogSearchClient` SPI (PR for #107, ADR-0042).
   Adds the **read-side** of the indexer-service alongside the
