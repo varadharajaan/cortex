@@ -1,6 +1,7 @@
 package io.cortex.indexer.admin.quickwit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortex.indexer.admin.CardinalityBudget;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
 import io.cortex.indexer.admin.RetentionPolicy;
@@ -109,6 +110,28 @@ class QuickwitHttpAdminTest {
         assertThat(result.outcome())
                 .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
         assertThat(result.reason()).isEqualTo("quickwit:null-policy");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void nullSpecOnEnsureIndexWithBudgetReturnsPermanentFailure() {
+        final IndexAdminResult result = this.admin.ensureIndex(
+                null, new CardinalityBudget(5));
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-spec");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void nullBudgetOnEnsureIndexWithBudgetReturnsPermanentFailure() {
+        final IndexAdminResult result =
+                this.admin.ensureIndex(SAMPLE_SPEC, null);
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-budget");
         assertThat(result.backend())
                 .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
     }

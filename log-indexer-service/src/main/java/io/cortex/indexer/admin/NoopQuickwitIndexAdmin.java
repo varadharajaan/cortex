@@ -52,4 +52,10 @@ public final class NoopQuickwitIndexAdmin implements QuickwitIndexAdmin {
                                            final RetentionPolicy policy) {
         return IndexAdminResult.noop(NOOP_REASON);
     }
+
+    @Override
+    public IndexAdminResult ensureIndex(final IndexSpec spec,
+                                        final CardinalityBudget budget) {
+        return IndexAdminResult.noop(NOOP_REASON);
+    }
 }

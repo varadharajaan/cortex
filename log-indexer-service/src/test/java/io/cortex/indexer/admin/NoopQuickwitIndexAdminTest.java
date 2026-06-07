@@ -56,4 +56,18 @@ class NoopQuickwitIndexAdminTest {
         assertThat(result.outcome()).isEqualTo(IndexAdminResult.OUTCOME_NOOP);
         assertThat(result.reason()).contains("noop admin");
     }
+
+    @Test
+    void ensureIndexWithBudgetReturnsNoopVerdict() {
+        final IndexSpec spec =
+                new IndexSpec("tenant-a", "cortex-tenant-a-v1", "v1");
+        final CardinalityBudget budget = new CardinalityBudget(5);
+
+        final IndexAdminResult result =
+                this.admin.ensureIndex(spec, budget);
+
+        assertThat(result.backend()).isEqualTo(IndexAdminResult.BACKEND_NOOP);
+        assertThat(result.outcome()).isEqualTo(IndexAdminResult.OUTCOME_NOOP);
+        assertThat(result.reason()).contains("noop admin");
+    }
 }
