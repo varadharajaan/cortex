@@ -19,6 +19,8 @@ class IndexAdminResultTest {
         assertThat(IndexAdminResult.OUTCOME_CREATED).isEqualTo("created");
         assertThat(IndexAdminResult.OUTCOME_EXISTS).isEqualTo("exists");
         assertThat(IndexAdminResult.OUTCOME_DROPPED).isEqualTo("dropped");
+        assertThat(IndexAdminResult.OUTCOME_RETENTION_APPLIED)
+                .isEqualTo("retention_applied");
         assertThat(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE)
                 .isEqualTo("transient_failure");
         assertThat(IndexAdminResult.OUTCOME_PERMANENT_FAILURE)
@@ -63,6 +65,16 @@ class IndexAdminResultTest {
     }
 
     @Test
+    void retentionAppliedFactoryStampsRetentionAppliedOutcome() {
+        final IndexAdminResult r = IndexAdminResult.retentionApplied(
+                IndexAdminResult.BACKEND_QUICKWIT);
+        assertThat(r.backend()).isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+        assertThat(r.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_RETENTION_APPLIED);
+        assertThat(r.reason()).isEmpty();
+    }
+
+    @Test
     void transientFailureFactoryStampsTransientOutcome() {
         final IndexAdminResult r = IndexAdminResult.transientFailure(
                 IndexAdminResult.BACKEND_QUICKWIT, "quickwit:500");
@@ -87,6 +99,8 @@ class IndexAdminResultTest {
         assertThat(IndexAdminResult.exists(null).backend())
                 .isEqualTo(IndexAdminResult.BACKEND_NOOP);
         assertThat(IndexAdminResult.dropped(null).backend())
+                .isEqualTo(IndexAdminResult.BACKEND_NOOP);
+        assertThat(IndexAdminResult.retentionApplied(null).backend())
                 .isEqualTo(IndexAdminResult.BACKEND_NOOP);
         assertThat(IndexAdminResult.transientFailure(null, null).backend())
                 .isEqualTo(IndexAdminResult.BACKEND_NOOP);

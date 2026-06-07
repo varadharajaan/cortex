@@ -3,8 +3,13 @@ package io.cortex.indexer.admin.quickwit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
+import io.cortex.indexer.admin.RetentionPolicy;
 import io.cortex.indexer.metrics.IndexerMetrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -15,8 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pure unit tests for {@link QuickwitHttpAdmin} -- backend id,
- * null-spec guard rails, and {@code renderCreateBody} body shape
- * (P7.1 / ADR-0039 D6).
+ * null-spec guard rails, {@code renderCreateBody} body shape,
+ * and the P7.2 {@code renderRetentionBody} + {@code applyRetention}
+ * guard rails (P7.1 / ADR-0039 D6 + P7.2 / ADR-0040 D5).
  *
  * <p>The HTTP outcome table is exercised end-to-end by
  * {@link QuickwitHttpAdminWireMockIT} against a real
@@ -31,6 +37,10 @@ class QuickwitHttpAdminTest {
     private static final IndexSpec SAMPLE_SPEC =
             new IndexSpec("tenant-A", "cortex-tenantA-v1", "v1");
 
+    /** Fixed clock pinned to 2026-06-07T00:00:00Z for retention tests. */
+    private static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-06-07T00:00:00Z"), ZoneOffset.UTC);
+
     private final ObjectMapper mapper = new ObjectMapper();
     private final IndexerMetrics metrics = new IndexerMetrics(
             new SimpleMeterRegistry(), List.of());
@@ -41,7 +51,8 @@ class QuickwitHttpAdminTest {
     private final RestClient restClient = RestClient.builder().build();
 
     private final QuickwitHttpAdmin admin = new QuickwitHttpAdmin(
-            this.properties, this.restClient, this.metrics, this.mapper);
+            this.properties, this.restClient, this.metrics, this.mapper,
+            FIXED_CLOCK);
 
     @Test
     void backendIdReportsQuickwit() {
@@ -78,6 +89,45 @@ class QuickwitHttpAdminTest {
         assertThat(result.outcome())
                 .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
         assertThat(result.reason()).isEqualTo("quickwit:null-index-id");
+    }
+
+    @Test
+    void nullSpecOnApplyRetentionReturnsPermanentFailure() {
+        final IndexAdminResult result = this.admin.applyRetention(
+                null, new RetentionPolicy(Duration.ofDays(7)));
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-spec");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void nullPolicyOnApplyRetentionReturnsPermanentFailure() {
+        final IndexAdminResult result =
+                this.admin.applyRetention(SAMPLE_SPEC, null);
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:null-policy");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+    }
+
+    @Test
+    void renderRetentionBodyContainsQueryWildcardAndEndTimestamp() {
+        final long cutoff = 1_717_700_000L;
+        final Map<String, Object> body = this.admin.renderRetentionBody(cutoff);
+        assertThat(body.get("query")).isEqualTo("*");
+        assertThat(body.get("end_timestamp")).isEqualTo(cutoff);
+    }
+
+    @Test
+    void renderRetentionBodyOmitsStartTimestamp() {
+        final Map<String, Object> body =
+                this.admin.renderRetentionBody(1L);
+        // Unbounded past: Quickwit DeleteQuery treats omitted
+        // start_timestamp as -infinity.
+        assertThat(body).doesNotContainKey("start_timestamp");
     }
 
     @Test

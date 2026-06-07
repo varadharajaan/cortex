@@ -46,6 +46,14 @@ public record IndexAdminResult(String backend, String outcome,
     /** Outcome value: admin successfully dropped the target index. */
     public static final String OUTCOME_DROPPED = "dropped";
 
+    /**
+     * Outcome value: admin successfully applied a retention policy
+     * (P7.2 / ADR-0040). The downstream Quickwit Delete API accepted
+     * the {@code DeleteQuery} and scheduled the cutoff-based
+     * deletion task.
+     */
+    public static final String OUTCOME_RETENTION_APPLIED = "retention_applied";
+
     /** Outcome value: downstream returned a 4xx / unrecoverable error. */
     public static final String OUTCOME_PERMANENT_FAILURE = "permanent_failure";
 
@@ -103,6 +111,21 @@ public record IndexAdminResult(String backend, String outcome,
         return new IndexAdminResult(
                 backend == null ? BACKEND_NOOP : backend,
                 OUTCOME_DROPPED, "");
+    }
+
+    /**
+     * Convenience factory for the "retention policy applied" verdict
+     * (P7.2 / ADR-0040). Stamped when the downstream Quickwit Delete
+     * API accepts the cutoff-based {@code DeleteQuery}.
+     *
+     * @param backend one of the {@code BACKEND_*} constants
+     * @return an {@link IndexAdminResult} with
+     *         {@code outcome=retention_applied}, blank reason
+     */
+    public static IndexAdminResult retentionApplied(final String backend) {
+        return new IndexAdminResult(
+                backend == null ? BACKEND_NOOP : backend,
+                OUTCOME_RETENTION_APPLIED, "");
     }
 
     /**

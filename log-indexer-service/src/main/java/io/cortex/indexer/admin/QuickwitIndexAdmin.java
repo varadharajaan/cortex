@@ -63,4 +63,29 @@ public interface QuickwitIndexAdmin {
      * @return the verdict; never {@code null}
      */
     IndexAdminResult dropIndex(String indexId);
+
+    /**
+     * Apply a retention policy to the index identified by
+     * {@link IndexSpec#indexId()} (P7.2 / ADR-0040 D1).
+     *
+     * <p>Implementations translate the supplied {@link RetentionPolicy}
+     * into a backend-native cutoff request: the Quickwit HTTP adapter
+     * POSTs a {@code DeleteQuery} to
+     * {@code /api/v1/&lt;indexId&gt;/delete-tasks} with
+     * {@code end_timestamp = now - policy.ttl()} (epoch seconds);
+     * the noop default records the call and returns
+     * {@link IndexAdminResult#OUTCOME_NOOP}.</p>
+     *
+     * <p>This is the per-call alternative to dropping the whole
+     * index ({@link #dropIndex(String)}): documents older than the
+     * cutoff are scheduled for deletion server-side while the index
+     * itself stays available for ingest. Operators wire a scheduler
+     * (P7.3+) to call this on every tenant index at a documented
+     * cadence.</p>
+     *
+     * @param spec   the target index spec; never {@code null}
+     * @param policy the retention policy to apply; never {@code null}
+     * @return the verdict; never {@code null}
+     */
+    IndexAdminResult applyRetention(IndexSpec spec, RetentionPolicy policy);
 }

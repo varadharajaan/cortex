@@ -46,4 +46,10 @@ public final class NoopQuickwitIndexAdmin implements QuickwitIndexAdmin {
     public IndexAdminResult dropIndex(final String indexId) {
         return IndexAdminResult.noop(NOOP_REASON);
     }
+
+    @Override
+    public IndexAdminResult applyRetention(final IndexSpec spec,
+                                           final RetentionPolicy policy) {
+        return IndexAdminResult.noop(NOOP_REASON);
+    }
 }

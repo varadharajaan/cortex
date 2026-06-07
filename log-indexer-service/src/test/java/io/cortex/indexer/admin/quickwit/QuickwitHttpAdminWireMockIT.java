@@ -18,6 +18,7 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import com.github.tomakehurst.wiremock.http.Fault;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
+import io.cortex.indexer.admin.RetentionPolicy;
 import io.cortex.indexer.metrics.IndexerMetrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.http.HttpClient;
@@ -63,6 +64,10 @@ class QuickwitHttpAdminWireMockIT {
 
     /** Quickwit per-index admin path (GET get + DELETE drop). */
     private static final String INDEX_PATH_PREFIX = "/api/v1/indexes/";
+
+    /** Quickwit Delete API path for {@link RetentionPolicy} application (P7.2). */
+    private static final String DELETE_TASKS_PATH =
+            "/api/v1/" + "cortex-tenantIT-v1" + "/delete-tasks";
 
     /** Tenant id reused across every test. */
     private static final String TENANT_ID = "tenant-IT";
@@ -351,6 +356,116 @@ class QuickwitHttpAdminWireMockIT {
                 .willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
 
         final IndexAdminResult result = adapter().dropIndex(INDEX_ID);
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
+        assertThat(result.reason())
+                .isIn("quickwit:timeout", "quickwit:transport");
+    }
+
+    // ---------------------------------------------------------------
+    // applyRetention (P7.2 / ADR-0040 D4)
+    // ---------------------------------------------------------------
+
+    /** Sample retention policy reused across applyRetention tests. */
+    private static RetentionPolicy samplePolicy() {
+        return new RetentionPolicy(Duration.ofDays(7));
+    }
+
+    /** POST /delete-tasks 200 -> {@code retention_applied}; body shape verified. */
+    @Test
+    void applyRetentionHappyPathReturnsRetentionApplied() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"opstamp\":1}")));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_RETENTION_APPLIED);
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+
+        wireMock.verify(postRequestedFor(urlPathEqualTo(DELETE_TASKS_PATH))
+                .withRequestBody(matchingJsonPath("$.query", equalTo("*")))
+                .withRequestBody(matchingJsonPath("$.end_timestamp")));
+    }
+
+    /** POST /delete-tasks 429 -> {@code transient_failure / quickwit:429}. */
+    @Test
+    void applyRetentionRateLimitedReturnsTransient() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withStatus(429).withBody("rate limited")));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:429");
+    }
+
+    /** POST /delete-tasks 500 -> {@code transient_failure / quickwit:5xx:500}. */
+    @Test
+    void applyRetentionServerErrorReturnsTransient() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withStatus(500).withBody("boom")));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:5xx:500");
+    }
+
+    /**
+     * POST /delete-tasks 404 (index missing) -&gt; {@code
+     * permanent_failure / quickwit:4xx:404}. Per ADR-0040 D4 the
+     * 404 is NOT idempotent here -- applying retention to a
+     * non-existent index is a config error, distinct from
+     * {@code dropIndex}'s 404-is-success semantic.
+     */
+    @Test
+    void applyRetentionNotFoundReturnsPermanent() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withStatus(404).withBody("no such index")));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:4xx:404");
+    }
+
+    /** POST /delete-tasks 400 -> {@code permanent_failure / quickwit:4xx:400}. */
+    @Test
+    void applyRetentionBadRequestReturnsPermanent() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withStatus(400).withBody("bad query")));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:4xx:400");
+    }
+
+    /**
+     * Transport fault on POST /delete-tasks -&gt; transient
+     * {@code timeout} or {@code transport}. Uses {@link
+     * Fault#CONNECTION_RESET_BY_PEER} per LD120 for determinism.
+     */
+    @Test
+    void applyRetentionTransportFaultReturnsTransientTransportBucket() {
+        wireMock.stubFor(post(urlPathEqualTo(DELETE_TASKS_PATH))
+                .willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+
+        final IndexAdminResult result =
+                adapter().applyRetention(sampleSpec(), samplePolicy());
 
         assertThat(result.outcome())
                 .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);

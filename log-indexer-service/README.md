@@ -1,6 +1,6 @@
 # log-indexer-service
 
-**Status: P7.0 + P7.1 SHIPPED** -- P7.0 carved the
+**Status: P7.0 + P7.1 + P7.2 SHIPPED** -- P7.0 carved the
 `QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
 bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
 the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
@@ -9,13 +9,19 @@ Quickwit REST surface (`POST /api/v1/indexes`, `GET
 /api/v1/indexes/<id>`, `DELETE /api/v1/indexes/<id>`) with the
 P5.3 + P6.x HTTP/1.1 pin (LD42) + dual connect+read timeout
 (LD121) + outcome-classification template mirroring the P6.0a
-`RestDispatchTemplate` (ADR-0036). Mutually exclusive with the
-noop default at the `@ConditionalOnProperty` level. The
+`RestDispatchTemplate` (ADR-0036). P7.2 adds the third SPI method
+`applyRetention(IndexSpec, RetentionPolicy)` backed by the
+Quickwit Delete API (`POST /api/v1/{indexId}/delete-tasks` with
+body `{"query":"*","end_timestamp":<epoch_seconds>}`) plus a new
+`RetentionPolicy(Duration ttl)` immutable value type (strict
+null/zero/negative rejection) + new
+`IndexAdminResult.OUTCOME_RETENTION_APPLIED` outcome bootstrapped
+into the `IndexerMetrics` OCP loop (ADR-0040). Mutually exclusive
+with the noop default at the `@ConditionalOnProperty` level. The
 IndexerMetrics OCP bootstrap loop picks up the new backend with
-zero edits. ADR-0039 documents the seven decision drivers + five
-rejected alternatives. P7.2..P7.4 follow with retention +
-cardinality budgets + search proxy; P7.1a closer ships the
-cross-phase IT.
+zero edits. ADR-0039 + ADR-0040 document the decision drivers +
+rejected alternatives. P7.3..P7.4 follow with cardinality budgets +
+search proxy; P7.1a closer ships the cross-phase IT.
 
 CORTEX log-indexer-service is the **operator-facing leg of the
 search tier**. There is no inbound REST contract for the data path
@@ -136,6 +142,15 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
   DELETE-and-classify-404-as-success per the SPI idempotence
   contract. Composition-based `RestAdminTemplate` mirrors the
   P6.0a `RestDispatchTemplate` outcome table.
+- **ADR-0040** -- P7.2 `applyRetention(IndexSpec,
+  RetentionPolicy)` SPI method backed by the Quickwit Delete
+  API (`POST /api/v1/{indexId}/delete-tasks` with body
+  `{"query":"*","end_timestamp":<epoch_seconds>}`). New
+  `RetentionPolicy(Duration ttl)` strict value type;
+  `Clock`-injected dual-ctor test seam mirroring P5.4
+  `AnomaliesPublisher`. The 404 status here is
+  **permanent failure** (config error == missing index),
+  distinct from `dropIndex`'s 404-is-success semantic.
 - **ADR-0036** -- the `RestDispatchTemplate` composition
   pattern P7.1's `RestAdminTemplate` mirrors.
 - **ADR-0030** -- writer side of the Quickwit fan-out lives in
@@ -180,9 +195,10 @@ Testcontainers. Mirror of the P3.0 / P6.0 scaffold-phase pattern.
 io.cortex.indexer
     CortexIndexerApplication        - @SpringBootApplication entrypoint
     admin/
-        QuickwitIndexAdmin          - SPI (ensureIndex, dropIndex, backendId)
+        QuickwitIndexAdmin          - SPI (ensureIndex, dropIndex, applyRetention, backendId)
         IndexAdminResult            - immutable verdict (backend, outcome, reason)
         IndexSpec                   - immutable input record (tenantId, indexId, docMappingVersion)
+        RetentionPolicy             - immutable input record (ttl); strict null/zero/negative reject (ADR-0040)
         NoopQuickwitIndexAdmin      - default impl (gated noop, matchIfMissing=true)
         quickwit/
             QuickwitProperties      - @ConfigurationProperties(prefix=cortex.indexer.quickwit)

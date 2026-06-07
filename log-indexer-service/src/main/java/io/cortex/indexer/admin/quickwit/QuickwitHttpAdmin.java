@@ -5,13 +5,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
 import io.cortex.indexer.admin.QuickwitIndexAdmin;
+import io.cortex.indexer.admin.RetentionPolicy;
 import io.cortex.indexer.constants.IndexerHttp;
 import io.cortex.indexer.metrics.IndexerMetrics;
+import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -44,6 +47,15 @@ import org.springframework.web.client.RestClientResponseException;
  *       {@code dropped} per SPI idempotence contract (ADR-0038
  *       D5). All other statuses delegate to
  *       {@link RestAdminTemplate}.</li>
+ *   <li>{@code applyRetention(IndexSpec, RetentionPolicy)} --
+ *       {@code POST /api/v1/&lt;indexId&gt;/delete-tasks} with the
+ *       Quickwit {@code DeleteQuery} body
+ *       {@code {"query":"*","end_timestamp":<epoch_seconds>}};
+ *       cutoff computed as {@code clock.instant().minus(ttl)
+ *       .getEpochSecond()}. 2xx returns {@code retention_applied}.
+ *       404 (index missing) is a config error and surfaces as
+ *       {@code permanent_failure:quickwit:4xx:404} via the
+ *       template (P7.2 / ADR-0040 D4).</li>
  * </ul>
  *
  * <p>Every call ends with a
@@ -72,6 +84,13 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
     /** Per-index Quickwit admin path template; consumes one URI variable. */
     static final String INDEX_PATH = "/api/v1/indexes/{indexId}";
 
+    /**
+     * Quickwit Delete API path template (P7.2 / ADR-0040 D4);
+     * consumes one URI variable. The {@code DeleteQuery} body
+     * carries the {@code end_timestamp} cutoff.
+     */
+    static final String DELETE_TASKS_PATH = "/api/v1/{indexId}/delete-tasks";
+
     /** Quickwit IndexConfig schema version the client targets. */
     static final String QUICKWIT_INDEX_CONFIG_VERSION = "0.7";
 
@@ -79,11 +98,13 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
     private final RestClient restClient;
     private final IndexerMetrics metrics;
     private final ObjectMapper mapper;
+    private final Clock clock;
     private final RestAdminTemplate template =
             new RestAdminTemplate(IndexAdminResult.BACKEND_QUICKWIT);
 
     /**
-     * Spring constructor.
+     * Spring constructor. Delegates to the test-seam ctor with the
+     * system UTC clock.
      *
      * @param properties bound configuration block
      * @param restClient the {@link QuickwitHttpConfig#quickwitAdminRestClient
@@ -91,14 +112,39 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
      * @param metrics    shared indexer metrics registry
      * @param mapper     shared Jackson mapper (autoconfigured by Spring Boot)
      */
+    @Autowired 
     public QuickwitHttpAdmin(final QuickwitProperties properties,
-                             final RestClient restClient,
-                             final IndexerMetrics metrics,
-                             final ObjectMapper mapper) {
+                                        final RestClient restClient,
+                                        final IndexerMetrics metrics,
+                                        final ObjectMapper mapper) {
+        this(properties, restClient, metrics, mapper, Clock.systemUTC());
+    }
+
+    /**
+     * Test-seam constructor (P7.2 / ADR-0040 D5). The {@code clock}
+     * is used to compute the {@code end_timestamp} cutoff in
+     * {@link #applyRetention(IndexSpec, RetentionPolicy)} so unit
+     * tests can pin the value with {@link Clock#fixed}. Package
+     * private so production wiring goes through the {@code @Autowired}
+     * ctor above.
+     *
+     * @param properties bound configuration block
+     * @param restClient the {@link QuickwitHttpConfig#quickwitAdminRestClient
+     *                   quickwitAdminRestClient} bean (HTTP/1.1 + dual timeout)
+     * @param metrics    shared indexer metrics registry
+     * @param mapper     shared Jackson mapper (autoconfigured by Spring Boot)
+     * @param clock      time source for retention cutoff computation
+     */
+    QuickwitHttpAdmin(final QuickwitProperties properties,
+                      final RestClient restClient,
+                      final IndexerMetrics metrics,
+                      final ObjectMapper mapper,
+                      final Clock clock) {
         this.properties = properties;
         this.restClient = restClient;
         this.metrics = metrics;
         this.mapper = mapper;
+        this.clock = clock;
     }
 
     @Override
@@ -328,6 +374,92 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
      */
     private void tick(final IndexAdminResult result, final String tenantId) {
         this.metrics.incIndexAdmin(result.backend(), result.outcome(), tenantId);
+    }
+
+    @Override
+    public IndexAdminResult applyRetention(final IndexSpec spec,
+                                           final RetentionPolicy policy) {
+        if (spec == null) {
+            final IndexAdminResult result = IndexAdminResult.permanentFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:null-spec");
+            tick(result, null);
+            return result;
+        }
+        if (policy == null) {
+            final IndexAdminResult result = IndexAdminResult.permanentFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:null-policy");
+            tick(result, spec.tenantId());
+            return result;
+        }
+
+        final long endTimestamp = this.clock.instant()
+                .minus(policy.ttl()).getEpochSecond();
+        final String body;
+        try {
+            body = this.mapper.writeValueAsString(
+                    renderRetentionBody(endTimestamp));
+        } catch (final JsonProcessingException ex) {
+            LOG.warn("quickwit applyRetention body serialisation failed "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            final IndexAdminResult result = IndexAdminResult.transientFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:unknown");
+            tick(result, spec.tenantId());
+            return result;
+        }
+
+        try {
+            this.restClient.post()
+                    .uri(DELETE_TASKS_PATH, spec.indexId())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve()
+                    .toBodilessEntity();
+            final IndexAdminResult result = IndexAdminResult.retentionApplied(
+                    IndexAdminResult.BACKEND_QUICKWIT);
+            tick(result, spec.tenantId());
+            return result;
+        } catch (final RestClientResponseException ex) {
+            LOG.warn("quickwit applyRetention POST non-2xx tenantId={} "
+                    + "indexId={} status={}: {}",
+                    spec.tenantId(), spec.indexId(),
+                    ex.getStatusCode().value(), ex.getMessage());
+            final IndexAdminResult result = this.template.classifyHttp(ex);
+            tick(result, spec.tenantId());
+            return result;
+        } catch (final ResourceAccessException ex) {
+            LOG.warn("quickwit applyRetention POST transport failure "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            final IndexAdminResult result = this.template.classifyTransport(ex);
+            tick(result, spec.tenantId());
+            return result;
+        } catch (final RuntimeException ex) {
+            LOG.warn("quickwit applyRetention POST unexpected failure "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            final IndexAdminResult result = this.template.classifyUnknown(ex);
+            tick(result, spec.tenantId());
+            return result;
+        }
+    }
+
+    /**
+     * Render the Quickwit {@code DeleteQuery} body for retention
+     * application (P7.2 / ADR-0040 D4). Quickwit schedules deletion
+     * of every doc where {@code timestamp_field &lt; end_timestamp};
+     * {@code query="*"} matches every doc, and the cutoff filters
+     * down to the expired window. {@code start_timestamp} is
+     * intentionally omitted so the unbounded past is included.
+     *
+     * @param endTimestampSeconds cutoff in epoch seconds (UTC)
+     * @return ordered map suitable for Jackson encoding
+     */
+    Map<String, Object> renderRetentionBody(final long endTimestampSeconds) {
+        final Map<String, Object> body = new LinkedHashMap<>();
+        body.put("query", "*");
+        body.put("end_timestamp", endTimestampSeconds);
+        return body;
     }
 
     /**
