@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.2: log-indexer-service `applyRetention` via Quickwit
+  Delete API (PR for #102, ADR-0040). Adds the third lifecycle
+  method on the P7.0 `QuickwitIndexAdmin` SPI (ADR-0038) --
+  `applyRetention(IndexSpec spec, RetentionPolicy policy)` --
+  with implementations on both the noop default and the real
+  `QuickwitHttpAdmin` adapter. Used by the retention sweeper
+  (P7.3+) to delete every document older than `now - ttl` from
+  a tenant index without dropping the index itself. New
+  `RetentionPolicy(Duration ttl)` immutable record in
+  `io.cortex.indexer.admin` with compact-constructor strict
+  validation: null / zero / negative TTLs throw
+  `IllegalArgumentException` so configuration bugs surface at
+  bind / construction time, not at the first Quickwit call.
+  New `IndexAdminResult.OUTCOME_RETENTION_APPLIED =
+  "retention_applied"` constant + `retentionApplied(backend)`
+  factory join the existing outcome surface. `QuickwitHttpAdmin`
+  POSTs `{"query":"*","end_timestamp":<epoch_seconds>}` to
+  `/api/v1/{indexId}/delete-tasks` with the cutoff computed as
+  `clock.instant().minus(policy.ttl()).getEpochSecond()`; the
+  `Clock` is injected via a package-private test-seam ctor
+  while the Spring `@Autowired` ctor delegates with
+  `Clock.systemUTC()` (mirrors P5.4 `AnomaliesPublisher`). All
+  HTTP outcomes flow through the existing
+  `RestAdminTemplate.classify{Http,Transport,Unknown}` helpers
+  with one explicit deviation: a 404 on the Delete API is
+  classified as **permanent failure** (`quickwit:4xx:404`),
+  NOT idempotent-success like `dropIndex` -- a missing index
+  on retention is an operator config error and must surface
+  loudly. The `IndexerMetrics.bootstrapMeters()` OCP loop
+  gains exactly one new line registering the new outcome
+  series so `/actuator/prometheus` exposes it on the first
+  scrape (LD106 + LD112; Part 17 allowlist holds -- one new
+  outcome value, zero new tag keys). ArchUnit contract
+  unchanged.
+  - **New production code** (`log-indexer-service/src/main/java/`):
+    `io.cortex.indexer.admin.RetentionPolicy` immutable record;
+    `QuickwitIndexAdmin.applyRetention` SPI method;
+    `IndexAdminResult.OUTCOME_RETENTION_APPLIED` constant +
+    `retentionApplied(backend)` factory;
+    `NoopQuickwitIndexAdmin.applyRetention` noop impl;
+    `QuickwitHttpAdmin.applyRetention` + `renderRetentionBody`
+    + new `DELETE_TASKS_PATH` constant + new package-private
+    test-seam ctor accepting `Clock`;
+    `IndexerMetrics.bootstrapMeters` extended with
+    `OUTCOME_RETENTION_APPLIED` entry.
+  - **New tests** (`log-indexer-service/src/test/java/`):
+    `RetentionPolicyTest` (4 tests: null / zero / negative
+    rejected + positive accepted); extensions to
+    `IndexAdminResultTest` (constants + `retentionApplied`
+    factory + null-backend coercion), `NoopQuickwitIndexAdminTest`
+    (applyRetention noop verdict), `QuickwitHttpAdminTest`
+    (null-spec + null-policy guard rails + `renderRetentionBody`
+    body shape + Clock.fixed wiring), `IndexerMetricsTest`
+    (bootstrap series count 6 -> 7), `QuickwitHttpAdminWireMockIT`
+    (6 new WireMock cases: happy 200 + 429 + 500 + 404 +
+    400 + `Fault.CONNECTION_RESET_BY_PEER` transport fault).
+  - **Docs**: `docs/adr/0040-quickwit-retention-admin.md`
+    MADR D1-D7 + 5 rejected alternatives (per-index retention
+    in `IndexConfig`, native Quickwit GC, client-side
+    `search + delete-by-id` loop, external K8s CronJob, gRPC
+    client); `docs/adr/INDEX.md` total ADRs 39 -> 40 + new
+    P7 row;
+    `log-indexer-service/README.md` banner flipped to
+    `Status: P7.0 + P7.1 + P7.2 SHIPPED`.
+
 - P7.1: log-indexer-service real `QuickwitHttpAdmin`
   REST API adapter + WireMock IT (PR for #100, ADR-0039).
   Lands the FIRST real backend impl behind the P7.0

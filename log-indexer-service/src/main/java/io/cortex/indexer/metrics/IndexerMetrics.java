@@ -77,6 +77,7 @@ public class IndexerMetrics {
             bootstrap(backend, IndexAdminResult.OUTCOME_CREATED);
             bootstrap(backend, IndexAdminResult.OUTCOME_EXISTS);
             bootstrap(backend, IndexAdminResult.OUTCOME_DROPPED);
+            bootstrap(backend, IndexAdminResult.OUTCOME_RETENTION_APPLIED);
             bootstrap(backend, IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
             bootstrap(backend, IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
         }
@@ -94,6 +95,7 @@ public class IndexerMetrics {
      * @param outcome  one of the {@code IndexAdminResult.OUTCOME_*}
      *                 constants ({@code noop}, {@code created},
      *                 {@code exists}, {@code dropped},
+     *                 {@code retention_applied},
      *                 {@code transient_failure},
      *                 {@code permanent_failure})
      * @param tenantId tenant id from the {@link io.cortex.indexer.admin.IndexSpec}

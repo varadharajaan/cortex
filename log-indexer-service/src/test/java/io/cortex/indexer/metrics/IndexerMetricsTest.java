@@ -22,11 +22,12 @@ class IndexerMetricsTest {
 
     /**
      * Expected lower bound on the bootstrapped counter family size:
-     * 5 failable outcomes for the noop backend
-     * ({@code created, exists, dropped, transient_failure,
-     * permanent_failure}) + 1 all-unknown placeholder series.
+     * 6 outcomes for the noop backend
+     * ({@code created, exists, dropped, retention_applied,
+     * transient_failure, permanent_failure}) + 1 all-unknown
+     * placeholder series = 7.
      */
-    private static final long EXPECTED_BOOTSTRAP_SERIES = 6L;
+    private static final long EXPECTED_BOOTSTRAP_SERIES = 7L;
 
     private MeterRegistry registry;
     private IndexerMetrics metrics;
@@ -42,9 +43,10 @@ class IndexerMetricsTest {
 
     @Test
     void bootstrapRegistersAllFailableOutcomeSeriesForEveryAdmin() {
-        // Five outcomes per backend + one all-unknown bootstrap.
-        // {created, exists, dropped, transient_failure, permanent_failure}
-        // for the noop backend = 5 series; + 1 all-unknown = 6.
+        // Six outcomes per backend + one all-unknown bootstrap.
+        // {created, exists, dropped, retention_applied,
+        //  transient_failure, permanent_failure}
+        // for the noop backend = 6 series; + 1 all-unknown = 7.
         final long count = this.registry.find(
                 IndexerMetrics.METRIC_INDEX_ADMIN_TOTAL).counters().size();
         assertThat(count).isGreaterThanOrEqualTo(EXPECTED_BOOTSTRAP_SERIES);
@@ -104,7 +106,7 @@ class IndexerMetricsTest {
         this.metrics.bootstrapMeters();
         final long count = this.registry.find(
                 IndexerMetrics.METRIC_INDEX_ADMIN_TOTAL).counters().size();
-        // Same as after first call (5 + 1 = 6).
+        // Same as after first call (6 + 1 = 7).
         assertThat(count).isGreaterThanOrEqualTo(EXPECTED_BOOTSTRAP_SERIES);
     }
 }
