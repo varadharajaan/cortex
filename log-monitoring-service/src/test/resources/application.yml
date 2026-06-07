@@ -46,3 +46,13 @@ cortex:
       # lands in P8.1+ and will be exercised by its own opt-in
       # @SpringBootTest slice.
       backend: noop
+    # SLO budget engine (P8.2 / ADR-0046). Disabled in tests so the
+    # @Scheduled SloEvaluator does not fire during boot smoke; the
+    # noop backend is still wired (matchIfMissing=true) so the SPI
+    # bean is present. Tests that exercise the engine instantiate
+    # SloEvaluator directly with hand-rolled engines.
+    slo:
+      enabled: false
+      backend: noop
+      evaluation-interval: 30s
+      definitions: []

@@ -3,6 +3,7 @@ package io.cortex.monitoring;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Spring Boot entrypoint for the CORTEX log-monitoring-service (P8).
@@ -28,6 +29,7 @@ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
  */
 @SpringBootApplication
 @EnableDiscoveryClient
+@EnableScheduling
 public class CortexMonitoringApplication {
 
     /**

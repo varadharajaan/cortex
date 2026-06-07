@@ -1,0 +1,147 @@
+# ---------------------------------------------------------------------------
+# CORTEX monitoring -- SLO burn-rate alert rules (P8.2 / ADR-0046 D6).
+#
+# Multi-window burn-rate alerting per Google SRE workbook chapter 5
+# (https://sre.google/workbook/alerting-on-slos/). The cortex
+# monitoring service exports two gauges from the
+# log-monitoring-service:
+#
+#   cortex_monitoring_slo_budget_remaining{service_id, slo_name}
+#     - fraction of error budget remaining in [-1.0, 1.0]
+#       1.0 = full budget; 0.0 = exhausted; negative = over-burned
+#
+#   cortex_monitoring_slo_burn_rate{service_id, slo_name}
+#     - actual error-rate / allowed error-rate
+#       0.0 = no errors; 1.0 = burning at SLO target; >1.0 faster
+#
+# These gauges are populated by SloEvaluator at 30 s cadence
+# (cortex.monitoring.slo.evaluation-interval) regardless of which
+# engine backend is wired -- the noop engine emits the
+# `unknown` defaults (budget=1.0, burn=0.0) so the alert
+# expressions never produce NaN samples.
+#
+# To wire these rules into a local Prometheus instance:
+#   1. Mount this file into the Prometheus container at
+#      /etc/prometheus/rules/slo-burn-rate.rules.yml.
+#   2. Add the following to prometheus.yml:
+#        rule_files:
+#          - /etc/prometheus/rules/*.rules.yml
+#   3. The cortex log-monitoring-service must be running with
+#      cortex.monitoring.slo.enabled=true.
+#
+# The two-window pattern (fast 5m + slow 1h) suppresses flapping:
+# a single brief burst raises the 5m window only and never trips
+# the alert; a genuine 1-hour-long incident raises both windows
+# and the alert fires. This is the SRE-blessed default for SLO
+# alerting and matches the Grafana SLO plugin conventions.
+# ---------------------------------------------------------------------------
+
+groups:
+  - name: cortex-monitoring-slo
+    interval: 30s
+    rules:
+      # -----------------------------------------------------------------
+      # Recording rules: smooth the gauges over the alert windows.
+      # The SloEvaluator updates each gauge at 30 s cadence, so a
+      # max_over_time captures the worst observation in the window.
+      # -----------------------------------------------------------------
+      - record: cortex:slo_burn_rate:max5m
+        expr: max_over_time(cortex_monitoring_slo_burn_rate[5m])
+        labels:
+          window: 5m
+
+      - record: cortex:slo_burn_rate:max1h
+        expr: max_over_time(cortex_monitoring_slo_burn_rate[1h])
+        labels:
+          window: 1h
+
+      - record: cortex:slo_budget_remaining:min5m
+        expr: min_over_time(cortex_monitoring_slo_budget_remaining[5m])
+        labels:
+          window: 5m
+
+      # -----------------------------------------------------------------
+      # Alerting rule -- FAST burn (page-worthy).
+      # Fires when BOTH the 5m and 1h burn-rate exceed 14.4x for the
+      # past 2 minutes. 14.4x is the SRE workbook's standard
+      # "consume 2% of the 30-day budget in 1 hour" threshold.
+      # -----------------------------------------------------------------
+      - alert: CortexSloFastBurn
+        expr: |
+          cortex:slo_burn_rate:max5m > 14.4
+            and
+          cortex:slo_burn_rate:max1h > 14.4
+        for: 2m
+        labels:
+          severity: page
+          source: log-monitoring-service
+          window: fast
+        annotations:
+          summary: >-
+            {{ $labels.service_id }} / {{ $labels.slo_name }} is
+            burning the SLO budget at >14.4x (fast-burn window)
+          description: >-
+            Both the 5m and 1h burn-rate gauges have been above
+            14.4x for at least 2 minutes. At this rate the
+            full monthly SLO budget will be exhausted in
+            under 2 hours. Investigate the upstream probe
+            failures emitted by log-monitoring-service.
+          runbook_url: >-
+            https://example.com/runbooks/cortex/slo-fast-burn
+
+      # -----------------------------------------------------------------
+      # Alerting rule -- SLOW burn (ticket-worthy).
+      # Fires when BOTH the 1h and 6h burn-rate exceed 6x for the
+      # past 15 minutes. SRE workbook's "consume 5% of monthly
+      # budget in 6 hours" threshold.
+      # -----------------------------------------------------------------
+      - record: cortex:slo_burn_rate:max6h
+        expr: max_over_time(cortex_monitoring_slo_burn_rate[6h])
+        labels:
+          window: 6h
+
+      - alert: CortexSloSlowBurn
+        expr: |
+          cortex:slo_burn_rate:max1h > 6
+            and
+          cortex:slo_burn_rate:max6h > 6
+        for: 15m
+        labels:
+          severity: ticket
+          source: log-monitoring-service
+          window: slow
+        annotations:
+          summary: >-
+            {{ $labels.service_id }} / {{ $labels.slo_name }} is
+            burning the SLO budget at >6x (slow-burn window)
+          description: >-
+            Both the 1h and 6h burn-rate gauges have been above
+            6x for at least 15 minutes. At this rate the full
+            monthly SLO budget will be exhausted in under 5
+            days. File a ticket against the owning service.
+          runbook_url: >-
+            https://example.com/runbooks/cortex/slo-slow-burn
+
+      # -----------------------------------------------------------------
+      # Alerting rule -- EXHAUSTED budget (any service over-burned).
+      # Fires when budget_remaining goes negative for >5m.
+      # Catches the scenario where the burn-rate alerts didn't fire
+      # because the upstream incident was shorter than the windows.
+      # -----------------------------------------------------------------
+      - alert: CortexSloBudgetExhausted
+        expr: cortex:slo_budget_remaining:min5m < 0
+        for: 5m
+        labels:
+          severity: ticket
+          source: log-monitoring-service
+          window: exhausted
+        annotations:
+          summary: >-
+            {{ $labels.service_id }} / {{ $labels.slo_name }}
+            error budget exhausted (over-burned)
+          description: >-
+            The error budget has been negative for at least 5
+            minutes -- the SLO has been violated for the
+            current evaluation window.
+          runbook_url: >-
+            https://example.com/runbooks/cortex/slo-exhausted

@@ -3,13 +3,17 @@ package io.cortex.monitoring.metrics;
 import io.cortex.monitoring.probe.HealthSnapshot;
 import io.cortex.monitoring.probe.NoopServiceHealthProbe;
 import io.cortex.monitoring.probe.ServiceHealthProbe;
+import io.cortex.monitoring.slo.SloDefinition;
+import io.cortex.monitoring.slo.SloSnapshot;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link MonitoringMetrics} (P8.0).
@@ -109,5 +113,66 @@ class MonitoringMetricsTest {
                 .tag("outcome", MonitoringMetrics.UNKNOWN)
                 .tag("service_id", MonitoringMetrics.UNKNOWN)
                 .counter().count()).isEqualTo(1.0d);
+    }
+
+    @Test
+    void recordSloRegistersGaugePairOnFirstContact() {
+        final SloSnapshot snap = SloSnapshot.banded(
+                SloSnapshot.BACKEND_MICROMETER_DERIVATION,
+                new SloDefinition("svc-a", "availability",
+                        0.99d, Duration.ofHours(1)),
+                0.42d, 0.58d);
+        this.metrics.recordSlo(snap);
+
+        assertThat(this.registry.find(MonitoringMetrics.METRIC_SLO_BUDGET_REMAINING)
+                .tag("service_id", "svc-a")
+                .tag("slo_name", "availability")
+                .gauge().value()).isEqualTo(0.42d);
+        assertThat(this.registry.find(MonitoringMetrics.METRIC_SLO_BURN_RATE)
+                .tag("service_id", "svc-a")
+                .tag("slo_name", "availability")
+                .gauge().value()).isEqualTo(0.58d);
+    }
+
+    @Test
+    void recordSloIsIdempotentAndUpdatesGaugeValuesInPlace() {
+        final SloDefinition def = new SloDefinition(
+                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+        this.metrics.recordSlo(SloSnapshot.banded(
+                SloSnapshot.BACKEND_MICROMETER_DERIVATION,
+                def, 0.9d, 0.1d));
+        this.metrics.recordSlo(SloSnapshot.banded(
+                SloSnapshot.BACKEND_MICROMETER_DERIVATION,
+                def, 0.2d, 0.8d));
+
+        // Same key -> gauges are NOT re-registered; the holder
+        // simply flips to the latest snapshot.
+        assertThat(this.registry.find(MonitoringMetrics.METRIC_SLO_BUDGET_REMAINING)
+                .tag("service_id", "svc-a")
+                .tag("slo_name", "availability")
+                .gauges()).hasSize(1);
+        assertThat(this.registry.find(MonitoringMetrics.METRIC_SLO_BUDGET_REMAINING)
+                .tag("service_id", "svc-a")
+                .tag("slo_name", "availability")
+                .gauge().value()).isEqualTo(0.2d);
+    }
+
+    @Test
+    void recordSloThrowsOnNullSnapshot() {
+        assertThatThrownBy(() -> this.metrics.recordSlo(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("snapshot");
+    }
+
+    @Test
+    void recordSloCoercesBlankServiceIdToUnknownTag() {
+        final SloSnapshot snap = SloSnapshot.banded(
+                SloSnapshot.BACKEND_MICROMETER_DERIVATION,
+                null, 0.5d, 0.5d);
+        this.metrics.recordSlo(snap);
+        assertThat(this.registry.find(MonitoringMetrics.METRIC_SLO_BUDGET_REMAINING)
+                .tag("service_id", MonitoringMetrics.UNKNOWN)
+                .tag("slo_name", MonitoringMetrics.UNKNOWN)
+                .gauge()).isNotNull();
     }
 }

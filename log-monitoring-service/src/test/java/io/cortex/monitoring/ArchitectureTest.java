@@ -39,6 +39,7 @@ class ArchitectureTest {
                 .layer("Probe").definedBy("io.cortex.monitoring.probe..")
                 .layer("Metrics").definedBy("io.cortex.monitoring.metrics..")
                 .layer("Health").definedBy("io.cortex.monitoring.health..")
+                .layer("Slo").definedBy("io.cortex.monitoring.slo..")
 
                 // Probe is the SPI - reached by App + Metrics
                 // (bootstrap loops over List<ServiceHealthProbe>) +
@@ -47,13 +48,20 @@ class ArchitectureTest {
                 .mayOnlyBeAccessedByLayers("App", "Metrics", "Health")
                 // Metrics is reached by App + Probe (P8.1 adapters tick
                 // the counter after every probe call via the @Lazy
-                // back-edge -- LD131).
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Probe")
+                // back-edge -- LD131) + Slo (P8.2 evaluator ticks
+                // gauges via recordSlo per ADR-0046 D3).
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers(
+                        "App", "Probe", "Slo")
                 // Constants is reached by Probe (RestProbeTemplate uses
                 // the HTTP status floors).
                 .whereLayer("Constants").mayOnlyBeAccessedByLayers("Probe")
                 // Health is reached by App only.
-                .whereLayer("Health").mayOnlyBeAccessedByLayers("App");
+                .whereLayer("Health").mayOnlyBeAccessedByLayers("App")
+                // Slo is the P8.2 engine surface - reached by App only
+                // (Metrics is intentionally one-way: Slo calls Metrics
+                // but Metrics has compile-time visibility to
+                // SloSnapshot via the recordSlo signature).
+                .whereLayer("Slo").mayOnlyBeAccessedByLayers("App", "Metrics");
 
         layered.check(classes);
     }
