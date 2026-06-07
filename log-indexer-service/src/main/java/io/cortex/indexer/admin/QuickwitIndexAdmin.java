@@ -88,4 +88,41 @@ public interface QuickwitIndexAdmin {
      * @return the verdict; never {@code null}
      */
     IndexAdminResult applyRetention(IndexSpec spec, RetentionPolicy policy);
+
+    /**
+     * Budget-aware overload of {@link #ensureIndex(IndexSpec)} that
+     * gates index creation on a per-tenant cardinality ceiling
+     * (P7.3 / ADR-0041 D1).
+     *
+     * <p>Behaviour:</p>
+     * <ul>
+     *   <li>If the target index already exists, return
+     *       {@link IndexAdminResult#OUTCOME_EXISTS} -- the budget
+     *       gate does NOT trip on idempotent re-checks because
+     *       no new index would be created.</li>
+     *   <li>If the target index does not exist and the current
+     *       count of indexes belonging to
+     *       {@link IndexSpec#tenantId()} (Quickwit indexes whose
+     *       id starts with {@code cortex-<tenantId>-}) is
+     *       greater than or equal to
+     *       {@link CardinalityBudget#maxIndexes()}, return
+     *       {@link IndexAdminResult#OUTCOME_PERMANENT_FAILURE}
+     *       with reason {@code quickwit:budget-exceeded}.</li>
+     *   <li>Otherwise delegate to the existing create path
+     *       (semantically equivalent to
+     *       {@link #ensureIndex(IndexSpec)} once the budget
+     *       gate has cleared).</li>
+     * </ul>
+     *
+     * <p>The single-argument overload {@link #ensureIndex(IndexSpec)}
+     * is unchanged and stays the right call when no budget gate
+     * is required (e.g. operator-driven one-off ensures via a
+     * P7.4 admin REST endpoint).</p>
+     *
+     * @param spec   the target index spec; never {@code null}
+     * @param budget the per-tenant cardinality ceiling; never
+     *               {@code null}
+     * @return the verdict; never {@code null}
+     */
+    IndexAdminResult ensureIndex(IndexSpec spec, CardinalityBudget budget);
 }

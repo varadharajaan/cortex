@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import com.github.tomakehurst.wiremock.http.Fault;
+import io.cortex.indexer.admin.CardinalityBudget;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
 import io.cortex.indexer.admin.RetentionPolicy;
@@ -471,5 +472,134 @@ class QuickwitHttpAdminWireMockIT {
                 .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
         assertThat(result.reason())
                 .isIn("quickwit:timeout", "quickwit:transport");
+    }
+
+    // ---------------------------------------------------------------
+    // ensureIndex(spec, budget)  (P7.3 / ADR-0041 D1)
+    // ---------------------------------------------------------------
+
+    /** Per-tenant prefix used by the budget-gate filter under test. */
+    private static final String BUDGET_TENANT_ID = "bt";
+
+    /** Index id whose prefix actually matches BUDGET_TENANT_ID. */
+    private static final String BUDGET_INDEX_ID = "cortex-bt-v1";
+
+    /** Budget-test spec: tenant_id + index_id share the prefix contract. */
+    private static IndexSpec budgetSpec() {
+        return new IndexSpec(BUDGET_TENANT_ID, BUDGET_INDEX_ID,
+                DOC_MAPPING_VERSION);
+    }
+
+    /**
+     * GET probe 404 + list returns 3 matching tenant entries with
+     * a ceiling of 5 -&gt; budget clear, POST create runs,
+     * outcome {@code created}.
+     */
+    @Test
+    void ensureIndexWithBudgetCreatesWhenUnderCeiling() {
+        wireMock.stubFor(get(urlPathEqualTo(
+                INDEX_PATH_PREFIX + BUDGET_INDEX_ID))
+                .willReturn(aResponse().withStatus(404).withBody("not found")));
+        wireMock.stubFor(get(urlPathEqualTo(INDEXES_PATH))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("["
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v1\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v2\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v3\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-other-v1\"}},"
+                                + "{\"index_config\":{\"index_id\":\"otel-bt-v1\"}}"
+                                + "]")));
+        wireMock.stubFor(post(urlPathEqualTo(INDEXES_PATH))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"index_id\":\"" + BUDGET_INDEX_ID + "\"}")));
+
+        final IndexAdminResult result =
+                adapter().ensureIndex(budgetSpec(), new CardinalityBudget(5));
+
+        assertThat(result.outcome()).isEqualTo(IndexAdminResult.OUTCOME_CREATED);
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+        wireMock.verify(getRequestedFor(urlPathEqualTo(INDEXES_PATH)));
+        wireMock.verify(postRequestedFor(urlPathEqualTo(INDEXES_PATH)));
+    }
+
+    /**
+     * GET probe 404 + list returns 5 matching tenant entries with
+     * ceiling of 5 -&gt; budget exceeded, POST create skipped,
+     * outcome {@code permanent_failure / quickwit:budget-exceeded}.
+     */
+    @Test
+    void ensureIndexWithBudgetRejectsWhenAtCeiling() {
+        wireMock.stubFor(get(urlPathEqualTo(
+                INDEX_PATH_PREFIX + BUDGET_INDEX_ID))
+                .willReturn(aResponse().withStatus(404).withBody("not found")));
+        wireMock.stubFor(get(urlPathEqualTo(INDEXES_PATH))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("["
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v1\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v2\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v3\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v4\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-bt-v5\"}},"
+                                + "{\"index_config\":{\"index_id\":\"cortex-other-v9\"}}"
+                                + "]")));
+
+        final IndexAdminResult result =
+                adapter().ensureIndex(budgetSpec(), new CardinalityBudget(5));
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_PERMANENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:budget-exceeded");
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+        wireMock.verify(0, postRequestedFor(urlPathEqualTo(INDEXES_PATH)));
+    }
+
+    /**
+     * GET probe 200 -&gt; index already exists, budget gate is
+     * skipped (no list call), outcome {@code exists}. Verifies the
+     * idempotent re-check path is not penalised for tenants that
+     * happen to be over budget.
+     */
+    @Test
+    void ensureIndexWithBudgetShortCircuitsWhenAlreadyExists() {
+        wireMock.stubFor(get(urlPathEqualTo(
+                INDEX_PATH_PREFIX + BUDGET_INDEX_ID))
+                .willReturn(aResponse().withStatus(200)
+                        .withBody("{\"index_id\":\"" + BUDGET_INDEX_ID + "\"}")));
+
+        final IndexAdminResult result =
+                adapter().ensureIndex(budgetSpec(), new CardinalityBudget(1));
+
+        assertThat(result.outcome()).isEqualTo(IndexAdminResult.OUTCOME_EXISTS);
+        assertThat(result.backend())
+                .isEqualTo(IndexAdminResult.BACKEND_QUICKWIT);
+        // Crucially: the cluster-wide list endpoint is never hit.
+        wireMock.verify(0, getRequestedFor(urlPathEqualTo(INDEXES_PATH)));
+        wireMock.verify(0, postRequestedFor(urlPathEqualTo(INDEXES_PATH)));
+    }
+
+    /**
+     * GET probe 404 + budget list returns 500 -&gt; transient
+     * failure {@code quickwit:5xx:500}; create skipped. Confirms
+     * the budget gate inherits the canonical HTTP classifier.
+     */
+    @Test
+    void ensureIndexWithBudgetListServerErrorReturnsTransient() {
+        wireMock.stubFor(get(urlPathEqualTo(
+                INDEX_PATH_PREFIX + BUDGET_INDEX_ID))
+                .willReturn(aResponse().withStatus(404)));
+        wireMock.stubFor(get(urlPathEqualTo(INDEXES_PATH))
+                .willReturn(aResponse().withStatus(500).withBody("boom")));
+
+        final IndexAdminResult result =
+                adapter().ensureIndex(budgetSpec(), new CardinalityBudget(5));
+
+        assertThat(result.outcome())
+                .isEqualTo(IndexAdminResult.OUTCOME_TRANSIENT_FAILURE);
+        assertThat(result.reason()).isEqualTo("quickwit:5xx:500");
+        wireMock.verify(0, postRequestedFor(urlPathEqualTo(INDEXES_PATH)));
     }
 }

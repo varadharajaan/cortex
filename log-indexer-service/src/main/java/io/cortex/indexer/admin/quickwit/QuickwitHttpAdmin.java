@@ -1,7 +1,9 @@
 package io.cortex.indexer.admin.quickwit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortex.indexer.admin.CardinalityBudget;
 import io.cortex.indexer.admin.IndexAdminResult;
 import io.cortex.indexer.admin.IndexSpec;
 import io.cortex.indexer.admin.QuickwitIndexAdmin;
@@ -91,6 +93,15 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
      */
     static final String DELETE_TASKS_PATH = "/api/v1/{indexId}/delete-tasks";
 
+    /**
+     * Prefix every cortex Quickwit index id starts with
+     * (P7.3 / ADR-0041 D3). Combined with the spec's
+     * {@code tenantId} into {@code cortex-<tenantId>-} for
+     * client-side filtering of the {@code GET /api/v1/indexes}
+     * response in {@link #ensureIndex(IndexSpec, CardinalityBudget)}.
+     */
+    static final String INDEX_ID_PREFIX = "cortex-";
+
     /** Quickwit IndexConfig schema version the client targets. */
     static final String QUICKWIT_INDEX_CONFIG_VERSION = "0.7";
 
@@ -112,8 +123,7 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
      * @param metrics    shared indexer metrics registry
      * @param mapper     shared Jackson mapper (autoconfigured by Spring Boot)
      */
-    @Autowired 
-    public QuickwitHttpAdmin(final QuickwitProperties properties,
+    @Autowired public QuickwitHttpAdmin(final QuickwitProperties properties,
                                         final RestClient restClient,
                                         final IndexerMetrics metrics,
                                         final ObjectMapper mapper) {
@@ -460,6 +470,124 @@ public final class QuickwitHttpAdmin implements QuickwitIndexAdmin {
         body.put("query", "*");
         body.put("end_timestamp", endTimestampSeconds);
         return body;
+    }
+
+    @Override
+    public IndexAdminResult ensureIndex(final IndexSpec spec,
+                                        final CardinalityBudget budget) {
+        if (spec == null) {
+            final IndexAdminResult result = IndexAdminResult.permanentFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:null-spec");
+            tick(result, null);
+            return result;
+        }
+        if (budget == null) {
+            final IndexAdminResult result = IndexAdminResult.permanentFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT,
+                    "quickwit:null-budget");
+            tick(result, spec.tenantId());
+            return result;
+        }
+
+        // Step 1: GET probe. If the index already exists, the budget
+        // gate is irrelevant -- we are not creating a new resource.
+        final IndexAdminResult existsCheck = checkExists(spec);
+        if (existsCheck != null) {
+            tick(existsCheck, spec.tenantId());
+            return existsCheck;
+        }
+
+        // Step 2: Budget gate. Count existing tenant indexes; reject
+        // if the create would push the count past the ceiling.
+        final IndexAdminResult budgetCheck = enforceBudget(spec, budget);
+        if (budgetCheck != null) {
+            tick(budgetCheck, spec.tenantId());
+            return budgetCheck;
+        }
+
+        // Step 3: Create. Reuses the same path as the 1-arg overload.
+        final IndexAdminResult createResult = createIndex(spec);
+        tick(createResult, spec.tenantId());
+        return createResult;
+    }
+
+    /**
+     * Issue {@code GET /api/v1/indexes}, count entries whose
+     * {@code index_config.index_id} starts with
+     * {@code cortex-<tenantId>-}, and return a terminal
+     * {@link IndexAdminResult} when the count meets or exceeds
+     * {@code budget.maxIndexes()}. Returns {@code null} to signal
+     * "budget clear, proceed to create" (mirrors the
+     * {@link #checkExists(IndexSpec)} null-to-proceed contract).
+     *
+     * @param spec   the target index spec
+     * @param budget the per-tenant ceiling
+     * @return terminal {@link IndexAdminResult} (budget exceeded or
+     *         HTTP / transport error) or {@code null} to proceed
+     */
+    private IndexAdminResult enforceBudget(final IndexSpec spec,
+                                           final CardinalityBudget budget) {
+        final String body;
+        try {
+            body = this.restClient.get()
+                    .uri(INDEXES_PATH)
+                    .retrieve()
+                    .body(String.class);
+        } catch (final RestClientResponseException ex) {
+            LOG.warn("quickwit ensureIndex budget GET non-2xx tenantId={} "
+                    + "indexId={} status={}: {}",
+                    spec.tenantId(), spec.indexId(),
+                    ex.getStatusCode().value(), ex.getMessage());
+            return this.template.classifyHttp(ex);
+        } catch (final ResourceAccessException ex) {
+            LOG.warn("quickwit ensureIndex budget GET transport failure "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            return this.template.classifyTransport(ex);
+        } catch (final RuntimeException ex) {
+            LOG.warn("quickwit ensureIndex budget GET unexpected failure "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            return this.template.classifyUnknown(ex);
+        }
+
+        final JsonNode root;
+        try {
+            root = this.mapper.readTree(body == null ? "[]" : body);
+        } catch (final JsonProcessingException ex) {
+            LOG.warn("quickwit ensureIndex budget GET body parse failure "
+                    + "tenantId={} indexId={}: {}",
+                    spec.tenantId(), spec.indexId(), ex.getMessage());
+            return IndexAdminResult.transientFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:unknown");
+        }
+        if (!root.isArray()) {
+            LOG.warn("quickwit ensureIndex budget GET body non-array "
+                    + "tenantId={} indexId={}",
+                    spec.tenantId(), spec.indexId());
+            return IndexAdminResult.transientFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT, "quickwit:unknown");
+        }
+
+        final String wantedPrefix = INDEX_ID_PREFIX + spec.tenantId() + "-";
+        long count = 0;
+        for (final JsonNode entry : root) {
+            final String id = entry.path("index_config").path("index_id")
+                    .asText("");
+            if (id.startsWith(wantedPrefix)) {
+                count++;
+            }
+        }
+        if (count >= budget.maxIndexes()) {
+            LOG.warn("quickwit ensureIndex budget exceeded tenantId={} "
+                    + "indexId={} count={} max={}",
+                    spec.tenantId(), spec.indexId(), count,
+                    budget.maxIndexes());
+            return IndexAdminResult.permanentFailure(
+                    IndexAdminResult.BACKEND_QUICKWIT,
+                    "quickwit:budget-exceeded");
+        }
+        return null;
     }
 
     /**

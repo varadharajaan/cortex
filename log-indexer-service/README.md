@@ -1,6 +1,6 @@
 # log-indexer-service
 
-**Status: P7.0 + P7.1 + P7.2 SHIPPED** -- P7.0 carved the
+**Status: P7.0 + P7.1 + P7.2 + P7.3 SHIPPED** -- P7.0 carved the
 `QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
 bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
 the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
@@ -16,12 +16,24 @@ body `{"query":"*","end_timestamp":<epoch_seconds>}`) plus a new
 `RetentionPolicy(Duration ttl)` immutable value type (strict
 null/zero/negative rejection) + new
 `IndexAdminResult.OUTCOME_RETENTION_APPLIED` outcome bootstrapped
-into the `IndexerMetrics` OCP loop (ADR-0040). Mutually exclusive
-with the noop default at the `@ConditionalOnProperty` level. The
-IndexerMetrics OCP bootstrap loop picks up the new backend with
-zero edits. ADR-0039 + ADR-0040 document the decision drivers +
-rejected alternatives. P7.3..P7.4 follow with cardinality budgets +
-search proxy; P7.1a closer ships the cross-phase IT.
+into the `IndexerMetrics` OCP loop (ADR-0040). P7.3 adds the
+budget-aware SPI overload `ensureIndex(IndexSpec,
+CardinalityBudget)` plus a new `CardinalityBudget(int maxIndexes)`
+immutable value type (strict positive-int rejection). The
+`QuickwitHttpAdmin` implementation runs the existing
+`checkExists` probe first (idempotent re-check of an existing
+index skips the gate), then on 404 fetches `GET /api/v1/indexes`
+and counts entries whose `index_config.index_id` starts with
+`cortex-<tenantId>-`; count at or above the ceiling returns
+`permanent_failure / quickwit:budget-exceeded` (REUSES the
+existing outcome with a new reason -- no new outcome constant,
+Part 17 allowlist holds, `IndexerMetrics` bootstrap loop
+unchanged) (ADR-0041). Mutually exclusive with the noop default
+at the `@ConditionalOnProperty` level. The IndexerMetrics OCP
+bootstrap loop picks up the new backend with zero edits. ADR-0039
++ ADR-0040 + ADR-0041 document the decision drivers + rejected
+alternatives. P7.4 follows with the search proxy; P7.1a closer
+ships the cross-phase IT.
 
 CORTEX log-indexer-service is the **operator-facing leg of the
 search tier**. There is no inbound REST contract for the data path

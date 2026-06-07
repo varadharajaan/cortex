@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P7.3: log-indexer-service per-tenant cardinality budgets
+  via `ensureIndex(spec, budget)` (PR for #105, ADR-0041).
+  Adds a budget-aware overload of `ensureIndex` on the P7.0
+  `QuickwitIndexAdmin` SPI (ADR-0038) -- `ensureIndex(IndexSpec
+  spec, CardinalityBudget budget)` -- with implementations on
+  both the noop default and the real `QuickwitHttpAdmin`
+  adapter. The gate stops a misconfigured agent (e.g. a tenant
+  flapping `docMappingVersion` on every boot) from blowing up
+  the Quickwit metastore and the `cortex.indexer
+  .index_admin_total{tenant_id}` cardinality surface by
+  rejecting the (N+1)-th create per tenant before it hits the
+  metastore. The 1-arg `ensureIndex(IndexSpec)` overload is
+  unchanged -- callers opt in to the gate by passing the
+  budget. New `CardinalityBudget(int maxIndexes)` immutable
+  record in `io.cortex.indexer.admin` with compact-constructor
+  positive-int validation: zero or negative ceilings throw
+  `IllegalArgumentException` at construction so configuration
+  bugs surface at bind time, not as a confusing
+  `budget-exceeded` verdict on the first call. The
+  `QuickwitHttpAdmin` implementation runs the existing
+  `checkExists` GET probe first (idempotent re-check of an
+  existing index skips the gate and returns `exists`), then
+  on 404 fetches `GET /api/v1/indexes` and counts entries
+  whose `index_config.index_id` starts with
+  `cortex-<tenantId>-` (client-side prefix filter; Quickwit
+  0.7 does not expose a server-side filter endpoint). When
+  the count is at or above the ceiling the call returns
+  `permanent_failure` with the new reason
+  `quickwit:budget-exceeded` -- **reusing** the existing
+  outcome, NOT adding a new one. Result: the Part 17 metrics
+  allowlist holds unchanged (still only `backend`, `outcome`,
+  `tenant_id` tag keys), the `IndexerMetrics.bootstrapMeters()`
+  loop is unchanged at 7 series per backend, and existing
+  alerts filtering `outcome="permanent_failure"` catch the
+  rejection automatically with no Grafana edit. All HTTP /
+  transport errors on the list endpoint flow through the
+  existing `RestAdminTemplate.classify{Http,Transport,Unknown}`
+  helpers -- zero new classification rules. ArchUnit contract
+  unchanged.
+  - **New production code** (`log-indexer-service/src/main/java/`):
+    `io.cortex.indexer.admin.CardinalityBudget` immutable record
+    (compact-ctor positive-int validation);
+    `QuickwitIndexAdmin.ensureIndex(IndexSpec, CardinalityBudget)`
+    SPI overload;
+    `NoopQuickwitIndexAdmin.ensureIndex(IndexSpec, CardinalityBudget)`
+    noop impl;
+    `QuickwitHttpAdmin.ensureIndex(IndexSpec, CardinalityBudget)`
+    + new private `enforceBudget` helper + new
+    `INDEX_ID_PREFIX = "cortex-"` constant; `JsonNode` import
+    added for the list-response traversal.
+  - **New tests** (`log-indexer-service/src/test/java/`):
+    `CardinalityBudgetTest` (5 tests: positive accepted; 1
+    accepted as the smallest legal value; zero, negative, and
+    `Integer.MIN_VALUE` rejected); extensions to
+    `NoopQuickwitIndexAdminTest` (ensureIndex-with-budget noop
+    verdict), `QuickwitHttpAdminTest` (null-spec +
+    null-budget guard rails), `QuickwitHttpAdminWireMockIT`
+    (4 new WireMock cases: budget-clear creates; budget-exceeded
+    rejects with `quickwit:budget-exceeded`; existing index
+    short-circuits without hitting the list endpoint; list
+    500 returns transient `quickwit:5xx:500`).
+  - **Docs**: `docs/adr/0041-quickwit-cardinality-budgets.md`
+    MADR D1-D7 + 4 rejected alternatives (server-side
+    Quickwit quota plugin, async cleanup of orphan indexes,
+    soft warn-only budget mode, separate `enforceBudget`
+    SPI method); `docs/adr/INDEX.md` total ADRs 40 -> 41 +
+    new P7 row;
+    `log-indexer-service/README.md` banner flipped to
+    `Status: P7.0 + P7.1 + P7.2 + P7.3 SHIPPED`.
+
 - P7.2: log-indexer-service `applyRetention` via Quickwit
   Delete API (PR for #102, ADR-0040). Adds the third lifecycle
   method on the P7.0 `QuickwitIndexAdmin` SPI (ADR-0038) --
