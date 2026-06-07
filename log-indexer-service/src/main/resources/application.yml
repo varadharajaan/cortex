@@ -74,8 +74,13 @@ cortex:
     # minimal.
     admin:
       backend: ${CORTEX_INDEXER_BACKEND:noop}
-    # Quickwit base URL placeholder. Unused by the noop backend in
-    # P7.0; the P7.1 HTTP admin client will bind QuickwitProperties
-    # against this prefix.
+    # Quickwit HTTP admin client config (P7.1 / ADR-0039).
+    # Bound to QuickwitProperties when `cortex.indexer.admin.backend=quickwit`.
+    # The noop backend (P7.0 default) never reads these keys.
     quickwit:
       base-url: ${CORTEX_QUICKWIT_BASE_URL:http://localhost:7280}
+      # Per-request HTTP read + connect timeout (LD121 dual-timeout).
+      request-timeout: ${CORTEX_QUICKWIT_REQUEST_TIMEOUT:5s}
+      # Stable doc-mapping schema id stamped into every index_id
+      # (ADR-0038 D2).
+      doc-mapping-version: ${CORTEX_QUICKWIT_DOC_MAPPING_VERSION:v1}
