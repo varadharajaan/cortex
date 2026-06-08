@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# CORTEX local Prometheus configuration (P8.2a closer / ADR-0047).
+#
+# Mounts into the cortex-smoke-prometheus container at
+# /etc/prometheus/prometheus.yml. Scrapes the
+# log-monitoring-service /actuator/prometheus surface on
+# host.docker.internal:8098 (the JVM the Leg B smoke script
+# scripts/smoke-p8-2a.ps1 boots locally) at 5 s cadence so the
+# SLO gauge pair + probe counter family appear in Prometheus
+# within the smoke window.
+#
+# Loads the cortex SLO multi-window burn-rate alert rules from
+# /etc/prometheus/rules/*.rules.yml (mounted from the repo's
+# infra/local/alerts/ directory). These rules reference the
+# gauge family names bootstrap-registered by P8.0 +
+# rate-derived by P8.2 (cortex_monitoring_slo_budget_remaining +
+# cortex_monitoring_slo_burn_rate). The smoke script asserts
+# Prometheus successfully parses the file by polling
+# /api/v1/rules and verifying the three alert rules
+# (CortexSloFastBurn + CortexSloSlowBurn + CortexSloBudgetExhausted)
+# are loaded.
+#
+# Per LD42 + LD121 -- the cortex services run on HTTP/1.1 only.
+# Prometheus's default scraper is HTTP/1.1 over the JDK stack so
+# nothing special needs to be configured here.
+# ---------------------------------------------------------------------------
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    cluster: cortex-local
+    env: smoke
+
+rule_files:
+  - /etc/prometheus/rules/*.rules.yml
+
+scrape_configs:
+  - job_name: 'log-monitoring-service'
+    metrics_path: /actuator/prometheus
+    scheme: http
+    static_configs:
+      - targets:
+          - 'host.docker.internal:8098'
+        labels:
+          service_id: log-monitoring-service
+          backend: eureka-actuator

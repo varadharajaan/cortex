@@ -28,6 +28,10 @@ file per deployment target.
 | `log-indexer.postman_environment_local.json`      | Local dev (`http://localhost:8097`; smoke stack via `scripts/smoke-p7-1a.ps1`; `quickwit_base_url=http://localhost:7280`). |
 | `log-indexer.postman_environment_staging.json`    | Staging cluster (P7.1a closer; `quickwit_base_url` disabled). |
 | `log-indexer.postman_environment_prod.json`       | Production cluster (P7.1a closer; `quickwit_base_url` disabled). |
+| `log-monitoring.postman_collection.json`          | Actuator (`health,info,metrics,prometheus,beans`) + `health/monitoring` indicator (binder-gate proof `details.backend=eureka-actuator`) + `cortex_monitoring_probe_total{backend,outcome,service_id}` + `cortex_monitoring_slo_budget_remaining{service_id,slo_name}` + `cortex_monitoring_slo_burn_rate{service_id,slo_name}` exposition (P8.0..P8.2 OCP-bootstrap-registered, Part 17 tag allowlist) + Prometheus 2.55.1 reachability probes (`/-/healthy`, `/api/v1/rules` asserting the three CORTEX alert rules `CortexSloFastBurn` + `CortexSloSlowBurn` + `CortexSloBudgetExhausted` loaded, `/api/v1/targets` UP for the `log-monitoring-service` scrape job) + Metrics-After non-decreasing counter family proof. NO business REST surface -- the SPI is invoked by the SLO evaluator scheduler; the cross-phase Failsafe IT (`MonitoringProbeAndSloPipelineIT`) is the source of truth for the autowired probe + engine + evaluator beans. P8.2a closer. |
+| `log-monitoring.postman_environment_local.json`   | Local dev (`http://localhost:8098`; smoke stack via `scripts/smoke-p8-2a.ps1`; `prometheus_base_url=http://host.docker.internal:9090`). |
+| `log-monitoring.postman_environment_staging.json` | Staging cluster (P8.2a closer; `prometheus_base_url` disabled). |
+| `log-monitoring.postman_environment_prod.json`    | Production cluster (P8.2a closer; `prometheus_base_url` disabled). |
 
 Additional services land here as P5-P8 progress.
 

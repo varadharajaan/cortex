@@ -9,6 +9,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.2a: log-monitoring-service cross-phase closer +
+  Prometheus singleton + cross-phase Failsafe IT + smoke +
+  Postman + DiscoveryClient autoconfig-exclude +
+  `SloEvaluator.fixedRateString` workaround (PR for #119,
+  ADR-0047, closes P8 epic #9). New cross-phase IT
+  `MonitoringProbeAndSloPipelineIT` boots the full Spring
+  context with both binder gates flipped
+  (`cortex.monitoring.probe.backend=eureka-actuator` +
+  `cortex.monitoring.slo.backend=micrometer-derivation` +
+  `cortex.monitoring.slo.enabled=true`) against a singleton
+  in-process `WireMockServer` + a `@TestConfiguration @Bean
+  @Primary DiscoveryClient` stub routing TWO service IDs to
+  the same WireMock for test-order independence. 9 test
+  methods exercise the full P8.0..P8.2 ring through
+  autowired beans: 1 binder-gate proof + 1 metrics-bootstrap
+  proof (counter family present with all 6 outcome series)
+  + 3 probe outcomes (HEALTHY / DEGRADED / UNREACHABLE-
+  no-instance) + 1 wire-shape verify + 2 SLO derivations
+  (banded micrometer-derivation + no-data unknown) + 1
+  evaluator-as-bean proof. New full-stack PowerShell smoke
+  `scripts/smoke-p8-2a.ps1` boots Prometheus 2.55.1 on
+  `:9090` (via `infra/local/docker-compose.smoke.yml`
+  `prometheus:` service + new `infra/local/prometheus.yml`)
+  scraping the actual service JAR on `:8098`, asserts
+  `/actuator/health/monitoring details.backend=eureka-
+  actuator`, scrapes the three Micrometer families
+  (`cortex_monitoring_probe_total`,
+  `cortex_monitoring_slo_budget_remaining`,
+  `cortex_monitoring_slo_burn_rate`) with `# HELP` +
+  `# TYPE` + Part 17 tag keys, asserts Prometheus
+  `/api/v1/rules` loaded the three CORTEX alert rules
+  (`CortexSloFastBurn`, `CortexSloSlowBurn`,
+  `CortexSloBudgetExhausted`) + `/api/v1/targets` UP, tears
+  down with `-KeepInfra` to enable Newman replay. New
+  `postman/log-monitoring.postman_collection.json` (5
+  folders: Health + Metrics-Baseline + Eureka-Probe-Contract
+  + Prometheus + Metrics-After) + three env files
+  (`local`, `staging`, `prod`); `local` sets
+  `prometheus_base_url=http://host.docker.internal:9090`,
+  `staging` + `prod` leave it blank for offline replay.
+
+### Fixed
+
+- IT-only fix: cross-phase IT context startup was blocked by
+  `NoUniqueBeanDefinitionException: more than one 'primary'
+  bean found among candidates: [stubDiscoveryClient,
+  compositeDiscoveryClient, simpleDiscoveryClient]`. Spring
+  Cloud Commons' `CompositeDiscoveryClientAutoConfiguration`
+  + `SimpleDiscoveryClientAutoConfiguration` register their
+  own `@Primary` `DiscoveryClient` beans by default, so a
+  `@TestConfiguration @Bean @Primary DiscoveryClient` stub
+  collides with two same-tier `@Primary` candidates.
+  Repaired in `MonitoringProbeAndSloPipelineIT`'s
+  `properties=` block via `spring.autoconfigure.exclude=`
+  listing the three `DiscoveryClient` autoconfig classes
+  (`EurekaClientAutoConfiguration` +
+  `CompositeDiscoveryClientAutoConfiguration` +
+  `SimpleDiscoveryClientAutoConfiguration`). Surgical: only
+  the cross-phase IT context is affected, prod and per-phase
+  tests are unchanged. Captured as ADR-0047 D2a.
+
+- Test-order-independence fix: the SLO budget-derivation
+  test was sensitive to counter-family pollution from the
+  probe tests (`HEALTHY` budget assertion would fail if a
+  prior test had piled failure outcomes onto the same
+  service-tagged counter). Repaired by introducing a
+  dedicated `DERIVE_SERVICE_ID = "log-echo-slo-derive"` for
+  the SLO test only; the stub `DiscoveryClient` routes BOTH
+  service IDs to the same WireMock. Mirrors realistic
+  operator deployments where multiple Eureka service IDs
+  point at the same actuator surface (ADR-0047 D7).
+
+### Deferred (LD137 follow-up)
+
+- Prod fix for `SloEvaluator.@Scheduled(fixedRateString=
+  "${cortex.monitoring.slo.evaluation-interval:30s}")` is
+  deferred to a follow-up bug-fix issue per LD104
+  closer-pattern (the closer ships green WITHOUT inventing
+  a prod-scheduling-semantics change inside the closer PR).
+  Spring's `ScheduledAnnotationBeanPostProcessor.
+  fixedRateString` calls `Long.parseLong(value)` directly
+  with NO `Duration.parse` fallback, so the prod annotation
+  is broken whenever `slo.enabled=true` -- masked in prod
+  because `slo.enabled` defaults to false so the evaluator
+  bean is never instantiated. The cross-phase IT works
+  around this by passing the numeric-millis form
+  (`cortex.monitoring.slo.evaluation-interval=3600000`).
+  Recommended prod fix in the follow-up issue: introduce
+  `@Bean Long sloEvaluationIntervalMillis(SloProperties)`
+  + switch the annotation to SpEL `@Scheduled(
+  fixedRateString="#{@sloEvaluationIntervalMillis}")`,
+  preserving operator-facing `Duration` ergonomics in
+  `application.yml`. Captured as LD137 in memory.md +
+  ADR-0047 D2b + GitHub issue #120.
+
+### Added
+
 - P8.2: log-monitoring-service SLO budget engine +
   `MicrometerSloBudgetEngine` derivation backend +
   multi-window burn-rate alert rules (PR for #115,

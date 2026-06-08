@@ -1,6 +1,6 @@
 # log-monitoring-service
 
-**Status: P8.0 + P8.1 + P8.2 SHIPPED** -- scaffold carves the
+**Status: P8.0 + P8.1 + P8.2 + P8.2a SHIPPED** -- scaffold carves the
 `ServiceHealthProbe` SPI + `NoopServiceHealthProbe` default impl
 (binder-gated `cortex.monitoring.probe.backend=noop`,
 `matchIfMissing=true`) + bootstrap-registered
@@ -344,6 +344,56 @@ Failsafe IT tests in 1 class):
 JaCoCo BUNDLE 0.80 line + 0.80 branch gate met from P8.0 day
 one (no relaxed override block in the child pom).
 
+### 9.1 Cross-phase IT (P8.2a closer)
+
+`io.cortex.monitoring.closer.MonitoringProbeAndSloPipelineIT`
+(9 tests) boots the full Spring context with both binder
+gates flipped (`cortex.monitoring.probe.backend=eureka-actuator`
++ `cortex.monitoring.slo.backend=micrometer-derivation` +
+`cortex.monitoring.slo.enabled=true`) against a singleton
+in-process `WireMockServer` + a `@TestConfiguration @Bean
+@Primary DiscoveryClient` stub. Exercises the FULL probe ->
+counter -> SLO -> gauge ring through autowired beans (ADR-0047).
+Per-test isolation via `WIRE_MOCK.resetAll()` in `@BeforeEach`.
+
+The IT requires three IT-only properties to win the `@Primary
+DiscoveryClient` contest against Spring Cloud Commons defaults
+(D2a / ADR-0047): `spring.autoconfigure.exclude=` listing
+`EurekaClientAutoConfiguration` +
+`CompositeDiscoveryClientAutoConfiguration` +
+`SimpleDiscoveryClientAutoConfiguration`. It also passes
+`cortex.monitoring.slo.evaluation-interval=3600000` (numeric
+millis) as a workaround for a prod bug captured as LD137:
+Spring's `ScheduledAnnotationBeanPostProcessor.fixedRateString`
+does NOT accept `Duration` strings (`Long.parseLong("1h") ->
+NumberFormatException`). The prod fix is filed as a follow-up
+issue per LD104; see ADR-0047 D2b for the chosen workaround.
+
+### 9.2 Local smoke (P8.2a closer)
+
+`scripts/smoke-p8-2a.ps1` runs the full Leg B contract:
+
+1. `docker compose -f infra/local/docker-compose.smoke.yml up
+   -d prometheus` (Prometheus 2.55.1 on `:9090`).
+2. Waits for `/-/healthy`.
+3. Boots the actual service JAR on `:8098` with env bag
+   (`CORTEX_MONITORING_PROBE_BACKEND=eureka-actuator,
+   CORTEX_MONITORING_SLO_ENABLED=true,
+   CORTEX_MONITORING_SLO_BACKEND=micrometer-derivation,
+   EUREKA_CLIENT_ENABLED=false`).
+4. Asserts `/actuator/health/monitoring`
+   `details.backend=eureka-actuator`.
+5. Scrapes `/actuator/prometheus` for the three metric
+   families with `# HELP` + `# TYPE` + Part 17 tag allowlist.
+6. Asserts Prometheus `/api/v1/rules` loaded the three
+   CORTEX alert rules (`CortexSloFastBurn`,
+   `CortexSloSlowBurn`, `CortexSloBudgetExhausted`) and
+   `/api/v1/targets` job `log-monitoring-service` is UP.
+7. Tears down with `docker compose ... down` (skip with
+   `-KeepInfra` to keep Prometheus + JVM alive for Newman
+   replay against `postman/log-monitoring.postman_
+   collection.json` + `..._environment_local.json`).
+
 ## 10. Roadmap
 
 - **P8.0** -- scaffold (#111, ADR-0044). SHIPPED.
@@ -358,10 +408,12 @@ one (no relaxed override block in the child pom).
 - **P8.1a** -- cross-phase closer (Failsafe IT singleton
   WireMock per-instance actuator stubs + Postman + smoke
   per LD104). DEFERRED.
-- **P8.2a** -- cross-phase closer (real Prometheus container
-  scrapes the gauges + fires the alert rules end-to-end +
-  Postman covers the `/actuator/prometheus` evidence per
-  LD104). DEFERRED.
+- **P8.2a** -- cross-phase closer (real Prometheus 2.55.1
+  container scrapes the gauges + loads the three alert
+  rules + cross-phase Failsafe IT exercises the full
+  P8.0..P8.2 ring via autowired beans + Postman covers
+  `/actuator/prometheus` + Prometheus `/api/v1/rules` +
+  `/api/v1/targets` per LD104). SHIPPED (#119, ADR-0047).
 - **P8.2b** -- extend `EurekaActuatorHealthProbe` to
   multi-target (one probe instance per cortex service-id)
   + ship default `cortex.monitoring.slo.definitions:` block
