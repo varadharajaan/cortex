@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- P8.2b: log-monitoring-service multi-target probe pump +
+  default availability SLO definitions (PR for #125,
+  ADR-0046 Amendment 3 2026-06-08, closes #125). New
+  `ScheduledProbeEvaluator` under
+  `io.cortex.monitoring.probe` fans out
+  `serviceHealthProbe.probe(new ProbeRequest(serviceId, null))`
+  once per service-id in `cortex.monitoring.probe.targets` on
+  every `@Scheduled` tick; gated by
+  `cortex.monitoring.probe.enabled=true` (OFF by default so
+  existing per-phase tests + the P8.1a / P8.2a closers see
+  the same context they did before P8.2b). Cadence read
+  through the SpEL bean reference
+  `#{@probeEvaluationIntervalMillis}` resolved by a new
+  `@Bean Long probeEvaluationIntervalMillis(ProbeProperties)`
+  on the new `ProbeSchedulerConfig` per LD141 (mirrors the
+  Amendment 2 fix for `SloEvaluator`). New `ProbeProperties`
+  record binds `cortex.monitoring.probe.{enabled, evaluation-interval,
+  targets}` alongside the existing `backend` field; compact-ctor
+  defensive defaults so a missing key never NPEs. Shipped
+  `application.yml` now declares all six cortex services
+  (`log-gateway`, `log-ingest-service`, `log-echo-service`,
+  `log-processor-service`, `log-remediation-service`,
+  `log-indexer-service`) as the default
+  `cortex.monitoring.probe.targets` AND matching
+  `cortex.monitoring.slo.definitions` rows (`availability`
+  SLO, `target-success-ratio=0.99`, `window=PT1H`) so an
+  operator who flips both `enabled` gates gets cortex-wide
+  availability monitoring for free, with zero per-service yml
+  authoring. New sibling closer
+  `MonitoringMultiTargetProbeAndDefaultSlosIT` under
+  `io.cortex.monitoring.closer` proves the multi-target
+  fan-out end-to-end against a stub `DiscoveryClient` that
+  routes every target id to a shared in-process WireMock --
+  asserts every target produces exactly one
+  `cortex.monitoring.probe_total{outcome=healthy,service_id=...}`
+  series after a single `evaluateOnce()` call AND
+  `sloEvaluator.evaluateOnce()` under the noop binder
+  iterates all six default definitions without throwing.
+  ADR count stays at 48 (amendment to existing decision).
+
 ### Fixed
 
 - log-monitoring-service issue #120 / LD137:

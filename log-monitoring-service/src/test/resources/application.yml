@@ -46,6 +46,20 @@ cortex:
       # lands in P8.1+ and will be exercised by its own opt-in
       # @SpringBootTest slice.
       backend: noop
+      # ScheduledProbeEvaluator gate (P8.2b / ADR-0046 Amendment 3).
+      # OFF in tests so the scheduled multi-target pump does not
+      # fire during boot smoke. The pump bean is gated by
+      # @ConditionalOnProperty(enabled=true), so this default
+      # keeps it OUT of the unit-test context entirely.
+      enabled: false
+      evaluation-interval: 30s
+      # Empty list in tests (vs the six-service prod default) so
+      # closer ITs that flip `enabled: true` can declare their own
+      # targets via @TestPropertySource / @SpringBootTest(properties=)
+      # without inheriting the prod defaults that would point at
+      # services that don't exist in the test JVM. Closer ITs that
+      # WANT the prod defaults can re-declare them inline.
+      targets: []
     # SLO budget engine (P8.2 / ADR-0046). Disabled in tests so the
     # @Scheduled SloEvaluator does not fire during boot smoke; the
     # noop backend is still wired (matchIfMissing=true) so the SPI

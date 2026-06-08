@@ -60,7 +60,9 @@ eureka:
 
 cortex:
   monitoring:
-    # ServiceHealthProbe SPI binder gate (P8.0 / ADR-0044 D1).
+    # ServiceHealthProbe SPI binder gate (P8.0 / ADR-0044 D1) +
+    # multi-target probe pump configuration (P8.2b / ADR-0046
+    # Amendment 3 2026-06-08).
     #
     # `backend` is the binder gate read by @ConditionalOnProperty on
     #           each probe impl:
@@ -73,8 +75,46 @@ cortex:
     #                                Eureka-discovery REST scrape of
     #                                /actuator/health on every
     #                                registered cortex service)
+    #
+    # `enabled` gates the scheduled ScheduledProbeEvaluator multi-
+    # target pump (P8.2b); OFF by default so the scheduled task does
+    # not fire unless the operator opts in per profile. Mirrors the
+    # cortex.monitoring.slo.enabled contract below.
+    #
+    # `evaluation-interval` controls the @Scheduled firing cadence
+    # on ScheduledProbeEvaluator. Operator-friendly Spring Duration
+    # syntax is accepted here (e.g. `30s`, `1m`, `2m30s`, `PT1H`);
+    # values are bound through ProbeProperties.evaluationInterval()
+    # (a java.time.Duration) and then adapted into the long-millis
+    # form Spring's @Scheduled processor accepts via the
+    # `probeEvaluationIntervalMillis` bean defined in
+    # ProbeSchedulerConfig (LD141 standing rule -- direct
+    # `${...:30s}` placeholder usage on
+    # @Scheduled(fixedRateString=...) is NOT safe because the
+    # processor calls Long.parseLong with no Duration fallback).
+    # Defaults to 30 s, matches the Prometheus scrape interval used
+    # by infra/local.
+    #
+    # `targets` is the operator-declared list of Eureka service ids
+    # the pump iterates each tick. Ships with all six cortex
+    # services so flipping `enabled: true` + `backend: eureka-
+    # actuator` gives availability monitoring for the entire
+    # P3..P7 ring with zero additional config. Operators override
+    # the list per profile via the standard @ConfigurationProperties
+    # precedence (e.g. set CORTEX_MONITORING_PROBE_TARGETS or
+    # provide a profile-specific cortex.monitoring.probe.targets
+    # block).
     probe:
       backend: ${CORTEX_MONITORING_PROBE_BACKEND:noop}
+      enabled: ${CORTEX_MONITORING_PROBE_ENABLED:false}
+      evaluation-interval: ${CORTEX_MONITORING_PROBE_EVALUATION_INTERVAL:30s}
+      targets:
+        - log-gateway
+        - log-ingest-service
+        - log-echo-service
+        - log-processor-service
+        - log-remediation-service
+        - log-indexer-service
 
     # EurekaActuatorHealthProbe configuration (P8.1 / ADR-0045 D2).
     #
@@ -126,22 +166,39 @@ cortex:
     # the evaluator iterates each tick. Each definition binds
     # service-id (Eureka service id), slo-name (free-form bounded
     # label), target-success-ratio (in the open interval (0, 1)),
-    # and window (Duration string, e.g. "1h" / "PT1H").
-    #
-    # Example (commented; the production default ships zero
-    # definitions so the engine is a structural no-op):
-    #
-    #   slo:
-    #     enabled: true
-    #     backend: micrometer-derivation
-    #     evaluation-interval: 30s
-    #     definitions:
-    #       - service-id: log-indexer-service
-    #         slo-name: availability
-    #         target-success-ratio: 0.99
-    #         window: PT1H
+    # and window (Duration string, e.g. "1h" / "PT1H"). Ships with
+    # one `availability` SLO per cortex service (P8.2b / ADR-0046
+    # Amendment 3 2026-06-08) at 99% success over a 1 h window so
+    # flipping `enabled: true` + `backend: micrometer-derivation`
+    # gives the entire P3..P7 ring availability SLOs for free.
+    # Operators override the list per profile via the standard
+    # @ConfigurationProperties precedence.
     slo:
       enabled: ${CORTEX_MONITORING_SLO_ENABLED:false}
       backend: ${CORTEX_MONITORING_SLO_BACKEND:noop}
       evaluation-interval: ${CORTEX_MONITORING_SLO_EVALUATION_INTERVAL:30s}
-      definitions: []
+      definitions:
+        - service-id: log-gateway
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
+        - service-id: log-ingest-service
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
+        - service-id: log-echo-service
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
+        - service-id: log-processor-service
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
+        - service-id: log-remediation-service
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
+        - service-id: log-indexer-service
+          slo-name: availability
+          target-success-ratio: 0.99
+          window: PT1H
