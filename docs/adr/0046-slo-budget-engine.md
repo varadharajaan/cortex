@@ -528,3 +528,77 @@ the alert rules.
   slow burn.
 - Issue #115 -- P8.2 acceptance bar.
 - Issue #9 -- P8 epic (parent).
+
+---
+
+## Amendment 2026-06-08 -- single-backend / single-SLI deliberate scope at P8.2 + deferred backends + sub-phases roadmap
+
+**Trigger**: operator scoping question on 2026-06-08:
+
+> "For the SLO, are these the only SLOs needed or u have plans
+> for any more future SLOs or the past services SLOs?"
+
+The answer is **no, P8.2 does NOT cover the full SLO matrix** --
+by design. P8.2 ships the generic engine + exactly ONE backend
+(`MicrometerSloBudgetEngine`) that reads exactly ONE counter
+family (`cortex.monitoring.probe_total{backend, outcome,
+service_id}`) and therefore can derive exactly ONE SLI
+dimension: **dependency availability**, and only for services
+where an `EurekaActuatorHealthProbe` is actively pointed at
+them. The production `definitions:` list ships empty.
+
+The past services P3..P7 have ZERO SLO coverage today. The full
+SLO matrix is decomposed below; each row ships in its own
+dedicated sub-phase with its own issue + PR + acceptance bar.
+This is the **deferred-backends roadmap**, recorded here so the
+autopilot does not silently fan out scope creep into the
+original P8.2a closer.
+
+### Per-service SLI candidates (NOT covered today)
+
+| Service | SLI candidates |
+| -- | -- |
+| `log-gateway` (P3) | JWT-validation success; rate-limit decision correctness; NL->LogQL translate success; per-route 5xx; per-route p95/p99 latency. |
+| `log-ingest` (P4) | Ingest endpoint success (validate+dedupe+enqueue chain); Postgres write success; Kafka publish success; end-to-end ingest latency p95/p99. |
+| `log-processor` (P5) | Parse success; schema-validate success; DLQ rate (inverse); AI anomaly classifier success; Loki + Quickwit fan-out per-sink success (ADR-0030); `cortex.anomalies.v1` publish success; consumer-lag p95. |
+| `log-remediation` (P6) | Slack / PagerDuty / Jira dispatch success (ADR-0033 / ADR-0034 / P6.3); playbook execution success; `cortex.anomalies.v1` consumer lag. |
+| `log-indexer` (P7) | `ensureIndex` success; `dropIndex` success; retention sweep completion latency; admin API p95 (ADR-0036 / ADR-0039). |
+| `log-monitoring` (P8 self-SLO) | Probe loop success per backend; SLO evaluation loop tick latency; `/actuator/prometheus` scrape success. |
+| `log-agent-lib` (cross-cutting) | Correlation-ID injection success -- typically rolled into the gateway SLO, not standalone. |
+| **System-level composites** | End-to-end log latency (ingest -> search-ready in Quickwit); end-to-end anomaly latency (processor -> remediation alert delivered); worst-of-N availability; weighted-availability. |
+
+### Deferred backends + sub-phase queue
+
+| Sub-phase | What ships | Why deferred | Acceptance bar (one-line) |
+| -- | -- | -- | -- |
+| **P8.2a** | Mechanical closer for the CURRENT surface: Legs B (`scripts/smoke-p8-2.ps1` + real Prometheus container) + C (Postman + Newman covers `/actuator/prometheus` evidence) + D (cross-phase SpringBootTest IT flipping `probe.backend=eureka-actuator` + `slo.{enabled=true, backend=micrometer-derivation}` end-to-end) + E (README runbook). | Validates ONLY what P8.2 actually shipped -- no new backends, no new SLI types. Already queued in `checkpoint.md` Next Action. | Smoke + Postman + IT + README runbook all green; closes the P8 epic #9 only IF P8.1a also ships. |
+| **P8.2b** | Extend `EurekaActuatorHealthProbe` to multi-target (one probe instance per cortex service-id, or a fan-out variant) + ship default `cortex.monitoring.slo.definitions:` block in `application-local.yml` with `availability` SLOs for every P3..P7 service. | No new backend needed -- re-uses P8.1 + P8.2 verbatim. Cheapest path to "every cortex service has at least one SLO". | All 5 of `log-gateway`/`log-ingest`/`log-processor`/`log-remediation`/`log-indexer` have an `availability` SLO snapshot visible in `/actuator/prometheus` under the local profile. |
+| **P8.3** | New backend `CounterFamilySloBudgetEngine` + `SloDefinition` schema extension carrying `(metricName, successTagPredicate, failureTagPredicate)`. | Schema bump is breaking-change-shaped (yml binding) -- needs its own deliberate ship + ADR for the schema migration. Unlocks parse-success / dispatch-success / fan-out-success / publish-success SLIs per P5/P6. | At least one P5 SLO (`anomaly-publish-success` against `cortex.processor.anomalies_total`) and one P6 SLO (`slack-dispatch-success` against `cortex.remediation.dispatch_total`) demonstrate the backend end-to-end. |
+| **P8.4** | New backend `TimerPercentileSloBudgetEngine` reading Micrometer `Timer` series for latency SLOs ("p95 <= threshold for X% of requests"). | Latency-target math differs from ratio-target -- needs its own SPI extension or contract clarification (`SloDefinition` may carry a `targetType` enum). | At least one P3 SLO (`gateway-route-latency-p95`) demonstrates the backend end-to-end. |
+| **P8.5** | New backend `PromQlSloBudgetEngine` calling Prometheus `/api/v1/query` for SLIs whose source is NOT an in-process Micrometer series (Loki / Quickwit query counts, blackbox-exporter probes, etc.). | Adds outbound HTTP dependency to the monitoring service itself -- needs LD42 + LD121 dual-timeout pin + its own ADR for the auth / TLS / failover posture. | At least one external-source SLO (`quickwit-search-success` derived from a Prometheus query against the indexer's metrics) demonstrates the backend end-to-end. |
+| **P8.6** | New backend `CompositeSloBudgetEngine` that reads other engines' snapshot cache and aggregates (worst-of-N, weighted-average). | Pure composition over the other backends -- only meaningful once P8.2b + P8.3 + P8.4 (and ideally P8.5) have shipped. | At least one composite SLO (`cortex-system-availability` = worst-of of every per-service availability SLO) demonstrates the backend end-to-end. |
+| **P8.7+** | OTel / tracing-based SLOs (span-derived latency, error-span ratio). | Gated on OTel infra not yet in the cortex plan -- depends on a separate transport decision (collector vs SDK direct) outside P8 scope. | Deferred until OTel transport ADR lands. |
+
+### Decision
+
+P8.2 keeps its single-backend / single-SLI deliberate scope.
+The operator pipeline is now:
+
+1. **P8.2a** (mechanical closer for the existing surface) --
+   queued first because it does NOT depend on any scope
+   expansion.
+2. **P8.2b..P8.6** (gap-filling sub-phases) -- queued in
+   priority order; each ships independently with its own
+   issue + PR + ADR delta. None of them block P8.2a.
+
+This amendment makes the deferred work visible in the same
+place the original decision lives. ADR count stays at 46 (this
+is an amendment, not a new ADR -- mirrors the ADR-mechanic
+precedent in this repo).
+
+### Cross-ref
+
+- Issue #117 -- P8.2 roadmap honesty pass (this amendment).
+- LD136 -- operator-flagged SLO scope gap captured in
+  `memory.md` as a standing decision so future autopilot
+  prompts know the gap is intentional + tracked.

@@ -6,7 +6,7 @@
 > in the same PR. Status legend: **Accepted** (in force) /
 > **Superseded** (replaced -- see `Supersedes` column).
 
-Last refreshed: 2026-06-07 (P8.2 log-monitoring-service SLO budget engine + `MicrometerSloBudgetEngine` derivation backend + multi-window burn-rate alert rules, PR for #115).
+Last refreshed: 2026-06-08 (P8.2 roadmap honesty pass -- ADR-0046 amendment recording single-backend / single-SLI deliberate scope at P8.2 + deferred-backends roadmap P8.2b/P8.3/P8.4/P8.5/P8.6; docs-only, no new ADR, count unchanged at 46; PR for #117).
 Total ADRs: 46 (`0000` template + `0001` .. `0027` + `0029` + `0030` + `0031` + `0032` + `0033` + `0034` + `0035` + `0036` + `0037` + `0038` + `0039` + `0040` + `0041` + `0042` + `0043` + `0044` + `0045` + `0046`).
 
 ---

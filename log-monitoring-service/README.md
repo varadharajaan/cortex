@@ -362,5 +362,38 @@ one (no relaxed override block in the child pom).
   scrapes the gauges + fires the alert rules end-to-end +
   Postman covers the `/actuator/prometheus` evidence per
   LD104). DEFERRED.
+- **P8.2b** -- extend `EurekaActuatorHealthProbe` to
+  multi-target (one probe instance per cortex service-id)
+  + ship default `cortex.monitoring.slo.definitions:` block
+  with `availability` SLOs for every P3..P7 service.
+  No new backend -- closes the "every cortex service has
+  at least one SLO" gap using P8.1 + P8.2 verbatim
+  (ADR-0046 amendment 2026-06-08). DEFERRED.
+- **P8.3** -- new backend `CounterFamilySloBudgetEngine` +
+  `SloDefinition` schema extension carrying
+  `(metricName, successTagPredicate, failureTagPredicate)`.
+  Unlocks parse-success / dispatch-success / fan-out /
+  publish-success SLIs per P5/P6 (ADR-0046 amendment
+  2026-06-08). DEFERRED.
+- **P8.4** -- new backend `TimerPercentileSloBudgetEngine`
+  reading Micrometer `Timer` series for latency SLOs
+  ("p95 <= threshold for X% of requests"). Unlocks
+  gateway p95 / ingest p95 / search p95 SLIs (ADR-0046
+  amendment 2026-06-08). DEFERRED.
+- **P8.5** -- new backend `PromQlSloBudgetEngine` calling
+  Prometheus `/api/v1/query` for SLIs whose source is not
+  an in-process Micrometer series (Loki / Quickwit query
+  counts, blackbox-exporter probes). Adds LD42 + LD121
+  HTTP/1.1 dual-timeout pin to the monitoring service
+  itself (ADR-0046 amendment 2026-06-08). DEFERRED.
+- **P8.6** -- new backend `CompositeSloBudgetEngine` that
+  reads other engines' snapshot cache and aggregates
+  (worst-of-N, weighted-average). Unlocks
+  end-to-end-log-latency / system-availability composites
+  (ADR-0046 amendment 2026-06-08). DEFERRED.
+- **P8.7+** -- OTel / tracing-based SLOs (span-derived
+  latency, error-span ratio). Gated on OTel infra not yet
+  in the cortex plan (ADR-0046 amendment 2026-06-08).
+  DEFERRED.
 
 Grafana dashboards stay scheduled for P17, NOT P8.
