@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.0a: log-gateway `WebGraphQlInterceptor` NL sub-bucket parity
+  for the GraphQL surface (PR for #129, ADR-0049 Amendment 1
+  2026-06-08, closes #129). Closes the D6 deferral in ADR-0049.
+  New `RateLimitGraphQlInterceptor` under
+  `io.cortex.gateway.interceptor` -- Spring for GraphQL
+  `WebGraphQlInterceptor` that scans every
+  `@Controller` bean at `@PostConstruct` for methods carrying both
+  `@QueryMapping` and `@RateLimitFeature`, indexes the annotation by
+  GraphQL field name, parses each inbound `WebGraphQlRequest`
+  document via `graphql.parser.Parser`, walks the top-level
+  `Field` selections, and consumes one Bucket4j token per matched
+  field via the SAME `ProxyManager<String>` bean wired into the MVC
+  `RateLimitFeatureInterceptor`. On exhaustion throws
+  `RateLimitedException` which propagates through `Mono.error(...)`
+  -> `GraphQlHttpHandler.block()` -> the existing
+  `GlobalExceptionHandler.@ExceptionHandler(RateLimitedException.class)`
+  -> 429 RFC 7807 body with `errorCode=NL_QUERY_RATE_LIMITED`. The
+  GraphQL NL resolver `NlQueryGraphQlController.nlToLogQL` now
+  carries the same `@RateLimitFeature(name="nl-query",
+  capacity="${...:10}", refill="${...:PT1M}",
+  errorCode="NL_QUERY_RATE_LIMITED",
+  keyPrefix="${...:cortex:rl:nlq:}")` annotation as
+  `NlQueryController.translate` -- identical bucket key shape
+  (`cortex:rl:nlq:nl-query:user:<sub>`) + identical injected
+  `ProxyManager` bean equals a single shared sub-bucket per JWT
+  subject across REST and GraphQL surfaces. Abusive callers can no
+  longer bypass the 10/min NL cap by issuing the same prompt over
+  the other surface. Gated by
+  `cortex.gateway.rate-limit.enabled=true` (the same switch as the
+  MVC interceptor; OFF by default per LD100). New Surefire slice
+  `RateLimitGraphQlInterceptorTest` covers 7 scenarios
+  (unregistered-field skip, happy-path token consume, exhaustion
+  with annotation-driven `errorCode` propagation, anonymous caller
+  keyed by `X-Forwarded-For` first hop, anonymous-fallback to
+  `unknown`, mixed registered/unregistered selections,
+  empty-registry short-circuit) using `reactor.test.StepVerifier`.
+  Existing closer `NlQueryRestAndGraphQlParityIT` extended with
+  `graphQlAndRestResolversDeclareIdenticalRateLimitFeatureAnnotation()`
+  asserting via `AnnotatedElementUtils.findMergedAnnotation` that
+  every member of `@RateLimitFeature` is byte-equal across the REST
+  and GraphQL resolver methods -- the parity contract at the IT
+  level without standing up a live Lettuce/Redis fixture (deferred
+  per existing repo posture). Per LD104, Leg C (Newman) deferred --
+  no new operator-visible endpoint; URL and response shape are
+  those certified by P9.0.
+
 - P9.0: log-gateway GraphQL scaffold + `nlToLogQL` query with REST
   parity (PR for #127, ADR-0049 2026-06-08, closes #127). First
   GraphQL surface in the project per ADR-0004 (REST + GraphQL parity

@@ -18,6 +18,7 @@ This module is the public ingress for the platform. It owns:
 | NL -> LogQL (Spring AI) | planned    | P3.3      |
 | Reverse-proxy routes    | planned    | P3.4      |
 | GraphQL scaffold (`nlToLogQL`) | live | P9.0      |
+| GraphQL NL sub-bucket parity   | live | P9.0a     |
 
 ## Requirements
 
@@ -179,9 +180,19 @@ Posture summary:
 - **Rate limit**: the global Bucket4j `RateLimitFilter` covers
   `/graphql` -- one token per JWT subject per GraphQL request,
   exactly like every REST request. The NL-specific `@RateLimitFeature`
-  sub-bucket does NOT fire on GraphQL resolvers in P9.0 (deferred to
-  P9.0a via `WebGraphQlInterceptor`); the global bucket still caps
-  abusive callers.
+  sub-bucket also fires on the GraphQL resolver as of P9.0a -- the
+  new `RateLimitGraphQlInterceptor` (Spring for GraphQL
+  `WebGraphQlInterceptor`) reads the same `@RateLimitFeature`
+  annotation off `NlQueryGraphQlController.nlToLogQL` that the MVC
+  `RateLimitFeatureInterceptor` reads off `NlQueryController.translate`,
+  and consumes one token from the SAME Bucket4j sub-bucket per JWT
+  subject. REST and GraphQL therefore share a single NL sub-quota
+  per user (`cortex:rl:nlq:nl-query:user:<sub>`); abusive callers
+  cannot bypass the 10/min cap by issuing the same prompt over the
+  other surface. Both surfaces emit the same 429 RFC 7807 body with
+  `errorCode=NL_QUERY_RATE_LIMITED` on exhaustion. Gated by
+  `cortex.gateway.rate-limit.enabled=true` (the same switch as the
+  MVC interceptor; OFF by default per LD100).
 - **CSRF**: disabled globally per ADR-0015 (stateless JSON API). POSTs
   to `/graphql` are not blocked.
 

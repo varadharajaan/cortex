@@ -310,3 +310,112 @@ consent.
   scaffold sub-phases).
 - memory.md LD131 -- `@Lazy` Metrics ctor pattern (not applicable
   yet; no metrics bean depends on GraphQL resolvers).
+
+## Amendment 1 -- P9.0a `WebGraphQlInterceptor` NL sub-bucket parity
+
+Date: 2026-06-08. Status: shipped. Closes the D6 deferral.
+
+### Change
+
+D6 documented that per-query feature buckets (the `@RateLimitFeature`
+annotation pattern from ADR-0021) do NOT fire on GraphQL resolvers
+in P9.0 -- the MVC `RateLimitFeatureInterceptor` inspects
+`HandlerMethod` which is absent on the GraphQL path. P9.0a closes
+that gap with a new
+`io.cortex.gateway.interceptor.RateLimitGraphQlInterceptor`
+(Spring for GraphQL `WebGraphQlInterceptor`) that:
+
+1. Scans `ApplicationContext.getBeansWithAnnotation(Controller.class)`
+   at `@PostConstruct` for methods annotated with both
+   `@QueryMapping` and `@RateLimitFeature`, indexed by GraphQL
+   field name (the `@QueryMapping.value()` override or, when blank,
+   the method name).
+2. On every inbound `WebGraphQlRequest`, parses the GraphQL document
+   via `graphql.parser.Parser`, walks each `OperationDefinition`'s
+   top-level `Field` selections, and consumes one Bucket4j token per
+   registered field via the SAME `ProxyManager<String>` bean wired
+   into the MVC interceptor.
+3. On exhaustion throws `RateLimitedException` (4-arg form) which
+   propagates through `Mono.error(...)` ->
+   `GraphQlHttpHandler.block()` -> the MVC exception chain into the
+   existing `GlobalExceptionHandler.@ExceptionHandler(
+   RateLimitedException.class)` -> 429 RFC 7807 body. No new error
+   plumbing; the GraphQL surface inherits the REST contract verbatim.
+
+The GraphQL NL resolver
+(`NlQueryGraphQlController.nlToLogQL(String)`) now carries the
+same `@RateLimitFeature(name="nl-query", capacity="${...:10}",
+refill="${...:PT1M}", errorCode="NL_QUERY_RATE_LIMITED",
+keyPrefix="${...:cortex:rl:nlq:}")` annotation as the REST
+endpoint (`NlQueryController.translate(NlQueryRequest)`). Both
+interceptors derive the bucket key as
+`keyPrefix + name + ":user:" + auth.getName()` (or
+`":ip:" + xff-first-hop` for anonymous callers) -- identical key
+shape, identical injected `ProxyManager` bean, therefore a SINGLE
+shared bucket per JWT subject across the REST and GraphQL surfaces.
+This is the P9.0a parity contract.
+
+### Gating
+
+The new interceptor is annotated `@ConditionalOnProperty(prefix =
+"cortex.gateway.rate-limit", name = "enabled", havingValue =
+"true")` -- the same switch that gates the MVC
+`RateLimitFeatureInterceptor`. With rate-limiting OFF (the LD100
+default), the GraphQL interceptor bean is not registered and the
+GraphQL request path has no behavioural change versus P9.0.
+
+### Verification triangle (LD104)
+
+- **Leg A (Surefire)** GREEN: `RateLimitGraphQlInterceptorTest`
+  exercises 7 scenarios -- unregistered field skip, happy-path token
+  consume for authenticated caller, exhaustion path with
+  annotation-driven `errorCode` propagation, anonymous caller keyed
+  by `X-Forwarded-For` first hop, anonymous caller fallback to
+  `unknown` when XFF absent, mixed registered/unregistered top-level
+  selections, and empty-registry short-circuit. All assertions land
+  via `reactor.test.StepVerifier`.
+- **Leg B (Failsafe)** GREEN: the existing
+  `NlQueryRestAndGraphQlParityIT` is extended with
+  `graphQlAndRestResolversDeclareIdenticalRateLimitFeatureAnnotation()`
+  which uses `AnnotatedElementUtils.findMergedAnnotation` to assert
+  every member of `@RateLimitFeature` is byte-equal across the REST
+  and GraphQL resolver methods. This proves the parity contract at
+  the integration level without standing up a live Lettuce/Redis
+  fixture (deferred per existing repo posture; the production
+  `RateLimitConfig` eagerly opens a Redis connection on
+  `@ConditionalOnProperty` activation).
+- **Leg C (Newman)** deferred: no new operator-visible endpoint is
+  introduced; the GraphQL surface URL and request/response shapes
+  remain those certified by P9.0.
+
+### Rejected alternatives
+
+1. **Live-Redis Failsafe IT via Testcontainers.** Rejected -- the
+   project does not currently ship a Redis Testcontainer (verified
+   via `grep -r redis pom.xml` across all 7 modules); introducing
+   one for this single IT would add ~30s to the IT phase and bring
+   a new infrastructural dependency that no other test exercises.
+   The slice + annotation-equality assertions are sufficient to
+   prove the contract.
+2. **Mocked `ProxyManager` via `@MockBean` in a new Failsafe IT.**
+   Rejected -- `RateLimitConfig` defines its
+   `RedisClient`/`StatefulRedisConnection`/`ProxyManager` beans
+   without `@ConditionalOnMissingBean`, so a `@MockBean` override
+   would either clash or require modifying production wiring solely
+   for testability. The Surefire slice already mocks the
+   `ProxyManager` and asserts every call site.
+3. **Separate `@RateLimitGraphQlFeature` annotation distinct from
+   `@RateLimitFeature`.** Rejected -- the whole point of the parity
+   contract is that REST and GraphQL declare the SAME bucket. A
+   separate annotation invites drift (different capacity, different
+   error code) and breaks the shared-bucket invariant.
+
+### References
+
+- Issue #129 -- `feat(gateway): P9.0a WebGraphQlInterceptor NL
+  sub-bucket parity for GraphQL surface`.
+- ADR-0021 -- `@RateLimitFeature` annotation pattern (now
+  cross-surface).
+- memory.md LD104 -- triangle-gate (Leg C deferred for this
+  amendment).
+

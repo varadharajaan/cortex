@@ -9,15 +9,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortex.gateway.annotation.RateLimitFeature;
 import io.cortex.gateway.constants.ApiPaths;
+import io.cortex.gateway.controller.NlQueryController;
 import io.cortex.gateway.dto.request.NlQueryRequest;
 import io.cortex.gateway.dto.response.NlQueryResponse;
+import io.cortex.gateway.graphql.NlQueryGraphQlController;
 import io.cortex.gateway.service.NlQueryService;
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,7 +32,10 @@ import org.springframework.test.web.servlet.MvcResult;
  * Failsafe closer (P9.0 / ADR-0049 / LD104). Proves the REST
  * ({@link ApiPaths#QUERY_NL}) and GraphQL
  * ({@link ApiPaths#GRAPHQL} {@code nlToLogQL}) surfaces return
- * payload-identical results for the same prompt and same caller.
+ * payload-identical results for the same prompt and same caller, and
+ * (P9.0a / ADR-0049 Amendment 1) that both resolver methods declare
+ * the same {@code @RateLimitFeature} annotation so a single Bucket4j
+ * sub-bucket is shared across both surfaces per JWT subject.
  *
  * <p>Bootstraps the full Spring context with the real Spring Security
  * filter chain active, acquires a JWT via {@link ApiPaths#AUTH_LOGIN},
@@ -38,8 +46,9 @@ import org.springframework.test.web.servlet.MvcResult;
  * <p>The four NL error mappings ({@code NL_QUERY_INVALID},
  * {@code NL_QUERY_REFUSED}, {@code NL_QUERY_UPSTREAM_FAILED},
  * {@code NL_QUERY_RATE_LIMITED}) live in the surface-specific slice
- * tests; this closer focuses on the happy-path payload equality that
- * gives the parity claim its teeth.</p>
+ * tests; this closer focuses on (a) happy-path payload equality and
+ * (b) annotation-equality of the sub-bucket contract that gives the
+ * parity claim its teeth.</p>
  */
 @SpringBootTest(properties = "cortex.gateway.nl-query.enabled=true")
 @AutoConfigureMockMvc
@@ -114,5 +123,62 @@ class NlQueryRestAndGraphQlParityIT {
                 .andReturn();
         return this.objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("accessToken").asText();
+    }
+
+    /**
+     * P9.0a parity contract closer: proves the GraphQL resolver
+     * declares an {@link RateLimitFeature @RateLimitFeature}
+     * annotation that is BYTE-EQUAL to the REST controller's annotation
+     * so the
+     * {@link io.cortex.gateway.interceptor.RateLimitGraphQlInterceptor}
+     * (which reads the annotation off the resolver method) and the
+     * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
+     * (which reads it off the REST handler) compute the same Bucket4j
+     * key for the same JWT subject. Same key + same injected
+     * {@link io.github.bucket4j.distributed.proxy.ProxyManager}
+     * instance equals a single shared bucket per JWT subject across
+     * both surfaces -- the P9.0a parity contract.
+     *
+     * <p>This is a contract-level closer (assert annotation equality)
+     * rather than a live-bucket-exhaustion IT because the existing
+     * test posture does not stand up a Lettuce / Redis fixture (the
+     * production {@link io.cortex.gateway.config.RateLimitConfig}
+     * eagerly opens a Redis connection on {@code @ConditionalOnProperty}
+     * activation; standing up Testcontainers Redis is deferred). The
+     * full bucket-consume behaviour is exercised in
+     * {@link io.cortex.gateway.interceptor.RateLimitGraphQlInterceptorTest}
+     * (Surefire) and
+     * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptorTest}
+     * (Surefire) with mocked
+     * {@link io.github.bucket4j.distributed.proxy.ProxyManager}
+     * instances.</p>
+     *
+     * @throws NoSuchMethodException if either resolver method is renamed
+     */
+    @Test
+    void graphQlAndRestResolversDeclareIdenticalRateLimitFeatureAnnotation()
+            throws NoSuchMethodException {
+        final Method restMethod = NlQueryController.class.getDeclaredMethod(
+                "translate", NlQueryRequest.class);
+        final Method graphQlMethod = NlQueryGraphQlController.class.getDeclaredMethod(
+                "nlToLogQL", String.class);
+
+        final RateLimitFeature restAnnotation = AnnotatedElementUtils.findMergedAnnotation(
+                restMethod, RateLimitFeature.class);
+        final RateLimitFeature graphQlAnnotation = AnnotatedElementUtils.findMergedAnnotation(
+                graphQlMethod, RateLimitFeature.class);
+
+        assertThat(restAnnotation)
+                .as("REST controller must carry @RateLimitFeature (P3.4 / ADR-0021)")
+                .isNotNull();
+        assertThat(graphQlAnnotation)
+                .as("GraphQL resolver must carry @RateLimitFeature (P9.0a parity contract)")
+                .isNotNull();
+
+        assertThat(graphQlAnnotation.name()).isEqualTo(restAnnotation.name());
+        assertThat(graphQlAnnotation.capacity()).isEqualTo(restAnnotation.capacity());
+        assertThat(graphQlAnnotation.refill()).isEqualTo(restAnnotation.refill());
+        assertThat(graphQlAnnotation.errorCode()).isEqualTo(restAnnotation.errorCode());
+        assertThat(graphQlAnnotation.keyPrefix()).isEqualTo(restAnnotation.keyPrefix());
     }
 }
