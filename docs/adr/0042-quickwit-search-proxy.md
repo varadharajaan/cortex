@@ -448,3 +448,93 @@ ADR-0041 already rejected the same shape for budgets.
 * LD121 — dual connect+read timeout on `JdkClientHttpRequestFactory`.
 * LD106 + LD112 — Micrometer bootstrap-registration pattern.
 * LD104 — scaffold-phase / Leg A only; B/C/D/E deferred to P7.1a closer.
+
+## Amendment 1 — P9.1a tenant-scoped REST search surface
+
+**Date**: 2026-06-08. **Status**: Accepted (extends, does not
+supersede, the original P7.4 SPI decisions).
+
+### Context
+
+P7.4 (this ADR) shipped the `LogSearchClient` SPI but deliberately
+exposed NO REST surface — the indexer served only actuator endpoints.
+P9.1 (`searchLogs` GraphQL query + REST backer) needs a queryable
+read surface. Per the P9.1 architecture decision (memory LD147), the
+gateway must NOT proxy search via the SCG route table (that would
+split the REST and GraphQL code paths and defeat the ADR-0049 parity
+contract). Instead the owning service exposes the SPI over REST once,
+and the gateway shares a service both surfaces delegate to. P9.1a is
+that owning-service REST surface; P9.1b is the gateway parity layer.
+
+### Decision
+
+Add a thin `SearchController` (`io.cortex.indexer.controller`) over
+the existing `LogSearchClient` SPI. It owns NO search logic — the
+active SPI implementation (noop default, or `QuickwitHttpSearch`
+when `cortex.indexer.search.backend=quickwit`) performs the query,
+enforces the D3 tenant-prefix guardrail, and ticks
+`cortex.indexer.search_total`. The controller's sole job is the HTTP
+boundary.
+
+- **Endpoint**: `POST /api/v1/search`, JSON in/out.
+- **Tenant source of truth**: the required `X-Tenant-Id` header
+  (set by the P9.1b gateway after it authenticates the caller). The
+  request BODY carries only `indexId`, `query`, and an optional
+  `maxHits` — so a body field can never spoof another tenant. The
+  controller builds the domain `SearchRequest(tenantId, indexId,
+  query, maxHits)` from header + body.
+- **`maxHits`**: nullable in the body; the controller applies a
+  server default (50) when omitted and clamps an over-large value to
+  a hard ceiling (1000) rather than rejecting it.
+
+### Verdict → HTTP mapping (D8, new)
+
+Because the SPI never throws (D6), the mapping is verdict-driven,
+not exception-driven:
+
+| `SearchResult` verdict | HTTP |
+|---|---|
+| `search_ok` / `noop` | `200` + `{numHits, hits}` body |
+| `permanent_failure` reason `quickwit:tenant-mismatch` | `403 Forbidden` |
+| `permanent_failure` reason ending `:404` | `404 Not Found` |
+| other `permanent_failure` (e.g. `quickwit:4xx:<n>`) | `422 Unprocessable Entity` |
+| `transient_failure` reason `quickwit:429` | `429 Too Many Requests` + `Retry-After` |
+| other `transient_failure` (`:5xx:<n>` / `:timeout` / `:transport` / `:unknown`) | `503 Service Unavailable` |
+
+Validation failures (blank `indexId`/`query`, missing `X-Tenant-Id`,
+malformed body) map to `400 Bad Request` via a `SearchControllerAdvice`
+`@RestControllerAdvice`, all as RFC 7807 `ProblemDetail` bodies. The
+happy-path response exposes only `numHits` + `hits`; the verdict's
+internal `backend`/`outcome`/`reason` are never leaked on the wire
+(they surface as the status + problem body on failure).
+
+### Rejected alternatives
+
+1. **`GET /api/v1/logs/search?...` with query params (ADR-0004's
+   literal REST shape).** Deferred to the P9.1b GATEWAY surface
+   (which faces external clients and matches ADR-0004). The internal
+   indexer endpoint is `POST` because the Quickwit query string can
+   be long/structured and is cleaner in a JSON body than URL-encoded;
+   the gateway translates the external `GET` to this internal `POST`.
+2. **Tenant id in the body.** Rejected — a body field is caller-
+   controlled and could target another tenant's index; the header is
+   set by the trusted gateway after auth. Defence-in-depth: even if a
+   spoofed `indexId` slipped through, the SPI's D3 `cortex-<tenantId>-`
+   prefix check (keyed off the header tenant) still fails closed.
+3. **Mapping every `permanent_failure` to 400.** Rejected — the
+   guardrail trip is semantically `403`, a missing index is `404`,
+   and a malformed-but-routed query is `422`; collapsing them loses
+   operator signal.
+
+### Verification
+
+Leg A: `SearchControllerTest` `@WebMvcTest` slice (14 tests, mocked
+SPI, full verdict→status table + validation) + `SearchControllerWireMockIT`
+`@SpringBootTest(RANDOM_PORT)` Failsafe IT (4 tests, real
+`QuickwitHttpSearch` against a WireMock Quickwit). `mvn verify` GREEN
+(Surefire 120, Failsafe 45, Checkstyle 0, SpotBugs 0, JaCoCo met).
+ArchUnit `LAYERING` extended with a `Controller` layer. Live smoke +
+Postman + Newman deferred to the P9.1b gateway closer per LD104 (the
+P7.0..P7.4 precedent — an internal endpoint with no operator-facing
+client of its own yet).
+

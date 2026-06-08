@@ -36,6 +36,7 @@ class ArchitectureTest {
                 .layer("App").definedBy("io.cortex.indexer")
                 .layer("Admin").definedBy("io.cortex.indexer.admin..")
                 .layer("Search").definedBy("io.cortex.indexer.search..")
+                .layer("Controller").definedBy("io.cortex.indexer.controller..")
                 .layer("Metrics").definedBy("io.cortex.indexer.metrics..")
                 .layer("Health").definedBy("io.cortex.indexer.health..")
 
@@ -50,8 +51,13 @@ class ArchitectureTest {
                 // IndexerMetrics bootstrap loops over List<LogSearchClient>
                 // to pre-register the cortex.indexer.search_total series for
                 // every active search backend, identical pattern to the
-                // P7.0 Admin reach-in).
-                .whereLayer("Search").mayOnlyBeAccessedByLayers("App", "Metrics")
+                // P7.0 Admin reach-in) + Controller (P9.1a - SearchController
+                // is the thin REST adapter over the LogSearchClient SPI).
+                .whereLayer("Search")
+                .mayOnlyBeAccessedByLayers("App", "Metrics", "Controller")
+                // Controller is the REST edge (P9.1a) - reached by App only
+                // (Spring component-scan); no other layer depends on it.
+                .whereLayer("Controller").mayOnlyBeAccessedByLayers("App")
                 // Metrics is reached by App + Admin (P7.1 -
                 // QuickwitHttpAdmin ticks the cortex.indexer.index_admin_total
                 // counter after every admin call per ADR-0039) + Search

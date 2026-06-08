@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- P9.1a: `log-indexer-service` tenant-scoped REST search surface
+  (ADR-0042 Amendment 1) -- the first step of P9.1 `searchLogs`. New
+  `SearchController` (`POST /api/v1/search`, JSON in/out) is a thin
+  HTTP boundary over the existing P7.4 `LogSearchClient` SPI: it owns
+  no search logic, reads the required `X-Tenant-Id` header as the
+  single source of truth for the tenant (the body carries only
+  `indexId`, `query`, optional `maxHits`, so a body field can never
+  spoof another tenant), builds the domain `SearchRequest`, calls the
+  SPI, and maps the returned `SearchResult` verdict onto an HTTP
+  status. Because the SPI never throws (ADR-0042 D6) the mapping is
+  verdict-driven: `search_ok`/`noop` -> 200 `{numHits, hits}`;
+  `permanent_failure` `quickwit:tenant-mismatch` -> 403; reason ending
+  `:404` -> 404; other permanent -> 422; `transient_failure`
+  `quickwit:429` -> 429 + `Retry-After`; other transient -> 503.
+  Validation + missing-header -> 400 via a new `SearchControllerAdvice`
+  `@RestControllerAdvice`, all as RFC 7807 `ProblemDetail`. New DTOs
+  `SearchHttpRequest` / `SearchHttpResponse` keep the verdict internals
+  (`backend`/`outcome`/`reason`) off the happy-path wire. `maxHits`
+  defaults to 50 and clamps to a 1000 ceiling. ArchUnit `LAYERING`
+  extended with a `Controller` layer. Leg A `mvn verify` GREEN
+  (Surefire 120 incl. new `SearchControllerTest` 14-test `@WebMvcTest`
+  slice + Failsafe 45 incl. new `SearchControllerWireMockIT` 4-test
+  `@SpringBootTest(RANDOM_PORT)` IT against a WireMock Quickwit +
+  Checkstyle 0 + SpotBugs 0 + JaCoCo BUNDLE 0.80/0.80). Per LD104, live
+  smoke + Postman + Newman deferred to the P9.1b gateway closer (an
+  internal endpoint with no operator-facing client of its own yet --
+  the P7.0..P7.4 precedent). P9.1b will add the gateway shared
+  `SearchLogsService` + REST + GraphQL `searchLogs` parity calling this
+  endpoint via `lb://log-indexer-service`.
+
 ### Fixed
 
 - P9.0b: GraphQL NL rate-limit now returns RFC 7807 `429` instead of
