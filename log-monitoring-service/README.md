@@ -1,6 +1,6 @@
 # log-monitoring-service
 
-**Status: P8.0 + P8.1 + P8.2 + P8.2a SHIPPED** -- scaffold carves the
+**Status: P8.0 + P8.1 + P8.2 + P8.2a + P8.1a SHIPPED** -- scaffold carves the
 `ServiceHealthProbe` SPI + `NoopServiceHealthProbe` default impl
 (binder-gated `cortex.monitoring.probe.backend=noop`,
 `matchIfMissing=true`) + bootstrap-registered
@@ -394,6 +394,43 @@ issue per LD104; see ADR-0047 D2b for the chosen workaround.
    replay against `postman/log-monitoring.postman_
    collection.json` + `..._environment_local.json`).
 
+### 9.3 Probe-only local smoke (P8.1a closer)
+
+`scripts/smoke-p8-1a.ps1` (LOCAL-ONLY gitignored under
+`/scripts/`) runs the probe-only Leg B contract -- no
+Prometheus container, no SLO scheduler. Mirrors a
+production-shaped operator deployment where only the probe
+binder gate is flipped:
+
+1. Boots the actual service JAR on `:8098` with env bag
+   (`CORTEX_MONITORING_PROBE_BACKEND=eureka-actuator,
+   EUREKA_CLIENT_ENABLED=false` -- no
+   `CORTEX_MONITORING_SLO_*` env vars; `slo.enabled` stays
+   at its `application.yml` default of false so the
+   `SloEvaluator @Scheduled` bean is gated off and the
+   broken `fixedRateString` LD137 annotation is never
+   exercised).
+2. Asserts `/actuator/health/monitoring`
+   `details.backend=eureka-actuator`.
+3. Scrapes `/actuator/prometheus` for the
+   `cortex_monitoring_probe_total` family with `# HELP` +
+   `# TYPE` + Part 17 tag allowlist
+   (`backend, outcome, service_id`).
+4. Tears down the JVM (skip with `-KeepInfra` to keep the
+   JVM alive for Newman replay against the existing
+   `postman/log-monitoring.postman_collection.json` --
+   the Prometheus + Metrics-After folders skip cleanly
+   via `pm.execution.skipRequest()` when
+   `prometheus_base_url` is absent).
+
+This closer is the canonical proof that the probe surface
+works in a production-shaped configuration WITHOUT the
+LD137 numeric-millis workaround that ADR-0047 / the P8.2a
+IT depends on. When issue #120 lands and the prod
+`SloEvaluator.fixedRateString` annotation is fixed, this
+smoke is unaffected -- exactly the LD104 closer-separation
+invariant.
+
 ## 10. Roadmap
 
 - **P8.0** -- scaffold (#111, ADR-0044). SHIPPED.
@@ -405,9 +442,13 @@ issue per LD104; see ADR-0047 D2b for the chosen workaround.
   (`cortex_monitoring_slo_budget_remaining` +
   `cortex_monitoring_slo_burn_rate` gauges + alert rules
   under `infra/local/alerts/`). SHIPPED (#115, ADR-0046).
-- **P8.1a** -- cross-phase closer (Failsafe IT singleton
-  WireMock per-instance actuator stubs + Postman + smoke
-  per LD104). DEFERRED.
+- **P8.1a** -- cross-phase closer (probe-only Failsafe IT
+  `MonitoringProbeAndHealthIndicatorIT` with
+  `WebEnvironment.RANDOM_PORT` + `TestRestTemplate` HTTP-
+  surface proof against `/actuator/health/monitoring` +
+  standalone smoke without Prometheus; production-shaped
+  config that does NOT carry the LD137 numeric-millis
+  workaround per LD104). SHIPPED (#122, ADR-0048).
 - **P8.2a** -- cross-phase closer (real Prometheus 2.55.1
   container scrapes the gauges + loads the three alert
   rules + cross-phase Failsafe IT exercises the full

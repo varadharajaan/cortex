@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.1a: log-monitoring-service probe-only cross-phase closer
+  (PR for #122, ADR-0048, closes P8 epic #9). New cross-phase
+  Failsafe IT `MonitoringProbeAndHealthIndicatorIT` under
+  `io.cortex.monitoring.closer` alongside the existing
+  P8.2a `MonitoringProbeAndSloPipelineIT`, covering the
+  production-shaped operator deployment where ONLY the probe
+  binder gate is flipped (`cortex.monitoring.probe.backend=
+  eureka-actuator`; SLO defaulted off). Intentionally
+  `@SpringBootTest(webEnvironment=RANDOM_PORT)` (NOT
+  `MOCK`) so the IT can fire `TestRestTemplate.exchange(
+  /actuator/health/monitoring, GET, ParameterizedType-
+  Reference<Map<String,Object>>)` against embedded Tomcat
+  and assert the indicator surface returns `200 UP` with
+  `details.backend=eureka-actuator` end-to-end -- the
+  P8.2a `MOCK` env structurally cannot make this
+  assertion. Does NOT set
+  `cortex.monitoring.slo.enabled=true` and therefore does
+  NOT carry the LD137 numeric-millis workaround
+  `cortex.monitoring.slo.evaluation-interval=3600000` from
+  ADR-0047: the SLO scheduler bean is gated off so the
+  broken `SloEvaluator.@Scheduled(fixedRateString=...)`
+  annotation is never reached. This IT is the canonical
+  proof that the probe surface boots green in a
+  production-shaped configuration that does NOT depend on
+  the deferred issue #120 prod fix. Six test methods:
+  probe bean is `eureka-actuator` + engine bean is `noop`
+  + probe healthy path increments the counter family +
+  indicator HTTP surface reports `backend=eureka-actuator`
+  with `status=UP` + bootstrap loop registers the
+  `eureka-actuator` outcome series + `MonitoringMetrics`
+  ctor-autowire reachable. Re-applies the ADR-0047 D2a
+  `spring.autoconfigure.exclude` triplet of
+  `EurekaClientAutoConfiguration` +
+  `CompositeDiscoveryClientAutoConfiguration` +
+  `SimpleDiscoveryClientAutoConfiguration` to win the
+  `@Primary DiscoveryClient` contest in the cross-phase
+  IT context. Re-uses the existing P8.2a
+  `postman/log-monitoring.postman_collection.json` (the
+  Prometheus folders skip cleanly via
+  `pm.execution.skipRequest()` when `prometheus_base_url`
+  is absent). New standalone PowerShell smoke
+  `scripts/smoke-p8-1a.ps1` (LOCAL-ONLY gitignored under
+  `/scripts/`) boots ONLY the service JAR on `:8098` with
+  `CORTEX_MONITORING_PROBE_BACKEND=eureka-actuator` +
+  `EUREKA_CLIENT_ENABLED=false` (no SLO env vars; no
+  Prometheus container -- the P8.2a smoke covers that
+  surface) and asserts `/actuator/health/monitoring` UP
+  with `backend=eureka-actuator` + `/actuator/prometheus`
+  exposes the `cortex_monitoring_probe_total` family with
+  `# HELP` + `# TYPE` + Part 17 tag keys. PR body carries
+  BOTH `Closes #122` AND `Closes #9` per LD138 -- P8.1a
+  IS the last P8-blocking sub-phase per the ADR-0046
+  amendment 2026-06-08, so the P8 epic closes on this PR.
+  Captured as LD139 in memory.md: in this repo any test
+  code that consumes a generic Spring `RestTemplate` /
+  `TestRestTemplate` response MUST use
+  `ParameterizedTypeReference<T>` not raw `Map.class` /
+  `List.class`, because parent javac runs with `-Werror`
+  and rejects the resulting `found raw type` warning at
+  compile time.
+
+### Added
+
 - P8.2a: log-monitoring-service cross-phase closer +
   Prometheus singleton + cross-phase Failsafe IT + smoke +
   Postman + DiscoveryClient autoconfig-exclude +
