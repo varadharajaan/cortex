@@ -1,6 +1,6 @@
 # log-monitoring-service
 
-**Status: P8.0 + P8.1 + P8.2 + P8.2a + P8.1a SHIPPED** -- scaffold carves the
+**Status: P8.0 + P8.1 + P8.2 + P8.2a + P8.1a + P8.2b SHIPPED** -- scaffold carves the
 `ServiceHealthProbe` SPI + `NoopServiceHealthProbe` default impl
 (binder-gated `cortex.monitoring.probe.backend=noop`,
 `matchIfMissing=true`) + bootstrap-registered
@@ -232,12 +232,15 @@ GET http://localhost:8098/actuator/beans
 | `server.port`                                  | `8098`                               | LD92                                                                          |
 | `eureka.client.service-url.defaultZone`        | `http://localhost:8761/eureka/`      | Local Eureka                                                                  |
 | `cortex.monitoring.probe.backend`              | `noop`                               | `ServiceHealthProbe` binder gate (`noop` default; set to `eureka-actuator` to activate the P8.1 HTTP probe) |
+| `cortex.monitoring.probe.enabled`              | `false`                              | Master switch for the P8.2b `ScheduledProbeEvaluator` multi-target probe pump (NOT gating the probe SPI beans themselves) |
+| `cortex.monitoring.probe.evaluation-interval`  | `30s`                                | Duration between `ScheduledProbeEvaluator` scheduled ticks (Spring `Duration` syntax: `30s`, `1m`, `2m30s`); routed through the `probeEvaluationIntervalMillis` Long adapter bean per LD141 |
+| `cortex.monitoring.probe.targets`              | six cortex services                  | Operator-declared list of Eureka service ids the P8.2b probe pump iterates each tick; defaults to all six cortex services (`log-gateway`, `log-ingest-service`, `log-echo-service`, `log-processor-service`, `log-remediation-service`, `log-indexer-service`) |
 | `cortex.monitoring.eureka.request-timeout`     | `5s`                                 | Dual connect+read timeout for the P8.1 `EurekaActuatorHealthProbe` `RestClient` (LD121) |
 | `cortex.monitoring.eureka.actuator-path`       | `/actuator/health`                   | Per-instance actuator path the P8.1 probe scrapes (must start with `/`)        |
 | `cortex.monitoring.slo.enabled`                | `false`                              | Master switch for the P8.2 `SloEvaluator` scheduled tick (NOT gating the engine beans themselves) |
 | `cortex.monitoring.slo.backend`                | `noop`                               | `SloBudgetEngine` binder gate (`noop` default; set to `micrometer-derivation` to activate the P8.2 in-process Micrometer-derivation backend) |
 | `cortex.monitoring.slo.evaluation-interval`    | `30s`                                | Duration between `SloEvaluator` scheduled ticks (Spring `Duration` syntax: `30s`, `1m`, `2m30s`)            |
-| `cortex.monitoring.slo.definitions`            | (empty list)                         | Operator-supplied list of `SloDefinition(serviceId, sloName, targetSuccessRatio, window)` rows -- see commented example in `application.yml` |
+| `cortex.monitoring.slo.definitions`            | six default availability SLOs        | Default list of `SloDefinition(serviceId, sloName, targetSuccessRatio, window)` rows -- one `availability` SLO (`target-success-ratio=0.99`, `window=PT1H`) per cortex service, matching `cortex.monitoring.probe.targets` (P8.2b ADR-0046 Amendment 3 2026-06-08); operator overrides via standard `@ConfigurationProperties` precedence |
 
 Environment-variable overrides (all profiles):
 
@@ -477,13 +480,24 @@ closer-separation invariant.
   `SloEvaluatorScheduledBootIT` (under
   `io.cortex.monitoring.closer`) pins the fix. SHIPPED
   (ADR-0046 Amendment 2026-06-08).
-- **P8.2b** -- extend `EurekaActuatorHealthProbe` to
-  multi-target (one probe instance per cortex service-id)
-  + ship default `cortex.monitoring.slo.definitions:` block
-  with `availability` SLOs for every P3..P7 service.
-  No new backend -- closes the "every cortex service has
-  at least one SLO" gap using P8.1 + P8.2 verbatim
-  (ADR-0046 amendment 2026-06-08). DEFERRED.
+- **P8.2b** -- multi-target probe pump (new
+  `ScheduledProbeEvaluator` under `io.cortex.monitoring.probe`)
+  that fires one `serviceHealthProbe.probe(...)` call per
+  service-id in `cortex.monitoring.probe.targets` on every
+  `@Scheduled` tick, gated by
+  `cortex.monitoring.probe.enabled=true` (OFF default).
+  Shipped `application.yml` declares all six cortex services
+  as the default `probe.targets` AND matching default
+  `slo.definitions` rows (`availability` SLO,
+  `target-success-ratio=0.99`, `window=PT1H`) so flipping
+  the two `enabled` gates gives cortex-wide availability
+  monitoring for free. Cadence routed through
+  `probeEvaluationIntervalMillis` Long adapter bean per
+  LD141 (mirrors the Amendment 2 fix). New sibling closer
+  `MonitoringMultiTargetProbeAndDefaultSlosIT` (under
+  `io.cortex.monitoring.closer`) proves the multi-target
+  fan-out + default-defs binding end-to-end. SHIPPED
+  (#125, ADR-0046 Amendment 3 2026-06-08).
 - **P8.3** -- new backend `CounterFamilySloBudgetEngine` +
   `SloDefinition` schema extension carrying
   `(metricName, successTagPredicate, failureTagPredicate)`.

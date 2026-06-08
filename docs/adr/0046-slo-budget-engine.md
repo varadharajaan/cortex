@@ -752,3 +752,201 @@ honesty-pass amendment higher in this same file.
 - ADR-0048 -- the P8.1a closer (probe-only), which was
   insensitive to LD137 because it leaves SLO at the noop
   default and is therefore unaffected by this amendment.
+
+## Amendment 2026-06-08 (Amendment 3) -- P8.2b multi-target probe pump + default availability SLO definitions (issue #125)
+
+### Background
+
+After the LD137 fix landed (Amendment 2 above, PR #124), the
+`slo.enabled=true` boot path was structurally safe but the
+P8.2 surface was still operator-friendly in posture only. The
+two long-deferred gap-fill items from the 2026-06-08 honesty
+pass (Amendment 1 -- the "single-backend / single-SLI scope")
+were:
+
+1. **Multi-target probing.** The `ServiceHealthProbe` SPI was
+   designed to be per-target (`ProbeRequest.serviceId`) but
+   the project shipped no driver that actually called it
+   across multiple cortex services. Operators wanting
+   availability data for the six P3..P7 services had to write
+   their own `@Scheduled` orchestrator -- or call
+   `probe.probe(...)` by hand.
+2. **Default SLO definitions.** `cortex.monitoring.slo.definitions:`
+   shipped as an empty list. Operators flipping
+   `slo.enabled=true` got an SLO evaluator that iterated zero
+   definitions -- a structural no-op that satisfied the bean
+   contract but produced no actual SLO data. To get
+   availability monitoring they had to author the definitions
+   themselves, six rows of yml per service.
+
+Both gaps were tracked in ADR-0046 Amendment 1 + memory.md
+under the "queued-but-non-blocking" gap-fill set
+(P8.2b..P8.7+). The post-#120 boot safety made P8.2b the
+right next step in the gap-fill ring because it gives every
+operator who flips the two `enabled` gates real availability
+monitoring for the entire cortex topology, without
+introducing any new backend or breaking any existing
+contract.
+
+### Decision
+
+Adopt the minimal multi-target driver + default-defs shipping
+package:
+
+1. **New `ScheduledProbeEvaluator`** (mirror of `SloEvaluator`)
+   under `io.cortex.monitoring.probe`. Gated by
+   `cortex.monitoring.probe.enabled=true` (OFF by default).
+   When enabled, fires at the cadence declared by
+   `cortex.monitoring.probe.evaluation-interval` (defaults to
+   `30s`, same as the Prometheus scrape interval used by
+   `infra/local/prometheus.yml`) and calls
+   `serviceHealthProbe.probe(new ProbeRequest(serviceId, null))`
+   once per service-id declared in
+   `cortex.monitoring.probe.targets`. The probe SPI's own
+   try-catch + this evaluator's belt-and-braces `RuntimeException`
+   guard ensure one rogue target cannot stall the loop.
+2. **New `ProbeProperties` record** bound to
+   `cortex.monitoring.probe`. Captures the existing `backend`
+   field (mirrored so the property surface has a single source
+   of truth) plus three new fields: `enabled` (gate),
+   `evaluationInterval` (Duration, defaults to `30s`), and
+   `targets` (List<String>, defaults to empty). Compact-ctor
+   defensive defaults so a missing key never NPEs.
+3. **New `ProbeSchedulerConfig`** -- the
+   `@EnableConfigurationProperties(ProbeProperties.class)` +
+   `probeEvaluationIntervalMillis` Long adapter bean per LD141
+   (the same adapter-bean pattern Amendment 2 established for
+   `SloEvaluator`). Bean name pinned via
+   `public static final String PROBE_EVALUATION_INTERVAL_MILLIS_BEAN`
+   so the SpEL string in `@Scheduled` and the registered bean
+   cannot drift independently.
+4. **Default `application.yml` block** ships
+   `cortex.monitoring.probe.targets` with all six cortex
+   services (`log-gateway`, `log-ingest-service`,
+   `log-echo-service`, `log-processor-service`,
+   `log-remediation-service`, `log-indexer-service`) AND
+   `cortex.monitoring.slo.definitions` with matching
+   `availability` SLOs (`target-success-ratio=0.99`,
+   `window=PT1H`). Both default gates (`probe.enabled` +
+   `slo.enabled`) stay `false` so the engines remain OFF until
+   operators opt in -- but flipping either gate now gives the
+   default cortex-wide coverage for free.
+5. **Cross-phase IT proof** -- new sibling closer
+   `MonitoringMultiTargetProbeAndDefaultSlosIT` under
+   `io.cortex.monitoring.closer`. Mirrors the P8.2a /
+   P8.1a closer pattern: a stub `DiscoveryClient` routes
+   every target id to a shared in-process WireMock; the IT
+   flips `probe.enabled=true` + `slo.enabled=true` + the six
+   default targets + the six default SLO defs via inline
+   `@SpringBootTest` properties; asserts
+   `probeEvaluator.evaluateOnce()` produces one counter
+   series per target and `sloEvaluator.evaluateOnce()`
+   under the noop binder iterates all six defs without
+   throwing.
+
+### Considered options
+
+1. **(chosen) New `ScheduledProbeEvaluator` + default defs.**
+   Reuses the existing probe SPI verbatim; reuses the existing
+   SLO evaluator verbatim; the only new prod code is the
+   driver + properties + adapter-bean trio. Mirrors the
+   `SloEvaluator` / `SloEngineConfig` / `SloProperties` shape
+   so future maintainers get exactly one pattern to learn.
+2. **Extend `EurekaActuatorHealthProbe` to internally fan
+   out across all targets.** Rejected -- collapses the
+   probe-per-target SPI into a probe-per-tick driver, which
+   breaks the ADR-0044 SPI contract (`probe(ProbeRequest)`
+   returns one snapshot per call) and would force the SLO
+   evaluator to read multi-target snapshots from a single
+   call, which is a different shape than the engine reads
+   today.
+3. **Ship empty `targets` + empty `definitions` lists and
+   let operators populate them.** This is the pre-P8.2b
+   state, which is exactly what the operator-flagged gap
+   in Amendment 1 said was insufficient. Rejected.
+4. **Auto-discover targets from the Eureka registry on
+   each tick.** Tempting but rejected for two reasons:
+   (a) Eureka registry contents drift over time (services
+   register, deregister, get evicted) and an auto-driven
+   probe target list would silently grow / shrink with no
+   operator visibility; (b) the noop backend has no Eureka
+   client at all, so auto-discovery would force the driver
+   to depend on the backend choice. Operator-declared
+   `targets` keeps the driver backend-agnostic and gives
+   operators explicit control.
+
+### Consequences
+
+- The shipped `application.yml` now describes the full
+  cortex topology as the default probe target list + the
+  full default SLO posture (`0.99` availability over a
+  1-hour rolling window). Operators get availability
+  monitoring for every cortex service by flipping the two
+  `enabled` gates -- zero per-service yml authoring.
+- The `ScheduledProbeEvaluator` is `@ConditionalOnProperty`
+  gated so the bean only loads when an operator opts in.
+  Per-phase unit tests + the P8.1a / P8.2a closers
+  continue to leave the gate at the default `false` and
+  therefore see exactly the same context they did before
+  P8.2b. No regression risk to existing test surface.
+- The `ProbeProperties` record now mirrors the existing
+  `backend` field. The `@ConditionalOnProperty` on each
+  `ServiceHealthProbe` implementation still reads
+  `cortex.monitoring.probe.backend` directly (binder gates
+  fire during context bootstrap, before
+  `@ConfigurationProperties` binding) -- the mirror is
+  purely so the property surface has a single source of
+  truth in code.
+- The driver uses `instanceId=null` in its `ProbeRequest`,
+  which selects the first registered instance per the
+  ADR-0045 `EurekaActuatorHealthProbe` contract. Operators
+  wanting per-instance probing (rather than per-service)
+  must subclass the driver or open a follow-up sub-phase
+  (P8.3 -- explicit per-instance fan-out is queued behind
+  the deferred backend work in Amendment 1).
+- ADR count stays at 48 -- this is an amendment to the
+  existing SLO budget engine surface decision (the
+  default SLO defs ship as part of the same surface), not
+  a new ADR. The probe-driver side is captured here rather
+  than in a sibling ADR because the headline value
+  proposition is the SLO posture defaults; the driver is
+  the supporting plumbing.
+
+### Scope
+
+- New prod source under `io.cortex.monitoring.probe`:
+  `ProbeProperties`, `ProbeSchedulerConfig`,
+  `ScheduledProbeEvaluator`.
+- New IT under `io.cortex.monitoring.closer`:
+  `MonitoringMultiTargetProbeAndDefaultSlosIT`.
+- `application.yml` + `src/test/resources/application.yml`
+  updated with the new defaults (per LD100, test resources
+  fully shadow main).
+
+### Cross-ref
+
+- Issue #125 -- this amendment is the implementation note.
+- ADR-0044 (probe SPI) + ADR-0045 (eureka-actuator
+  backend) -- the surface the driver fans out across.
+- ADR-0046 Amendment 1 (2026-06-08 honesty pass) -- where
+  the multi-target + default-defs gaps were first flagged.
+- ADR-0046 Amendment 2 (2026-06-08 LD137 fix) -- the
+  adapter-bean pattern this driver reuses verbatim for
+  its own cadence.
+- ADR-0047 (P8.2a closer) + ADR-0048 (P8.1a closer) --
+  sibling cross-phase closers; the new
+  `MonitoringMultiTargetProbeAndDefaultSlosIT` is the third
+  closer under `io.cortex.monitoring.closer`.
+- LD104 (closer-separation) -- the new closer ships
+  green Leg A; smoke/Newman LOCAL-ONLY per the standing
+  rule.
+- LD131 (`@Lazy` cycle-break) -- not needed here because
+  the new evaluator depends on `ServiceHealthProbe` (not
+  on `MonitoringMetrics`) so the existing
+  `MonitoringMetrics` <-> `ServiceHealthProbe` cycle is
+  untouched.
+- LD141 (`@Scheduled(fixedRateString)` adapter-bean
+  pattern) -- the new driver follows the rule from the
+  start; the `probeEvaluationIntervalMillis` adapter bean
+  mirrors the `sloEvaluationIntervalMillis` shape exactly.
+
