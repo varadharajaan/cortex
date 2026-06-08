@@ -30,6 +30,20 @@ type Query {
     (the global RateLimitFilter already covers /graphql).
     """
     nlToLogQL(prompt: String!): NlQueryResult!
+
+    """
+    Search a tenant's indexed logs (P9.1b / ADR-0004 / ADR-0049).
+
+    REST parity: GET /api/v1/logs/search?index=&q=&maxHits= . The
+    gateway resolves the tenant from the X-Tenant-Id header (ADR-0009)
+    and forwards the query to log-indexer-service (P9.1a) via the same
+    SearchLogsService used by the REST controller, so validation and
+    downstream-failure mapping are identical across both surfaces.
+
+    Authentication is required; a per-principal search sub-bucket
+    (shared with the REST surface) rate-limits the operation.
+    """
+    searchLogs(input: LogSearchInput!): LogSearchResult!
 }
 
 "Result of a natural-language query translation (ADR-0018)."
@@ -40,4 +54,29 @@ type NlQueryResult {
     confidence: Float!
     "Human-readable explanation of the chosen filters; max 2048 chars."
     explanation: String!
+}
+
+# Custom scalars for the search result (P9.1b / ADR-0049). JSON carries an
+# opaque Quickwit hit document so the gateway does not couple to the indexer
+# document schema; Long carries the 64-bit total hit count. Both are wired by
+# GraphQlScalarConfig via graphql-java-extended-scalars.
+scalar JSON
+scalar Long
+
+"Query inputs for searchLogs (P9.1b / ADR-0004). The tenant is NOT an input field; it is resolved from the X-Tenant-Id header so it cannot be spoofed."
+input LogSearchInput {
+    "Quickwit index id; must carry the canonical cortex-<tenantId>- prefix."
+    indexId: String!
+    "Quickwit query string, forwarded verbatim."
+    query: String!
+    "Optional hit ceiling; strictly positive when present. Null uses the gateway default."
+    maxHits: Int
+}
+
+"Result of a searchLogs operation; payload-identical to the REST surface (P9.1b)."
+type LogSearchResult {
+    "Total hit count reported by the indexer (pre-limit cardinality)."
+    numHits: Long!
+    "Matched hit documents as opaque JSON objects; empty list on a zero-hit query."
+    hits: [JSON!]!
 }

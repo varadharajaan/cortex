@@ -531,3 +531,143 @@ cannot reach.
 - `scripts/live-e2e/smoke-p9-0a.ps1` -- the live smoke that caught the
   defect (Leg B).
 
+## Amendment 3 -- P9.1b `searchLogs` REST + GraphQL parity (second query)
+
+**Date**: 2026-06-08. **Status**: Accepted (first mechanical extension
+of the D1-D7 pattern to a second query).
+
+### Context
+
+P9.0 shipped `nlToLogQL` as the pattern-setting first query; P9.1a
+exposed log-indexer-service's P7.4 `LogSearchClient` SPI over REST
+(`POST /api/v1/search`, ADR-0042 Amendment 1). P9.1b adds the second
+of ADR-0004's four queries, `searchLogs`, on both gateway surfaces by
+following the D1-D7 pattern verbatim -- new schema fields, a
+`@ConditionalOnProperty`-gated REST controller + GraphQL resolver
+sharing one `SearchLogsService`, a `@RateLimitFeature("search-logs")`
+sub-bucket auto-registered on both surfaces (inheriting the P9.0a
+interceptor + P9.0b 429 resolver for free), and a
+`SearchLogsRestAndGraphQlParityIT` closer. This amendment records only
+the decisions that are **new** relative to D1-D7.
+
+### D-A3.1 -- Downstream call is client-side load-balanced, NOT a proxy route
+
+Unlike `nlToLogQL` (whose backer is an in-process Spring AI call),
+`searchLogs` calls a **separate service** (log-indexer-service). Two
+ways to reach it were considered:
+
+- **Spring Cloud Gateway `RouterFunction` proxy** (the P3.4
+  `searchServiceRoute` shape) -- rejected. A proxy route forwards the
+  raw HTTP exchange and cannot share the `SearchLogsService` +
+  `@RateLimitFeature` + parity-IT machinery that the D-pattern
+  requires; it would split REST and GraphQL onto different code paths
+  and kill the parity contract.
+- **Shared service that makes an outbound call** (chosen) -- the
+  `SearchLogsServiceImpl` resolves an indexer instance via the
+  blocking `LoadBalancerClient.choose("log-indexer-service")` and
+  POSTs with a plain, timeout-bounded `RestClient` (HTTP/1.1 pin LD42
+  + dual connect/read timeout LD121).
+
+**Critical constraint**: the client is a *plain* `RestClient`, NOT a
+`@LoadBalanced RestClient.Builder` bean. Declaring a `@LoadBalanced`
+builder would be picked up by Spring AI's
+`ObjectProvider.getIfAvailable(RestClient::builder)` lookup and
+inadvertently load-balance the Ollama calls too. Using the blocking
+`LoadBalancerClient` to resolve an absolute URI keeps load-balancing
+scoped to exactly the search call.
+
+### D-A3.2 -- Tenant resolved from `X-Tenant-Id`, surfaced to GraphQL via interceptor
+
+The gateway JWT carries no tenant claim (subject + roles + token-type
+only), so the tenant is taken from the `X-Tenant-Id` header (ADR-0009)
+and forwarded to the indexer as the single source of truth (ADR-0042
+D3) -- a body / input field can never spoof another tenant. REST reads
+the header with `@RequestHeader`. GraphQL resolvers cannot see the HTTP
+request, so a new `TenantHeaderGraphQlInterceptor`
+(`WebGraphQlInterceptor`, gated on `search-logs.enabled`) lifts the
+header into the GraphQL execution context under
+`GraphQlContextKeys.TENANT_ID`, and the resolver reads it via
+`@ContextValue`. This is the GraphQL counterpart to the REST
+`@RequestHeader`, keeping tenant resolution identical across surfaces.
+
+### D-A3.3 -- `JSON` + `Long` custom scalars for the opaque hit payload
+
+`searchLogs` returns Quickwit hit documents whose shape is owned by the
+indexer, not the gateway. To avoid coupling the schema to that shape,
+hits are exposed through the `JSON` scalar and the 64-bit `numHits`
+through the `Long` scalar (both from
+`graphql-java-extended-scalars`, wired by `GraphQlScalarConfig`). This
+keeps the GraphQL payload byte-identical to the REST JSON body.
+
+### D-A3.4 -- Verdict-to-HTTP mapping consuming the indexer
+
+The indexer returns RFC 7807 statuses (ADR-0042 Amendment 1). The
+gateway service maps them onto its own `ErrorCodes`: `403` ->
+`FORBIDDEN` (cross-tenant), `404` -> `NOT_FOUND` (missing index),
+`422` -> `SEARCH_LOGS_INVALID` (permanent), and everything else
+(downstream `429`/`503`/`5xx` + transport failures) ->
+`SEARCH_LOGS_UPSTREAM_FAILED` (HTTP `502`). Three new `ErrorCodes`
+(`SEARCH_LOGS_RATE_LIMITED`/`_INVALID`/`_UPSTREAM_FAILED`) were added
+with matching `GlobalExceptionHandler` switch cases.
+
+### D-A3.5 -- Retire the P3.4 `searchServiceRoute` echo placeholder
+
+`GatewayRoutesConfig.searchServiceRoute` proxied `/api/v1/search/**`
+to `log-echo-service` as a "until P7" placeholder. With the real
+search surface now gateway-owned, the placeholder is removed. The new
+REST endpoint is `GET /api/v1/logs/search` (per ADR-0004's
+`GET /v1/logs/search`), which sits under the `/api/v1/logs/**` prefix
+that `logsServiceRoute` proxies to log-ingest-service.
+
+**Routing-precedence correction.** The first cut of this amendment
+assumed Spring MVC's `RequestMappingHandlerMapping` (order 0) would
+match the annotated `SearchLogsController` ahead of the gateway's
+`RouterFunctionMapping` (order 3), so the two could coexist on the
+shared prefix. The `SearchLogsRestAndGraphQlParityIT` closer (full
+context) **falsified that assumption**: the REST call returned
+`503 Unable to find instance for log-ingest-service`, proving the
+gateway router function won and forwarded `/api/v1/logs/search` to the
+ingest proxy. The collision is therefore resolved **structurally**:
+the `logsServiceRoute` predicate is narrowed to
+`path("/api/v1/logs/**").and(path("/api/v1/logs/search").negate())` so
+the proxy no longer matches the gateway-owned search path, and the
+annotated controller handles it. This is exactly the class of
+integration defect the cross-surface closer IT exists to catch
+(cf. the P7.1a `@Lazy` bean-cycle).
+
+### Rejected alternatives
+
+1. **SCG `RouterFunction` proxy for searchLogs.** Rejected (D-A3.1) --
+   splits REST/GraphQL code paths, no shared service, no parity IT.
+2. **`@LoadBalanced RestClient.Builder` bean.** Rejected (D-A3.1) --
+   pollutes Spring AI's builder lookup and load-balances Ollama.
+3. **Tenant as a GraphQL input field / JWT claim.** Rejected (D-A3.2)
+   -- spoofable; the header is the single source of truth and the JWT
+   has no tenant claim yet (B6 pending).
+4. **Map hits to a concrete GraphQL `LogHit` type.** Rejected (D-A3.3)
+   -- couples the gateway schema to the indexer document shape; the
+   `JSON` scalar keeps the surfaces decoupled and payload-identical.
+
+### Verification (triangle)
+
+- **Leg A** GREEN: `mvn -pl log-gateway verify` -- new Surefire slices
+  (`SearchLogsControllerTest`, `SearchLogsGraphQlControllerTest`,
+  `SearchLogsServiceImplTest` WireMock, `SearchLogsPropertiesTest`) +
+  Failsafe `SearchLogsRestAndGraphQlParityIT` (payload identity +
+  `@RateLimitFeature` annotation equality) + ArchUnit + Checkstyle 0 +
+  SpotBugs 0 + JaCoCo 0.80/0.80.
+- **Leg B** GREEN: live boot smoke (gateway + indexer + Eureka) --
+  `searchLogs` returns an identical payload on REST and GraphQL for the
+  same tenant + query.
+- **Leg C** deferred per LD104 (Postman/Newman bumped with the new
+  request; same GraphQL URL shape as P9.0).
+
+### References
+
+- Issue #136 -- `P9.1b: gateway searchLogs REST + GraphQL parity`.
+- ADR-0042 Amendment 1 -- the P9.1a indexer REST search surface this
+  query consumes.
+- ADR-0009 -- tenant isolation via `X-Tenant-Id`.
+- memory.md LD42 / LD121 -- HTTP/1.1 pin + dual timeout on the
+  outbound search client.
+

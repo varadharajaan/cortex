@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.1b: `log-gateway` `searchLogs` REST + GraphQL parity
+  (ADR-0049 Amendment 3) -- the second of ADR-0004's four read queries
+  and the gateway half of P9.1 (P9.1a shipped the indexer REST search
+  surface). Both surfaces delegate to one `SearchLogsService`, which
+  forwards the query to log-indexer-service over
+  `lb://log-indexer-service` via the blocking `LoadBalancerClient` + a
+  plain, timeout-bounded `RestClient` (a `@LoadBalanced` builder is
+  deliberately avoided so Spring AI's Ollama client is not affected).
+  REST: `GET /api/v1/logs/search?index=&q=&maxHits=`
+  (`SearchLogsController`). GraphQL:
+  `searchLogs(input: LogSearchInput!): LogSearchResult!`
+  (`SearchLogsGraphQlController`). The tenant is read from the
+  `X-Tenant-Id` header (ADR-0009) -- REST via `@RequestHeader`, GraphQL
+  via a new `TenantHeaderGraphQlInterceptor` that lifts the header into
+  the execution context for a `@ContextValue` read -- and forwarded
+  downstream as the single source of truth, so no input field can spoof
+  another tenant. Hit documents ride the `JSON` scalar and `numHits`
+  the `Long` scalar (`graphql-java-extended-scalars`, wired by
+  `GraphQlScalarConfig`) so the GraphQL payload is byte-identical to
+  REST. Feature gate `cortex.gateway.search-logs.enabled`; a shared
+  `@RateLimitFeature("search-logs")` sub-bucket is auto-registered on
+  both surfaces (one bucket per JWT subject, inheriting the P9.0a
+  interceptor + P9.0b RFC 7807 429 resolver). Downstream verdicts map
+  to HTTP: cross-tenant -> 403, missing index -> 404, permanent -> 422
+  (`SEARCH_LOGS_INVALID`), downstream 429/503/5xx + transport -> 502
+  (`SEARCH_LOGS_UPSTREAM_FAILED`). The P3.4 `searchServiceRoute` echo
+  placeholder (`/api/v1/search/**` -> log-echo-service) is retired now
+  that the real surface is gateway-owned. Parity is enforced by
+  `SearchLogsRestAndGraphQlParityIT` (payload identity +
+  `@RateLimitFeature` annotation equality).
+
 - P9.1a: `log-indexer-service` tenant-scoped REST search surface
   (ADR-0042 Amendment 1) -- the first step of P9.1 `searchLogs`. New
   `SearchController` (`POST /api/v1/search`, JSON in/out) is a thin

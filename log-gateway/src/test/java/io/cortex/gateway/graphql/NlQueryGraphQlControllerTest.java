@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
+import io.cortex.gateway.config.GraphQlScalarConfig;
 import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.dto.request.NlQueryRequest;
 import io.cortex.gateway.dto.response.NlQueryResponse;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.graphql.GraphQlTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.graphql.test.tester.GraphQlTester;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.TestPropertySource;
@@ -33,6 +35,7 @@ import org.springframework.test.context.TestPropertySource;
  * skips the real filter chain.</p>
  */
 @GraphQlTest(NlQueryGraphQlController.class)
+@Import(GraphQlScalarConfig.class)
 @TestPropertySource(properties = "cortex.gateway.nl-query.enabled=true")
 class NlQueryGraphQlControllerTest {
 
