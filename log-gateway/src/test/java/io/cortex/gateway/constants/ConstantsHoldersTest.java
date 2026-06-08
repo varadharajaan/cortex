@@ -57,6 +57,9 @@ class ConstantsHoldersTest {
                         ErrorCodes.NL_QUERY_INVALID,
                         ErrorCodes.NL_QUERY_REFUSED,
                         ErrorCodes.NL_QUERY_UPSTREAM_FAILED,
+                        ErrorCodes.SEARCH_LOGS_RATE_LIMITED,
+                        ErrorCodes.SEARCH_LOGS_INVALID,
+                        ErrorCodes.SEARCH_LOGS_UPSTREAM_FAILED,
                         ErrorCodes.UPSTREAM_UNAVAILABLE,
                         ErrorCodes.INTERNAL_ERROR);
         assertThat(ErrorCodes.valueOf("BAD_REQUEST")).isEqualTo(ErrorCodes.BAD_REQUEST);

@@ -42,6 +42,15 @@ public enum ErrorCodes {
     /** NL-to-LogQL upstream model call failed (Ollama unreachable, timeout, parse error). */
     NL_QUERY_UPSTREAM_FAILED,
 
+    /** Caller exceeded the per-feature {@code searchLogs} sub-bucket (B5, P9.1b / ADR-0049). */
+    SEARCH_LOGS_RATE_LIMITED,
+
+    /** searchLogs request was rejected as permanently unprocessable by the indexer (P9.1b). */
+    SEARCH_LOGS_INVALID,
+
+    /** searchLogs downstream (log-indexer-service / Quickwit) was unavailable or failed transiently (P9.1b). */
+    SEARCH_LOGS_UPSTREAM_FAILED,
+
     /** Fallback for any unexpected internal failure. */
     INTERNAL_ERROR;
 }

@@ -185,9 +185,12 @@ public class GlobalExceptionHandler {
             case UNAUTHENTICATED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case UPSTREAM_UNAVAILABLE, NL_QUERY_UPSTREAM_FAILED -> HttpStatus.BAD_GATEWAY;
-            case RATE_LIMITED, NL_QUERY_RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
-            case NL_QUERY_INVALID, NL_QUERY_REFUSED -> HttpStatus.UNPROCESSABLE_ENTITY;
+            case UPSTREAM_UNAVAILABLE, NL_QUERY_UPSTREAM_FAILED, SEARCH_LOGS_UPSTREAM_FAILED ->
+                    HttpStatus.BAD_GATEWAY;
+            case RATE_LIMITED, NL_QUERY_RATE_LIMITED, SEARCH_LOGS_RATE_LIMITED ->
+                    HttpStatus.TOO_MANY_REQUESTS;
+            case NL_QUERY_INVALID, NL_QUERY_REFUSED, SEARCH_LOGS_INVALID ->
+                    HttpStatus.UNPROCESSABLE_ENTITY;
             case INTERNAL_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }

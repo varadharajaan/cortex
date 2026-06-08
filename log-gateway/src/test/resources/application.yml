@@ -48,6 +48,12 @@ cortex:
     # @SpringBootTest(properties = ...) and supply a test ChatClient.
     nl-query:
       enabled: false
+    # Disable the searchLogs endpoint in MockMvc tests by default
+    # (P9.1b / ADR-0049). Search-specific test classes re-enable it via
+    # @SpringBootTest / @TestPropertySource and mock the service or the
+    # downstream indexer.
+    search-logs:
+      enabled: false
 
 spring:
   ai:

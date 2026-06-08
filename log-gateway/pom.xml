@@ -136,6 +136,19 @@
             <artifactId>spring-boot-starter-graphql</artifactId>
         </dependency>
 
+        <!-- GraphQL extended scalars (P9.1b / ADR-0049). Supplies the JSON
+             scalar (opaque Quickwit hit documents on the searchLogs result,
+             so the gateway does not couple to the indexer document schema)
+             and the Long scalar (64-bit total hit count). Registered with
+             the runtime wiring by GraphQlScalarConfig. Not managed by the
+             Spring Boot BOM, so the version is pinned here to match the
+             graphql-java 22.x line that spring-graphql 1.3.x brings. -->
+        <dependency>
+            <groupId>com.graphql-java</groupId>
+            <artifactId>graphql-java-extended-scalars</artifactId>
+            <version>22.0</version>
+        </dependency>
+
         <!-- Observability: Micrometer Prometheus registry.
              OpenTelemetry tracing bridge + OTLP exporter are deferred to a
              later P3 sub-phase (no collector endpoint is wired yet). -->

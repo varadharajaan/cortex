@@ -63,30 +63,24 @@ public class GatewayRoutesConfig {
      * {@code anyRequest().authenticated()} rule and the
      * {@code OncePerRequestFilter} chain.
      *
+     * <p>The predicate explicitly excludes {@code /api/v1/logs/search}:
+     * that path is the gateway-owned {@code searchLogs} endpoint
+     * (P9.1b / {@link io.cortex.gateway.controller.SearchLogsController}),
+     * NOT an ingest path. Relying on Spring MVC handler precedence
+     * ({@code RequestMappingHandlerMapping} vs the gateway's
+     * {@code RouterFunctionMapping}) is NOT sufficient here -- the
+     * gateway router function wins for this servlet wiring, so the
+     * collision is resolved structurally by narrowing the proxy
+     * predicate (ADR-0049 Amendment 3 D-A3.5).</p>
+     *
      * @return a router function carrying the logs proxy route
      */
     @Bean
     public RouterFunction<ServerResponse> logsServiceRoute() {
         return route("logs-service")
-                .route(path("/api/v1/logs/**"), http())
+                .route(path("/api/v1/logs/**").and(path("/api/v1/logs/search").negate()), http())
                 .before(rewritePath("/api/v1/logs/(?<segment>.*)", "/api/v1/ingest/${segment}"))
                 .filter(lb("log-ingest-service"))
-                .build();
-    }
-
-    /**
-     * P3.4 search proxy route: forwards {@code /api/v1/search/**} via
-     * the load balancer to {@code log-echo-service} (placeholder until
-     * P7 brings up the real search service). Same auth + rate-limit
-     * posture as {@link #logsServiceRoute()}.
-     *
-     * @return a router function carrying the search proxy route
-     */
-    @Bean
-    public RouterFunction<ServerResponse> searchServiceRoute() {
-        return route("search-service")
-                .route(path("/api/v1/search/**"), http())
-                .filter(lb("log-echo-service"))
                 .build();
     }
 }

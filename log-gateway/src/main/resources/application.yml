@@ -134,6 +134,22 @@ cortex:
       sub-bucket-capacity: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_CAPACITY:10}
       sub-bucket-refill-period: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_REFILL:PT1M}
       sub-bucket-key-prefix: ${CORTEX_GATEWAY_NL_QUERY_SUB_BUCKET_PREFIX:cortex:rl:nlq:}
+    # Log search endpoint (P9.1b / ADR-0004 / ADR-0049). Proxies the
+    # query to log-indexer-service (P9.1a) over lb:// via the blocking
+    # LoadBalancerClient. Disabled in src/test/resources for MockMvc
+    # tests that don't need it; the search-specific @SpringBootTest
+    # classes re-enable it explicitly. The sub-bucket fields drive the
+    # @RateLimitFeature("search-logs") shared by the REST + GraphQL
+    # surfaces (one bucket per JWT subject, P9.0a parity).
+    search-logs:
+      enabled: ${CORTEX_GATEWAY_SEARCH_LOGS_ENABLED:true}
+      service-id: ${CORTEX_GATEWAY_SEARCH_LOGS_SERVICE_ID:log-indexer-service}
+      request-timeout: ${CORTEX_GATEWAY_SEARCH_LOGS_REQUEST_TIMEOUT:PT5S}
+      default-max-hits: ${CORTEX_GATEWAY_SEARCH_LOGS_DEFAULT_MAX_HITS:50}
+      max-hits-ceiling: ${CORTEX_GATEWAY_SEARCH_LOGS_MAX_HITS_CEILING:1000}
+      sub-bucket-capacity: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_CAPACITY:30}
+      sub-bucket-refill-period: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_REFILL:PT1M}
+      sub-bucket-key-prefix: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_PREFIX:cortex:rl:search:}
 
 logging:
   level:

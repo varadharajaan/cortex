@@ -30,6 +30,21 @@ public final class ApiPaths {
     public static final String QUERY_NL = QUERY_BASE + "/nl";
 
     /**
+     * Tenant-scoped log search endpoint accepting {@code GET} with
+     * {@code index}, {@code q}, and optional {@code maxHits} query
+     * parameters plus an {@code X-Tenant-Id} header (P9.1b / ADR-0004 /
+     * ADR-0049).
+     *
+     * <p>This is a gateway-owned endpoint, not a proxy route. It sits
+     * under the {@code /api/v1/logs/**} prefix that
+     * {@link io.cortex.gateway.config.GatewayRoutesConfig} proxies to
+     * log-ingest-service, so that proxy predicate explicitly excludes
+     * this exact path (ADR-0049 Amendment 3 D-A3.5); the gateway router
+     * function would otherwise win over the annotated controller.</p>
+     */
+    public static final String LOGS_SEARCH = API_V1 + "/logs/search";
+
+    /**
      * Spring for GraphQL HTTP endpoint (P9.0 / ADR-0049).
      *
      * <p>Accepts {@code POST /graphql} with a standard GraphQL request

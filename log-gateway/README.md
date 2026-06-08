@@ -20,6 +20,7 @@ This module is the public ingress for the platform. It owns:
 | GraphQL scaffold (`nlToLogQL`) | live | P9.0      |
 | GraphQL NL sub-bucket parity   | live | P9.0a     |
 | GraphQL rate-limit 429 (RFC 7807) | live | P9.0b  |
+| `searchLogs` REST + GraphQL parity | live | P9.1b |
 
 ## Requirements
 
@@ -224,6 +225,64 @@ the same prompt -- this is the parity contract enforced by
 Remaining three ADR-0004 queries (`searchLogs`, `getLogById`,
 `getAnomalies`) ship as their REST backers ship in subsequent P9.x
 sub-phases.
+
+### `searchLogs` (P9.1b / ADR-0049 Amendment 3)
+
+The second ADR-0004 query. Both surfaces delegate to one
+`SearchLogsService`, which forwards the query to log-indexer-service
+(P9.1a) over `lb://log-indexer-service` via the blocking
+`LoadBalancerClient` + a plain, timeout-bounded `RestClient`. The
+tenant is taken from the `X-Tenant-Id` header (ADR-0009) and forwarded
+downstream as the single source of truth -- a query parameter / input
+field can never spoof another tenant.
+
+```graphql
+type Query {
+  searchLogs(input: LogSearchInput!): LogSearchResult!
+}
+
+input LogSearchInput {
+  indexId: String!
+  query: String!
+  maxHits: Int
+}
+
+type LogSearchResult {
+  numHits: Long!
+  hits: [JSON!]!   # opaque Quickwit documents (JSON scalar)
+}
+```
+
+| Surface | Shape |
+|---------|-------|
+| REST    | `GET /api/v1/logs/search?index=<indexId>&q=<query>&maxHits=<n>` + `X-Tenant-Id` header |
+| GraphQL | `searchLogs(input: {indexId, query, maxHits})` + `X-Tenant-Id` header |
+
+Feature gate `cortex.gateway.search-logs.enabled` (default `true`;
+`false` removes both beans and the path 404s). A shared
+`@RateLimitFeature("search-logs")` sub-bucket is auto-registered on
+both surfaces (one Bucket4j bucket per JWT subject, inheriting the
+P9.0a interceptor + P9.0b 429 resolver). Downstream verdicts map to
+HTTP: cross-tenant -> 403, missing index -> 404, permanent -> 422
+(`SEARCH_LOGS_INVALID`), downstream 429/503/5xx + transport ->
+502 (`SEARCH_LOGS_UPSTREAM_FAILED`). REST + GraphQL return identical
+`(numHits, hits)` payloads -- the parity contract enforced by
+`SearchLogsRestAndGraphQlParityIT`.
+
+```bash
+curl -s "http://localhost:8090/api/v1/logs/search?index=cortex-acme-logs&q=level:ERROR" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'X-Tenant-Id: acme' | jq
+```
+
+Sample env vars:
+
+| Property                                       | Default              | Meaning                                       |
+|------------------------------------------------|----------------------|-----------------------------------------------|
+| `CORTEX_GATEWAY_SEARCH_LOGS_ENABLED`           | `true`               | Per-query feature gate (REST + GraphQL).      |
+| `CORTEX_GATEWAY_SEARCH_LOGS_SERVICE_ID`        | `log-indexer-service`| Discovery id of the downstream indexer.       |
+| `CORTEX_GATEWAY_SEARCH_LOGS_REQUEST_TIMEOUT`   | `PT5S`               | Connect + read timeout on the indexer call.   |
+| `CORTEX_GATEWAY_SEARCH_LOGS_MAX_HITS_CEILING`  | `1000`               | Hard clamp on a requested `maxHits`.          |
 
 ## Observability
 
