@@ -155,3 +155,46 @@ services:
       retries: 18
       start_period: 30s
     restart: unless-stopped
+
+  # P8.2a (ADR-0047): Prometheus server for the log-monitoring-service
+  # cross-phase closer smoke + Postman + Newman gates. Mounts
+  # ./prometheus.yml (the scrape config that targets the locally-booted
+  # log-monitoring-service on host.docker.internal:8098/actuator/prometheus)
+  # AND ./alerts (the SLO multi-window burn-rate rule file from
+  # infra/local/alerts/slo-burn-rate.rules.yml, ADR-0046 D6). Read-only
+  # mounts so the container cannot mutate the canonical config on the
+  # host. Storage at /prometheus is ephemeral to the container -- smoke
+  # is always-clean.
+  #
+  # The smoke contract (scripts/smoke-p8-2a.ps1) boots
+  # log-monitoring-service with cortex.monitoring.probe.backend=eureka-actuator
+  # + cortex.monitoring.slo.enabled=true + cortex.monitoring.slo.backend=
+  # micrometer-derivation so both binder gates flip, then asserts:
+  #   1. /actuator/prometheus exposes the probe counter family +
+  #      both SLO gauges with HELP + TYPE comments.
+  #   2. Prometheus's /api/v1/rules parses slo-burn-rate.rules.yml
+  #      and lists the three alert rules
+  #      (CortexSloFastBurn + CortexSloSlowBurn + CortexSloBudgetExhausted).
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: cortex-smoke-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts:/etc/prometheus/rules:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped

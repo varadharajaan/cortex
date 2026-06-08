@@ -1,0 +1,292 @@
+{
+  "info": {
+    "_postman_id": "f1b2c3d4-0000-4000-8000-d1b2c3d4e0a3",
+    "name": "log-monitoring-service (P8.2a cross-phase closer)",
+    "description": "Postman v2.1 collection for log-monitoring-service after P8.0/P8.1/P8.2 + P8.2a cross-phase closer on :8098. log-monitoring-service hosts the cross-service health aggregation surface (ServiceHealthProbe SPI -- noop / eureka-actuator backends) AND the SLO budget engine SPI (SloBudgetEngine -- noop / micrometer-derivation backends) AND the SloEvaluator @Scheduled orchestrator. P8.2a smoke-stack (scripts/smoke-p8-2a.ps1) boots the service against a real Prometheus 2.55.1 container on :9090 with both binder gates flipped on (cortex.monitoring.probe.backend=eureka-actuator + cortex.monitoring.slo.enabled=true + cortex.monitoring.slo.backend=micrometer-derivation). This collection asserts the actuator surface (LD106 + LD112 bootstrap-registered counter + gauge families), the MonitoringHealthIndicator binding (P8.0 / ADR-0044 D4), the SLO multi-window burn-rate rule file load (P8.2 / ADR-0046 D6) on the Prometheus side, and the Prometheus scrape reachability of the host JVM. Folder order: Admin (actuator health + monitoring health indicator); Metrics-Baseline (snapshot probe_total per outcome); Prometheus-Exposition (assert HELP + TYPE + tag-allowlist for probe counter + both SLO gauges per Part 17); Prometheus-Container (assert Prometheus is healthy + rules parsed + scrape target healthy -- skip if no prometheus_base_url); Metrics-After (re-snapshot to prove counters monotonic). Run AFTER scripts/smoke-p8-2a.ps1 -KeepInfra so the service + Prometheus are both still up.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('request_id')) {",
+          "    pm.variables.set('request_id', 'pm-' + Math.random().toString(36).substring(2, 12));",
+          "}",
+          "pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.get('request_id') });",
+          "pm.request.headers.upsert({ key: 'X-Correlation-ID', value: pm.variables.get('request_id') });",
+          "const tenant = pm.environment.get('tenant_id');",
+          "if (tenant) { pm.request.headers.upsert({ key: 'X-Tenant-Id', value: tenant }); }"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('response under 5000 ms (actuator + Prometheus tolerated)', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Admin (actuator)",
+      "description": "Direct actuator surface exposed by log-monitoring-service on :8098 per application.yml (management.endpoints.web.exposure.include: health,info,metrics,prometheus,beans). The /actuator/health/monitoring indicator (MonitoringHealthIndicator bound to slug 'monitoring' per @Component('monitoring')) is the binder-gate proof at the HTTP boundary (P8.0 / ADR-0044 D4): when cortex.monitoring.probe.backend=eureka-actuator the details.backend value flips from 'noop' to 'eureka-actuator'.",
+      "item": [
+        {
+          "name": "GET /actuator/health -> 200 UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health", "host": [ "{{base_url}}" ], "path": [ "actuator", "health" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/liveness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/liveness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "liveness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/readiness -> 200 UP (K8s probe)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/readiness", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "readiness" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('status field == UP', function () { pm.expect(body.status).to.equal('UP'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/health/monitoring -> 200 UP + details.backend=eureka-actuator (binder gate)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/health/monitoring", "host": [ "{{base_url}}" ], "path": [ "actuator", "health", "monitoring" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('monitoring health UP', function () { pm.expect(body.status).to.equal('UP'); });",
+            "pm.test('details.backend == eureka-actuator (proves binder gate flipped)', function () { pm.expect(body.details && body.details.backend).to.equal('eureka-actuator'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/info -> 200 + JSON object",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/info", "host": [ "{{base_url}}" ], "path": [ "actuator", "info" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "pm.test('Content-Type application/*', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application'); });",
+            "pm.test('body parses as JSON object', function () { pm.expect(pm.response.json()).to.be.an('object'); });"
+          ] } } ]
+        },
+        {
+          "name": "GET /actuator/metrics -> 200 + cortex.monitoring.probe_total registered",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/actuator/metrics", "host": [ "{{base_url}}" ], "path": [ "actuator", "metrics" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('names is a non-empty array', function () { pm.expect(body.names).to.be.an('array').that.is.not.empty; });",
+            "pm.test('cortex.monitoring.probe_total registered (P8.0 OCP bootstrap LD106)', function () { pm.expect(body.names).to.include('cortex.monitoring.probe_total'); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-Baseline",
+      "description": "Snapshot the cortex_monitoring_probe_total counter family BEFORE any further probe ticks. Used to compute deltas in the Metrics-After folder. Sum across all outcomes so the baseline is robust regardless of which outcome the next tick lands in.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus baseline -> capture probe counter sum",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName, backend) {",
+            "    const re = new RegExp('^' + metricName + '\\\\{[^}]*backend=\"' + backend + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "pm.environment.set('probe_total_baseline', String(sumFamily('cortex_monitoring_probe_total', 'eureka-actuator')));",
+            "pm.test('baseline probe_total counter recorded', function () { pm.expect(pm.environment.get('probe_total_baseline')).to.be.a('string'); });",
+            "// Note whether the SLO gauges are already present at baseline (they appear lazily after the first SloEvaluator tick).",
+            "pm.environment.set('slo_budget_baseline_present', String(/cortex_monitoring_slo_budget_remaining\\{/.test(text)));",
+            "pm.environment.set('slo_burn_baseline_present', String(/cortex_monitoring_slo_burn_rate\\{/.test(text)));"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Prometheus-Exposition (host JVM /actuator/prometheus)",
+      "description": "Asserts the Prometheus text-exposition surface on the host log-monitoring-service JVM. The probe counter family is bootstrap-registered at P8.0 @PostConstruct (LD106) so it is guaranteed present on the very first scrape regardless of whether any probe has fired. The SLO gauges (cortex_monitoring_slo_budget_remaining + cortex_monitoring_slo_burn_rate) are NOT bootstrap-registered -- they appear lazily via MonitoringMetrics.recordSlo() once the SloEvaluator has produced its first SloSnapshot. The smoke script (smoke-p8-2a.ps1) waits for at least one evaluator tick (evaluation-interval=5s) before this collection runs, so by the time Newman fires the gauges are exposed.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus -> 200 + probe family + HELP+TYPE + Part 17 tag allowlist",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "pm.test('exposition contains cortex_monitoring_probe_total family', function () { pm.expect(text).to.include('cortex_monitoring_probe_total'); });",
+            "pm.test('probe family HELP+TYPE comments present', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_monitoring_probe_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_monitoring_probe_total counter/);",
+            "});",
+            "pm.test('probe series carries the backend=eureka-actuator tag (binder gate proven)', function () { pm.expect(text).to.match(/cortex_monitoring_probe_total\\{[^}]*backend=\"eureka-actuator\"/); });",
+            "pm.test('probe series carries the allowlisted outcome tag (Part 17)', function () { pm.expect(text).to.match(/cortex_monitoring_probe_total\\{[^}]*outcome=\"/); });",
+            "pm.test('probe series carries the allowlisted service_id tag (Part 17)', function () { pm.expect(text).to.match(/cortex_monitoring_probe_total\\{[^}]*service_id=\"/); });",
+            "// SLO gauges are bootstrap-registered by the P8.2a smoke pre-eval step OR by the SloEvaluator @Scheduled tick at 5s cadence.",
+            "pm.test('SLO budget remaining gauge family exposed', function () { pm.expect(text).to.include('cortex_monitoring_slo_budget_remaining'); });",
+            "pm.test('SLO burn rate gauge family exposed', function () { pm.expect(text).to.include('cortex_monitoring_slo_burn_rate'); });",
+            "pm.test('SLO budget gauge HELP+TYPE comments present', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_monitoring_slo_budget_remaining/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_monitoring_slo_budget_remaining gauge/);",
+            "});",
+            "pm.test('SLO burn gauge HELP+TYPE comments present', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_monitoring_slo_burn_rate/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_monitoring_slo_burn_rate gauge/);",
+            "});",
+            "pm.test('SLO budget series carries the service_id tag', function () { pm.expect(text).to.match(/cortex_monitoring_slo_budget_remaining\\{[^}]*service_id=\"/); });",
+            "pm.test('SLO budget series carries the slo_name tag', function () { pm.expect(text).to.match(/cortex_monitoring_slo_budget_remaining\\{[^}]*slo_name=\"/); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Prometheus-Container (Optional -- skip if no prometheus_base_url)",
+      "description": "Hits the Prometheus container on :9090 to assert: (a) the container is healthy; (b) the slo-burn-rate.rules.yml file parsed cleanly and Prometheus loaded the three alert rules (CortexSloFastBurn + CortexSloSlowBurn + CortexSloBudgetExhausted); (c) the scrape target for log-monitoring-service on host.docker.internal:8098 is reachable. Skips when prometheus_base_url is empty (staging / prod environments).",
+      "item": [
+        {
+          "name": "GET {{prometheus_base_url}}/-/healthy -> 200 (Prometheus container live)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{prometheus_base_url}}/-/healthy", "host": [ "{{prometheus_base_url}}" ], "path": [ "-", "healthy" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('prometheus_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+            ] } }
+          ]
+        },
+        {
+          "name": "GET {{prometheus_base_url}}/api/v1/rules -> 200 + 3 SLO alert rules loaded",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{prometheus_base_url}}/api/v1/rules", "host": [ "{{prometheus_base_url}}" ], "path": [ "api", "v1", "rules" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('prometheus_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('rules API status == success', function () { pm.expect(body.status).to.equal('success'); });",
+              "const allRules = (body.data && body.data.groups || []).flatMap(function (g) { return g.rules || []; });",
+              "const alertNames = allRules.filter(function (r) { return r.type === 'alerting'; }).map(function (r) { return r.name; });",
+              "pm.test('CortexSloFastBurn alert rule loaded (ADR-0046 D6)', function () { pm.expect(alertNames).to.include('CortexSloFastBurn'); });",
+              "pm.test('CortexSloSlowBurn alert rule loaded (ADR-0046 D6)', function () { pm.expect(alertNames).to.include('CortexSloSlowBurn'); });",
+              "pm.test('CortexSloBudgetExhausted alert rule loaded (ADR-0046 D6)', function () { pm.expect(alertNames).to.include('CortexSloBudgetExhausted'); });"
+            ] } }
+          ]
+        },
+        {
+          "name": "GET {{prometheus_base_url}}/api/v1/targets -> 200 + log-monitoring-service scrape target UP",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": { "raw": "{{prometheus_base_url}}/api/v1/targets", "host": [ "{{prometheus_base_url}}" ], "path": [ "api", "v1", "targets" ] }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.environment.get('prometheus_base_url')) { pm.execution.skipRequest(); }"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('targets API status == success', function () { pm.expect(body.status).to.equal('success'); });",
+              "const activeTargets = (body.data && body.data.activeTargets) || [];",
+              "const monitoringTarget = activeTargets.find(function (t) { return t.labels && t.labels.job === 'log-monitoring-service'; });",
+              "pm.test('log-monitoring-service scrape target is registered', function () { pm.expect(monitoringTarget, 'no scrape target with job=log-monitoring-service').to.not.be.undefined; });",
+              "pm.test('log-monitoring-service scrape target health == up', function () { pm.expect(monitoringTarget && monitoringTarget.health).to.equal('up'); });"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics-After",
+      "description": "Re-snapshot the counter family AFTER the rest of the run. Asserts the family is still exported (no NaN, no missing series) and that the snapshot value is >= the baseline (counters never decrease). Does NOT assert exact delta -- Postman cannot guarantee no other caller incremented the counter on the shared smoke stack.",
+      "item": [
+        {
+          "name": "GET /actuator/prometheus after -> assert probe counter monotonic non-decreasing",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "text/plain" } ],
+            "url": { "raw": "{{base_url}}/actuator/prometheus", "host": [ "{{base_url}}" ], "path": [ "actuator", "prometheus" ] }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "function sumFamily(metricName, backend) {",
+            "    const re = new RegExp('^' + metricName + '\\\\{[^}]*backend=\"' + backend + '\"[^}]*\\\\}\\\\s+([0-9.eE+-]+)$', 'gm');",
+            "    let total = 0; let m;",
+            "    while ((m = re.exec(text)) !== null) { total += parseFloat(m[1]); }",
+            "    return total;",
+            "}",
+            "const probeAfter = sumFamily('cortex_monitoring_probe_total', 'eureka-actuator');",
+            "const probeBaseline = parseFloat(pm.environment.get('probe_total_baseline') || '0');",
+            "pm.test('probe counter monotonic non-decreasing', function () { pm.expect(probeAfter).to.be.at.least(probeBaseline); });",
+            "pm.test('probe family still exported with HELP+TYPE', function () {",
+            "    pm.expect(text).to.match(/# HELP cortex_monitoring_probe_total/);",
+            "    pm.expect(text).to.match(/# TYPE cortex_monitoring_probe_total counter/);",
+            "});",
+            "pm.test('SLO budget gauge family still exported', function () { pm.expect(text).to.include('cortex_monitoring_slo_budget_remaining'); });",
+            "pm.test('SLO burn gauge family still exported', function () { pm.expect(text).to.include('cortex_monitoring_slo_burn_rate'); });"
+          ] } } ]
+        }
+      ]
+    }
+  ]
+}
