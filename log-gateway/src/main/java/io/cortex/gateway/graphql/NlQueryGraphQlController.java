@@ -1,5 +1,6 @@
 package io.cortex.gateway.graphql;
 
+import io.cortex.gateway.annotation.RateLimitFeature;
 import io.cortex.gateway.constants.ApiPaths;
 import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.dto.request.NlQueryRequest;
@@ -32,17 +33,17 @@ import org.springframework.stereotype.Controller;
  * {@code nlToLogQL} queries with {@code DataFetchingException}.</p>
  *
  * <p><strong>Rate-limit posture</strong>: the global
- * {@code RateLimitFilter} already covers {@link ApiPaths#GRAPHQL} so
+ * {@code RateLimitFilter} covers {@link ApiPaths#GRAPHQL} so
  * authenticated callers share their global bucket between REST and
  * GraphQL. The per-feature NL sub-bucket
- * ({@code @RateLimitFeature("nl-query")}) only fires on Spring MVC
- * controllers because
- * {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
- * is a {@code HandlerInterceptor} that scans the matched
- * {@code HandlerMethod}; the GraphQL dispatcher routes through a
- * single {@code GraphQlHttpHandler} so resolver methods are not
- * visible. Porting the NL sub-bucket to the GraphQL path is queued
- * as P9.0a -- structural gap, not a regression.</p>
+ * ({@code @RateLimitFeature("nl-query")}) is enforced on this
+ * resolver by
+ * {@link io.cortex.gateway.interceptor.RateLimitGraphQlInterceptor}
+ * (P9.0a / ADR-0049 Amendment 1), the Spring for GraphQL counterpart
+ * to {@link io.cortex.gateway.interceptor.RateLimitFeatureInterceptor}
+ * which serves the REST controller; both interceptors compute the
+ * same bucket key for the same JWT subject so one bucket is shared
+ * across both surfaces (the parity contract).</p>
  */
 @Controller
 @RequiredArgsConstructor
@@ -54,6 +55,19 @@ public class NlQueryGraphQlController {
 
     /**
      * Translates the supplied prompt to a structured LogQL result.
+     *
+     * <p>The {@link RateLimitFeature @RateLimitFeature} annotation
+     * is read by
+     * {@link io.cortex.gateway.interceptor.RateLimitGraphQlInterceptor}
+     * BEFORE the resolver body runs; on exhaustion the interceptor
+     * throws a {@link io.cortex.gateway.exception.RateLimitedException}
+     * carrying {@link ErrorCodes#NL_QUERY_RATE_LIMITED} so the LLM
+     * call is never made. Annotation members are intentionally
+     * identical to the REST {@code translate} method in
+     * {@link io.cortex.gateway.controller.NlQueryController} so both
+     * surfaces resolve to the same Bucket4j key
+     * ({@code cortex:rl:nlq:nl-query:user:<principal>}) and share a
+     * single bucket per JWT subject (the P9.0a parity contract).</p>
      *
      * @param prompt caller-supplied natural-language prompt; the
      *               {@code !} on the schema field guarantees non-null
@@ -67,6 +81,12 @@ public class NlQueryGraphQlController {
      */
     @QueryMapping
     @PreAuthorize("isAuthenticated()")
+    @RateLimitFeature(
+            name = "nl-query",
+            capacity = "${cortex.gateway.nl-query.sub-bucket-capacity:10}",
+            refill = "${cortex.gateway.nl-query.sub-bucket-refill-period:PT1M}",
+            errorCode = "NL_QUERY_RATE_LIMITED",
+            keyPrefix = "${cortex.gateway.nl-query.sub-bucket-key-prefix:cortex:rl:nlq:}")
     public NlQueryResponse nlToLogQL(@Argument final String prompt) {
         final Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {

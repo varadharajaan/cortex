@@ -115,7 +115,8 @@ public class RateLimitFeatureInterceptor implements HandlerInterceptor {
         final BucketConfiguration config = this.configByName.computeIfAbsent(
                 feature.name(), name -> buildConfig(name, capacity, feature.refill()));
 
-        final String key = feature.keyPrefix() + feature.name() + ":" + resolveCallerKey(request);
+        final String resolvedPrefix = this.environment.resolvePlaceholders(feature.keyPrefix());
+        final String key = resolvedPrefix + feature.name() + ":" + resolveCallerKey(request);
         final Bucket bucket = this.proxyManager.builder().build(key, () -> config);
         final ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
         if (!probe.isConsumed()) {

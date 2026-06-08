@@ -54,7 +54,7 @@ public final class ArchitectureRulesTest {
                     "Controller", "Graphql", "Service", "Filter", "Interceptor", "Config", "Security")
             .whereLayer("Filter").mayNotBeAccessedByAnyLayer()
             .whereLayer("Interceptor").mayOnlyBeAccessedByLayers("Config")
-            .whereLayer("Annotation").mayOnlyBeAccessedByLayers("Controller", "Interceptor");
+            .whereLayer("Annotation").mayOnlyBeAccessedByLayers("Controller", "Graphql", "Interceptor");
 
     /** Rule 8.4: DTOs must be records so they are immutable by construction. */
     @ArchTest
@@ -130,7 +130,8 @@ public final class ArchitectureRulesTest {
     @ArchTest
     static final ArchRule PROXY_MANAGER_ACCESS_RESTRICTED = noClasses()
             .that().resideInAPackage("io.cortex.gateway..")
-            .and().haveNameNotMatching(".*\\.(RateLimitFilter|RateLimitFeatureInterceptor|RateLimitConfig)")
+            .and().haveNameNotMatching(
+                    ".*\\.(RateLimitFilter|RateLimitFeatureInterceptor|RateLimitGraphQlInterceptor|RateLimitConfig)")
             .should().dependOnClassesThat().haveFullyQualifiedName(
                     "io.github.bucket4j.distributed.proxy.ProxyManager")
             .because("P3.4 / ADR-0021 - ProxyManager access goes through the filter or the interceptor");
