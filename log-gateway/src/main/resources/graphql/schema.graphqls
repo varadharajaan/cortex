@@ -1,0 +1,43 @@
+# CORTEX read-side GraphQL schema (P9.0 / ADR-0004 / ADR-0049).
+#
+# Schema-first contract for the four read-side operations declared in
+# ADR-0004. P9.0 ships the first operation, nlToLogQL, with full REST
+# parity. The other three (searchLogs, getLogById, getAnomalies) are
+# queued behind their read-side stores and will be appended to this file
+# as they ship.
+#
+# Mutations are forever rejected per ADR-0004 (rejected alternative
+# RA5). Ingestion stays REST-only (POST /v1/ingest / POST
+# /v1/ingest/stream); the GraphQL surface declares Query only.
+#
+# Operators flip GraphiQL and introspection via
+# CORTEX_GATEWAY_GRAPHQL_GRAPHIQL_ENABLED / CORTEX_GATEWAY_GRAPHQL_INTROSPECTION_ENABLED
+# (both default false; see application.yml).
+
+"Root query type for the CORTEX read-side API."
+type Query {
+    """
+    Translate a natural-language prompt into a structured LogQL query.
+
+    REST parity: POST /api/v1/query/nl (P3.3 / ADR-0018). Authentication
+    is required; the gateway resolves the principal from the bearer JWT
+    and reuses the same NlQueryService implementation as the REST
+    controller, so behavioural semantics (validation, refusal markers,
+    upstream-failure mapping, NL sub-bucket on the REST path) are
+    identical.
+
+    NL sub-bucket enforcement on the GraphQL path is queued as P9.0a
+    (the global RateLimitFilter already covers /graphql).
+    """
+    nlToLogQL(prompt: String!): NlQueryResult!
+}
+
+"Result of a natural-language query translation (ADR-0018)."
+type NlQueryResult {
+    "Syntactically-valid LogQL query string; non-blank, ASCII, max 1024 chars."
+    logql: String!
+    "Model-reported confidence in [0.0, 1.0]."
+    confidence: Float!
+    "Human-readable explanation of the chosen filters; max 2048 chars."
+    explanation: String!
+}

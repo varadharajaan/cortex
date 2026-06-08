@@ -25,6 +25,19 @@ spring:
         options:
           model: ${SPRING_AI_OLLAMA_CHAT_MODEL:mistral}
           temperature: ${SPRING_AI_OLLAMA_CHAT_TEMPERATURE:0.2}
+  # Spring for GraphQL (P9.0 / ADR-0004 / ADR-0049). Schema-first wiring
+  # under src/main/resources/graphql/. Path stays the framework default
+  # /graphql so client tooling is plug-and-play. GraphiQL and schema
+  # introspection are OFF by default; operators flip them per
+  # environment via CORTEX_GATEWAY_GRAPHQL_* env vars. Mutations are
+  # forever rejected per ADR-0004 (rejected alternative RA5).
+  graphql:
+    path: ${CORTEX_GATEWAY_GRAPHQL_PATH:/graphql}
+    schema:
+      introspection:
+        enabled: ${CORTEX_GATEWAY_GRAPHQL_INTROSPECTION_ENABLED:false}
+    graphiql:
+      enabled: ${CORTEX_GATEWAY_GRAPHQL_GRAPHIQL_ENABLED:false}
 
 server:
   port: 8090

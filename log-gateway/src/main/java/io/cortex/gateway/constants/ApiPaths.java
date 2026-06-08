@@ -30,6 +30,20 @@ public final class ApiPaths {
     public static final String QUERY_NL = QUERY_BASE + "/nl";
 
     /**
+     * Spring for GraphQL HTTP endpoint (P9.0 / ADR-0049).
+     *
+     * <p>Accepts {@code POST /graphql} with a standard GraphQL request
+     * body ({@code {"query": "...", "variables": {...}}}). The path is
+     * not under {@link #API_V1} because the GraphQL convention is a
+     * single root endpoint and Spring for GraphQL's auto-config binds
+     * to {@code /graphql} by default; aligning with the convention
+     * keeps client tooling (graphql-codegen, Apollo, etc.) plug-and-
+     * play. Authentication is enforced by {@code SecurityConfig}'s
+     * {@code anyRequest().authenticated()} rule (mirrors REST).</p>
+     */
+    public static final String GRAPHQL = "/graphql";
+
+    /**
      * Private constructor; constants holder.
      *
      * @throws AssertionError always, to enforce that this class is never instantiated
