@@ -2,12 +2,9 @@ package io.cortex.gateway.exception;
 
 import io.cortex.gateway.constants.ErrorCodes;
 import io.cortex.gateway.constants.HeaderNames;
-import io.cortex.gateway.constants.LogFields;
 import jakarta.servlet.http.HttpServletRequest;
-import java.time.OffsetDateTime;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -28,15 +25,6 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-
-    /** Custom problem field name for the stable error code. */
-    private static final String FIELD_ERROR_CODE = "errorCode";
-
-    /** Custom problem field name for the correlation id. */
-    private static final String FIELD_TRACE_ID = "traceId";
-
-    /** Custom problem field name for the response timestamp. */
-    private static final String FIELD_TIMESTAMP = "timestamp";
 
     /**
      * Maps {@link RateLimitedException} to {@code 429 Too Many Requests}
@@ -182,16 +170,7 @@ public class GlobalExceptionHandler {
             final ErrorCodes code,
             final String detail,
             final HttpServletRequest request) {
-        final ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
-        problem.setTitle(status.getReasonPhrase());
-        problem.setInstance(java.net.URI.create(request.getRequestURI()));
-        problem.setProperty(FIELD_ERROR_CODE, code.name());
-        problem.setProperty(FIELD_TIMESTAMP, OffsetDateTime.now().toString());
-        final String traceId = MDC.get(LogFields.TRACE_ID);
-        if (traceId != null) {
-            problem.setProperty(FIELD_TRACE_ID, traceId);
-        }
-        return problem;
+        return ProblemDetailFactory.build(status, code, detail, request.getRequestURI());
     }
 
     /**
