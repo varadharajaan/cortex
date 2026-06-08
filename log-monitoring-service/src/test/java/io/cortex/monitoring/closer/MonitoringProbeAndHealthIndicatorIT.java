@@ -63,17 +63,18 @@ import org.springframework.test.context.TestConstructor;
  *       both-gates-flipped shape; this closer covers the
  *       probe-only shape that LD104 closer-separation discipline
  *       requires the regression matrix to also exercise.</li>
- *   <li><strong>No LD137 workaround.</strong> Because
+ *   <li><strong>No LD137 workaround needed.</strong> Because
  *       {@code slo.enabled=false}, the prod
  *       {@code SloEvaluator.@Scheduled(fixedRateString=
- *       "${cortex.monitoring.slo.evaluation-interval:30s}")}
- *       declaration is NOT exercised, so the IT does NOT need
- *       the {@code cortex.monitoring.slo.evaluation-interval=
- *       3600000} numeric-millis workaround (see memory.md LD137
- *       + GitHub issue #120). This IT is therefore the canonical
- *       proof that the probe surface boots and behaves correctly
- *       in a configuration that does NOT depend on the deferred
- *       issue #120 prod fix.</li>
+ *       "#{@sloEvaluationIntervalMillis}")} declaration is NOT
+ *       exercised. The historical numeric-millis override (see
+ *       memory.md LD137 + GitHub issue #120) was removed from
+ *       the P8.2a sibling IT once issue #120 shipped (ADR-0046
+ *       Amendment 2026-06-08); this IT was never sensitive to
+ *       the bug because it leaves SLO at the noop default. The
+ *       IT remains the canonical proof that the probe surface
+ *       boots and behaves correctly in a probe-only
+ *       configuration.</li>
  * </ul>
  *
  * <p><strong>{@link WebEnvironment#RANDOM_PORT}</strong> rather

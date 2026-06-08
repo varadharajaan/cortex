@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- log-monitoring-service issue #120 / LD137:
+  `SloEvaluator.@Scheduled(fixedRateString=...)` no longer
+  `NumberFormatException`s at bean creation when
+  `cortex.monitoring.slo.enabled=true` with the operator-friendly
+  `30s` / `1h` / `PT30S` Duration syntax for
+  `cortex.monitoring.slo.evaluation-interval`. The cadence is
+  now read through the SpEL bean reference
+  `#{@sloEvaluationIntervalMillis}` resolved by a new
+  `@Bean Long sloEvaluationIntervalMillis(SloProperties)` on
+  `SloEngineConfig` (returns
+  `properties.evaluationInterval().toMillis()`). Bean name
+  pinned via the public constant
+  `SloEngineConfig.SLO_EVALUATION_INTERVAL_MILLIS_BEAN` so a
+  drift between the SpEL string and the registered bean
+  surfaces as an immediate boot-time failure. The P8.2a closer
+  IT `MonitoringProbeAndSloPipelineIT` was reverted from the
+  IT-only numeric-millis workaround
+  (`evaluation-interval=3600000`) back to the
+  operator-friendly `1h` form. New narrowest-possible
+  `SloEvaluatorScheduledBootIT` (under
+  `io.cortex.monitoring.closer`) boots the full Spring context
+  with `slo.enabled=true` + `evaluation-interval=30s` and pins
+  the fix as a CI-protected regression. ADR-0046 Amendment
+  2026-06-08 captures the decision. (Closes #120.)
+
 ### Added
 
 - P8.1a: log-monitoring-service probe-only cross-phase closer

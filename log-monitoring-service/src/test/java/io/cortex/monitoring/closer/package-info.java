@@ -17,8 +17,12 @@
  *       {@code cortex.monitoring.slo.backend=micrometer-derivation}),
  *       {@link org.springframework.boot.test.context.SpringBootTest.WebEnvironment#MOCK}
  *       env, exercises the FULL P8.0..P8.2 ring including SLO
- *       derivation + scheduled evaluator. Carries the LD137
- *       numeric-millis IT-only workaround.</li>
+ *       derivation + scheduled evaluator. No longer carries the
+ *       historical LD137 numeric-millis workaround -- since the
+ *       issue #120 prod fix shipped (ADR-0046 Amendment
+ *       2026-06-08), the operator-friendly
+ *       {@code cortex.monitoring.slo.evaluation-interval=1h}
+ *       form is safe under {@code slo.enabled=true}.</li>
  *   <li>{@link io.cortex.monitoring.closer.MonitoringProbeAndHealthIndicatorIT}
  *       (P8.1a / ADR-0048) -- probe-only binder gate flipped
  *       ({@code cortex.monitoring.probe.backend=eureka-actuator}
@@ -28,12 +32,11 @@
  *       {@code /actuator/health/monitoring} HTTP indicator
  *       end-to-end via {@link
  *       org.springframework.boot.test.web.client.TestRestTemplate}.
- *       Does NOT carry the LD137 workaround (the SLO scheduler is
- *       gated off, so the broken {@code fixedRateString} prod
- *       annotation is never exercised). Closes the
- *       production-shaped-config regression gap that the P8.2a IT
- *       leaves open by virtue of having both binder gates flipped
- *       + WebEnvironment.MOCK.</li>
+ *       Was never sensitive to LD137 because it leaves SLO at
+ *       the noop default. Closes the production-shaped-config
+ *       regression gap that the P8.2a IT leaves open by virtue
+ *       of having both binder gates flipped +
+ *       WebEnvironment.MOCK.</li>
  * </ul>
  *
  * <p>Both ITs use a singleton in-process {@code WireMockServer}

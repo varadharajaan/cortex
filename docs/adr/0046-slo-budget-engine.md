@@ -602,3 +602,153 @@ precedent in this repo).
 - LD136 -- operator-flagged SLO scope gap captured in
   `memory.md` as a standing decision so future autopilot
   prompts know the gap is intentional + tracked.
+
+## Amendment 2026-06-08 -- `SloEvaluator @Scheduled fixedRateString` SpEL bean reference (issue #120 / LD137 prod fix)
+
+### Background
+
+The P8.2a cross-phase closer IT
+(`MonitoringProbeAndSloPipelineIT`, ADR-0047) was the first
+Spring context in the project that booted with
+`cortex.monitoring.slo.enabled=true`, which is the gate that
+causes Spring to instantiate the `SloEvaluator` bean and
+process its `@Scheduled` declaration. Bean creation failed
+immediately with:
+
+```
+org.springframework.beans.factory.BeanCreationException:
+  Error creating bean with name 'sloEvaluator' ...
+  Encountered invalid @Scheduled method 'evaluateAll':
+  Invalid fixedRateString value "30s";
+  java.lang.NumberFormatException: For input string: "30s"
+```
+
+The original declaration was:
+
+```java
+@Scheduled(fixedRateString =
+        "${cortex.monitoring.slo.evaluation-interval:30s}")
+public void evaluateAll() { ... }
+```
+
+Spring's `ScheduledAnnotationBeanPostProcessor.parseFixedRate`
+resolves `fixedRateString` via `Long.parseLong(...)` directly
+in this Boot version -- there is no `Duration.parse` fallback.
+The operator-friendly `30s` / `1h` / `PT30S` forms documented
+in `application.yml` and accepted by
+`SloProperties.evaluationInterval()` (a `java.time.Duration`)
+therefore failed at bean-creation time.
+
+The P8.2a closer IT shipped with a numeric-millis pin (
+`cortex.monitoring.slo.evaluation-interval=3600000`) as an
+IT-only workaround so the closer could ship without blocking
+the P8 epic. The workaround was captured as LD137 + GitHub
+issue #120 with three candidate fixes; the closer respected
+LD104 closer-separation and deferred the prod fix to its own
+PR. The P8.1a closer (#122 / ADR-0048) intentionally left
+`slo.enabled=false` and therefore did not touch the bug.
+
+### Decision
+
+Adopt option (1) from issue #120: route the cadence through an
+adapter bean.
+
+1. Add `@Bean(name="sloEvaluationIntervalMillis") Long
+   sloEvaluationIntervalMillis(SloProperties properties)` to
+   `SloEngineConfig`, returning
+   `properties.evaluationInterval().toMillis()`. Pin the bean
+   name via a `public static final String
+   SLO_EVALUATION_INTERVAL_MILLIS_BEAN` constant on the same
+   class so the SpEL string in the `@Scheduled` annotation
+   and the bean cannot drift independently (a typo on either
+   side now degrades to a boot-time bean-creation failure
+   rather than silent breakage).
+2. Change the declaration to
+   `@Scheduled(fixedRateString = "#{@sloEvaluationIntervalMillis}")`.
+   The SpEL bean reference resolves to a `Long`, which
+   `Long.toString` renders as a plain integer literal --
+   exactly the form `Long.parseLong` accepts.
+3. Revert the P8.2a IT's numeric-millis override; the IT now
+   uses the operator-friendly `1h` form to keep the
+   scheduler quiet during the test window.
+4. Add `SloEvaluatorScheduledBootIT` (narrowest-possible
+   Spring-bootstrap IT under `io.cortex.monitoring.closer`)
+   that boots with `slo.enabled=true` AND
+   `evaluation-interval=30s` (the operator-friendly test
+   default) so a future regression in the cadence wiring
+   surfaces as an immediate failure of a test named after
+   the path it protects.
+5. Update operator docs (`application.yml` comment, service
+   README env-var table, ADR-0048 P8.1a IT javadoc, P8.2a
+   IT class javadoc) to remove the LD137 caveat and replace
+   it with a reference to this amendment.
+
+### Considered options
+
+1. **(chosen) Adapter bean + SpEL bean reference.** Keeps
+   the operator-facing `Duration` syntax, keeps the
+   `SloProperties` compact-ctor validation, and pins the
+   bean-name <-> SpEL link via a constant. One new bean,
+   one annotation edit.
+2. **Switch the operator contract to numeric millis.** A
+   one-line change but breaks LD90 / LD126
+   operator-friendliness norms and forces every operator
+   to learn that `30s` means `30000`. Rejected.
+3. **Use ISO-8601 (`PT30S`) and trust a future Spring
+   upgrade.** This Boot version's processor does not fall
+   back to `Duration.parse`, so the bug repros with
+   `PT30S` too. Moot. Rejected.
+
+### Consequences
+
+- `SloEvaluator` boots cleanly under `slo.enabled=true`
+  with the operator-friendly Duration syntax. Verified by
+  the new `SloEvaluatorScheduledBootIT` (2 tests; one
+  asserts the evaluator bean is created, one asserts the
+  cadence-adapter bean is published under the pinned
+  canonical name and resolves to the expected millis).
+- The P8.2a closer IT no longer carries the LD137
+  numeric-millis workaround; the operator-friendly
+  `evaluation-interval=1h` form is now safe under
+  `slo.enabled=true`.
+- The P8.1a closer IT was never sensitive to LD137 (it
+  leaves SLO at the noop default) -- the only doc-level
+  cost is rewording the package javadoc + class javadoc
+  to describe the post-fix state.
+- The SpEL bean reference makes the cadence wiring an
+  explicit two-hop chain: `application.yml` ->
+  `SloProperties.evaluationInterval()` (Duration) ->
+  `sloEvaluationIntervalMillis` bean (Long millis) ->
+  `@Scheduled(fixedRateString="#{@...}")`. This is more
+  ceremony than a direct placeholder lookup, but the
+  ceremony is necessary because Spring's processor only
+  accepts the long-as-string form. The
+  `SLO_EVALUATION_INTERVAL_MILLIS_BEAN` constant keeps the
+  link discoverable from either end.
+- Future SLO-related `@Scheduled` cadences in this module
+  (e.g. P8.3 / P8.4 backends) should follow the same
+  adapter-bean pattern rather than reaching for
+  placeholder expansion on `fixedRateString`. Captured as
+  a standing rule in `memory.md` LD141.
+
+### Scope
+
+ADR count stays at 46 -- this is an amendment to the
+existing SLO budget engine surface decision, not a new
+ADR. Mirrors the ADR-mechanic precedent for the 2026-06-08
+honesty-pass amendment higher in this same file.
+
+### Cross-ref
+
+- Issue #120 -- the bug; this amendment is the fix.
+- LD137 -- the original capture (now resolved; the entry
+  stays in `memory.md` as a historical record).
+- LD141 -- new standing rule: do not use direct
+  `${...}` placeholders on `@Scheduled(fixedRateString=...)`;
+  always route through a `Long` adapter bean + SpEL bean
+  reference.
+- ADR-0047 D2b -- the closer-side workaround this
+  amendment supersedes.
+- ADR-0048 -- the P8.1a closer (probe-only), which was
+  insensitive to LD137 because it leaves SLO at the noop
+  default and is therefore unaffected by this amendment.

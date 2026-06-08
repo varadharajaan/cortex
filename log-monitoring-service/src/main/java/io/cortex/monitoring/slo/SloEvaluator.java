@@ -69,13 +69,26 @@ public class SloEvaluator {
 
     /**
      * Fire at the cadence declared by
-     * {@code cortex.monitoring.slo.evaluation-interval} (Spring's
-     * {@code @Scheduled} parses Duration strings natively in
-     * Boot 3.x). Each tick evaluates every definition against
-     * every active engine and ticks the resulting gauge pair.
+     * {@code cortex.monitoring.slo.evaluation-interval}.
+     *
+     * <p>The cadence is read indirectly via the SpEL bean
+     * reference {@code "#{@sloEvaluationIntervalMillis}"}
+     * (resolved in {@link SloEngineConfig#sloEvaluationIntervalMillis(SloProperties)})
+     * rather than directly through a
+     * {@code "${cortex.monitoring.slo.evaluation-interval}"}
+     * placeholder. Spring's
+     * {@code ScheduledAnnotationBeanPostProcessor} resolves
+     * {@code fixedRateString} via {@code Long.parseLong} with
+     * no {@code Duration.parse} fallback in this Boot version,
+     * so an operator-friendly value such as {@code 30s} or
+     * {@code 1h} would fail bean creation with
+     * {@code NumberFormatException}. Routing the value through
+     * the adapter bean lets {@code application.yml} keep the
+     * typed {@code Duration} contract while {@code @Scheduled}
+     * reads the long-as-string form it actually accepts (issue
+     * #120 / LD137 / ADR-0046 Amendment 2026-06-08).</p>
      */
-    @Scheduled(fixedRateString =
-            "${cortex.monitoring.slo.evaluation-interval:30s}")
+    @Scheduled(fixedRateString = "#{@sloEvaluationIntervalMillis}")
     public void evaluateAll() {
         evaluateOnce();
     }
