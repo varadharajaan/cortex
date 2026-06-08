@@ -1,6 +1,6 @@
 # log-indexer-service
 
-**Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 + P7.1a SHIPPED** -- P7.0 carved the
+**Status: P7.0 + P7.1 + P7.2 + P7.3 + P7.4 + P7.1a + P9.1a SHIPPED** -- P7.0 carved the
 `QuickwitIndexAdmin` SPI + `NoopQuickwitIndexAdmin` default +
 bootstrap counter family + `QuickwitHealthIndicator`. P7.1 lands
 the FIRST real backend impl behind the SPI: `QuickwitHttpAdmin`
@@ -57,10 +57,25 @@ detect it because they instantiate adapters with `new`,
 bypassing Spring).
 
 CORTEX log-indexer-service is the **operator-facing leg of the
-search tier**. There is no inbound REST contract for the data path
-in P7.0; the service has only the actuator surface (`:8097`). All
-real work lands in P7.1+ behind
-`cortex.indexer.admin.backend=quickwit`.
+search tier**. P7.0..P7.4 had no inbound REST contract for the data
+path -- the service exposed only the actuator surface (`:8097`).
+**P9.1a (ADR-0042 Amendment 1) adds the first inbound REST surface**:
+a tenant-scoped `POST /api/v1/search` (`SearchController`) -- a thin
+HTTP boundary over the P7.4 `LogSearchClient` SPI. It reads the
+required `X-Tenant-Id` header as the single tenant source of truth
+(the JSON body carries only `indexId`, `query`, and an optional
+`maxHits`, so a body field can never spoof another tenant), builds
+the domain `SearchRequest`, calls the SPI, and maps the returned
+`SearchResult` verdict to HTTP (the SPI never throws per D6, so the
+mapping is verdict-driven): `search_ok`/`noop` -> 200 `{numHits,
+hits}`; tenant-mismatch -> 403; reason ending `:404` -> 404; other
+permanent -> 422; `quickwit:429` -> 429 + `Retry-After`; other
+transient -> 503; validation / missing header -> 400 (RFC 7807 via
+`SearchControllerAdvice`). The gateway parity layer (P9.1b) will
+call this endpoint via `lb://log-indexer-service` and expose the
+external `searchLogs` REST + GraphQL surfaces. All admin work lands
+behind `cortex.indexer.admin.backend=quickwit`; search behind
+`cortex.indexer.search.backend=quickwit`.
 
 ## 1. Overview
 
