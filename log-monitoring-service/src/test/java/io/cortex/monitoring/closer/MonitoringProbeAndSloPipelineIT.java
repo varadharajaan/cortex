@@ -107,7 +107,14 @@ import org.springframework.test.context.TestConstructor;
  * to one hour for the IT (
  * {@code cortex.monitoring.slo.evaluation-interval=1h}) so the
  * scheduler never fires during the test window -- every SLO
- * evaluation in this suite is explicit.</p>
+ * evaluation in this suite is explicit. The hourly cadence is
+ * the operator-friendly {@code Duration} form, made safe under
+ * {@code slo.enabled=true} by routing the value through the
+ * {@code sloEvaluationIntervalMillis} adapter bean published by
+ * {@code SloEngineConfig} (issue #120 / LD137 / ADR-0046
+ * Amendment 2026-06-08); the historical numeric-millis
+ * workaround captured in LD137 was removed as part of the issue
+ * #120 fix.</p>
  *
  * <p>Per ADR-0047 D1, this IT serves as the LD73 Leg D gate for
  * the P8.0 + P8.1 + P8.2 ring: it is the automated, CI-protected
@@ -122,20 +129,22 @@ import org.springframework.test.context.TestConstructor;
                 "cortex.monitoring.slo.backend=micrometer-derivation",
                 "cortex.monitoring.eureka.request-timeout=30s",
                 "cortex.monitoring.eureka.actuator-path=/actuator/health",
-                // 3 600 000 ms = 1 hour. Numeric millis is the
-                // ONLY value the prod
-                // `SloEvaluator.@Scheduled(fixedRateString=...)`
-                // declaration accepts (Spring's @Scheduled
-                // processor does Long.parseLong directly with no
-                // Duration fallback). The "30s" / "1h" strings the
-                // operator-facing application.yml comment suggests
-                // would NumberFormatException at bean-creation
-                // time. Tracked as a follow-up prod bug (see
-                // memory.md LD137 + GitHub issue #120); fixing
-                // the prod declaration is intentionally out of
-                // scope for the P8.2a closer per LD104
-                // closer-separation discipline.
-                "cortex.monitoring.slo.evaluation-interval=3600000",
+                // Operator-friendly `1h` form -- now safe under
+                // `slo.enabled=true` because the prod
+                // `SloEvaluator.@Scheduled` declaration reads
+                // its cadence through the SpEL bean reference
+                // `#{@sloEvaluationIntervalMillis}` (resolved by
+                // `SloEngineConfig.sloEvaluationIntervalMillis`)
+                // rather than the legacy
+                // `${cortex.monitoring.slo.evaluation-interval}`
+                // placeholder. The hourly cadence keeps the
+                // scheduler from firing during the test window
+                // so every SLO evaluation in this suite stays
+                // explicit. The historical numeric-millis
+                // workaround captured in LD137 / issue #120 was
+                // removed as part of the issue #120 fix
+                // (ADR-0046 Amendment 2026-06-08).
+                "cortex.monitoring.slo.evaluation-interval=1h",
                 "eureka.client.enabled=false",
                 "eureka.client.register-with-eureka=false",
                 "eureka.client.fetch-registry=false",

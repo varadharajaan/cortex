@@ -361,13 +361,21 @@ DiscoveryClient` contest against Spring Cloud Commons defaults
 (D2a / ADR-0047): `spring.autoconfigure.exclude=` listing
 `EurekaClientAutoConfiguration` +
 `CompositeDiscoveryClientAutoConfiguration` +
-`SimpleDiscoveryClientAutoConfiguration`. It also passes
-`cortex.monitoring.slo.evaluation-interval=3600000` (numeric
-millis) as a workaround for a prod bug captured as LD137:
-Spring's `ScheduledAnnotationBeanPostProcessor.fixedRateString`
-does NOT accept `Duration` strings (`Long.parseLong("1h") ->
-NumberFormatException`). The prod fix is filed as a follow-up
-issue per LD104; see ADR-0047 D2b for the chosen workaround.
+`SimpleDiscoveryClientAutoConfiguration`. The IT historically
+also pinned `cortex.monitoring.slo.evaluation-interval=3600000`
+(numeric millis) as a workaround for the prod bug captured as
+LD137: Spring's
+`ScheduledAnnotationBeanPostProcessor.fixedRateString` does NOT
+accept `Duration` strings (`Long.parseLong("1h") ->
+NumberFormatException`). The prod fix shipped via issue #120 /
+ADR-0046 Amendment 2026-06-08 -- `SloEvaluator.@Scheduled` now
+reads its cadence through the SpEL bean reference
+`#{@sloEvaluationIntervalMillis}` (resolved in `SloEngineConfig`),
+so the IT now uses the operator-friendly
+`cortex.monitoring.slo.evaluation-interval=1h` form. The new
+`SloEvaluatorScheduledBootIT` (also under
+`io.cortex.monitoring.closer`) is the narrowest CI-protected
+proof that the fix holds.
 
 ### 9.2 Local smoke (P8.2a closer)
 
@@ -407,9 +415,8 @@ binder gate is flipped:
    EUREKA_CLIENT_ENABLED=false` -- no
    `CORTEX_MONITORING_SLO_*` env vars; `slo.enabled` stays
    at its `application.yml` default of false so the
-   `SloEvaluator @Scheduled` bean is gated off and the
-   broken `fixedRateString` LD137 annotation is never
-   exercised).
+   `SloEvaluator @Scheduled` bean is gated off entirely
+   in this shape).
 2. Asserts `/actuator/health/monitoring`
    `details.backend=eureka-actuator`.
 3. Scrapes `/actuator/prometheus` for the
@@ -424,12 +431,13 @@ binder gate is flipped:
    `prometheus_base_url` is absent).
 
 This closer is the canonical proof that the probe surface
-works in a production-shaped configuration WITHOUT the
-LD137 numeric-millis workaround that ADR-0047 / the P8.2a
-IT depends on. When issue #120 lands and the prod
-`SloEvaluator.fixedRateString` annotation is fixed, this
-smoke is unaffected -- exactly the LD104 closer-separation
-invariant.
+works in a production-shaped configuration. The smoke remains
+unaffected by the issue #120 / LD137 fix
+(`SloEvaluator.fixedRateString` now reads via the
+`#{@sloEvaluationIntervalMillis}` SpEL bean reference per
+ADR-0046 Amendment 2026-06-08) because this shape leaves the
+SLO scheduler gated off entirely -- exactly the LD104
+closer-separation invariant.
 
 ## 10. Roadmap
 
@@ -455,6 +463,20 @@ invariant.
   P8.0..P8.2 ring via autowired beans + Postman covers
   `/actuator/prometheus` + Prometheus `/api/v1/rules` +
   `/api/v1/targets` per LD104). SHIPPED (#119, ADR-0047).
+- **issue #120 / LD137 prod fix** --
+  `SloEvaluator.@Scheduled(fixedRateString=...)` now reads its
+  cadence through the SpEL bean reference
+  `#{@sloEvaluationIntervalMillis}` (resolved by a new
+  `@Bean Long sloEvaluationIntervalMillis(SloProperties)` in
+  `SloEngineConfig`) instead of a direct
+  `${cortex.monitoring.slo.evaluation-interval}` placeholder.
+  This restores the operator-friendly `30s` / `1h` / `PT30S`
+  Duration syntax under `slo.enabled=true`. P8.2a IT
+  `MonitoringProbeAndSloPipelineIT` reverted to
+  `evaluation-interval=1h`. New narrowest-possible
+  `SloEvaluatorScheduledBootIT` (under
+  `io.cortex.monitoring.closer`) pins the fix. SHIPPED
+  (ADR-0046 Amendment 2026-06-08).
 - **P8.2b** -- extend `EurekaActuatorHealthProbe` to
   multi-target (one probe instance per cortex service-id)
   + ship default `cortex.monitoring.slo.definitions:` block

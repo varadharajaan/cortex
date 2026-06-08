@@ -109,8 +109,18 @@ cortex:
     #                              MeterRegistry, derives ratios)
     #
     # `evaluation-interval` controls the @Scheduled firing cadence
-    # on the SloEvaluator. Defaults to 30 s, matches the Prometheus
-    # scrape interval used by infra/local.
+    # on the SloEvaluator. Operator-friendly Spring Duration
+    # syntax is accepted here (e.g. `30s`, `1m`, `2m30s`, `PT1H`);
+    # values are bound through SloProperties.evaluationInterval()
+    # (a java.time.Duration) and then adapted into the long-millis
+    # form Spring's @Scheduled processor accepts via the
+    # `sloEvaluationIntervalMillis` bean defined in
+    # SloEngineConfig (issue #120 / LD137 / ADR-0046 Amendment
+    # 2026-06-08 -- direct `${...:30s}` placeholder usage on
+    # @Scheduled(fixedRateString=...) is NOT safe because the
+    # processor calls Long.parseLong with no Duration fallback).
+    # Defaults to 30 s, matches the Prometheus scrape interval
+    # used by infra/local.
     #
     # `definitions` is the operator-declared list of SLO targets
     # the evaluator iterates each tick. Each definition binds
