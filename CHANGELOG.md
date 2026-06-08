@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- P9.0b: GraphQL NL rate-limit now returns RFC 7807 `429` instead of
+  HTTP `500` (PR for #131, ADR-0049 Amendment 2 2026-06-08, closes
+  #131). A live boot smoke (`scripts/live-e2e/smoke-p9-0a.ps1`)
+  proved the P9.0a runtime claim false: when a GraphQL `nlToLogQL`
+  call exhausted the shared NL sub-bucket the gateway returned a
+  generic `500` (`{"status":500,"error":"Internal Server Error",
+  "path":"/graphql"}`), not the documented `429`. Root cause:
+  `GlobalExceptionHandler` is a `@RestControllerAdvice`, and Spring's
+  `ExceptionHandlerExceptionResolver` only applies `@ExceptionHandler`
+  to `HandlerMethod` handlers (`@RequestMapping` controllers); the
+  `/graphql` HTTP transport is a functional `RouterFunction`
+  (`GraphQlWebMvcAutoConfiguration`), so the `RateLimitedException`
+  thrown by `RateLimitGraphQlInterceptor` escaped the advice and the
+  servlet container rendered a `500`. Fix: new
+  `RateLimitProblemExceptionResolver` (`HandlerExceptionResolver` at
+  `HIGHEST_PRECEDENCE`, gated by
+  `cortex.gateway.rate-limit.enabled=true`) maps
+  `RateLimitedException` from non-`HandlerMethod` handlers to a `429`
+  RFC 7807 body + `Retry-After`; it returns `null` for `HandlerMethod`
+  handlers so the REST surface stays on `@ExceptionHandler` untouched.
+  The RFC 7807 builder is extracted from `GlobalExceptionHandler` into
+  a shared `ProblemDetailFactory` so REST and GraphQL emit
+  byte-identical problem bodies (only `instance` differs:
+  `/api/v1/query/nl` vs `/graphql`) -- the parity contract is now
+  structural. The interceptor's earlier P9.0a CHANGELOG claim of a
+  `GlobalExceptionHandler`-mediated 429 on the GraphQL path is
+  superseded by this entry. Verified live (Leg B): the GraphQL
+  over-limit call returns `429 NL_QUERY_RATE_LIMITED` +
+  `Retry-After`, and both shared-bucket directions (REST->GraphQL and
+  GraphQL->REST) drain one `cortex:rl:nlq:nl-query:user:<sub>` bucket.
+  New `RateLimitProblemExceptionResolverTest` (5 scenarios) +
+  `GlobalExceptionHandlerTest` unchanged (17/17 through the factory
+  extraction).
+
 ### Added
 
 - P9.0a: log-gateway `WebGraphQlInterceptor` NL sub-bucket parity

@@ -19,6 +19,7 @@ This module is the public ingress for the platform. It owns:
 | Reverse-proxy routes    | planned    | P3.4      |
 | GraphQL scaffold (`nlToLogQL`) | live | P9.0      |
 | GraphQL NL sub-bucket parity   | live | P9.0a     |
+| GraphQL rate-limit 429 (RFC 7807) | live | P9.0b  |
 
 ## Requirements
 
@@ -190,7 +191,13 @@ Posture summary:
   per user (`cortex:rl:nlq:nl-query:user:<sub>`); abusive callers
   cannot bypass the 10/min cap by issuing the same prompt over the
   other surface. Both surfaces emit the same 429 RFC 7807 body with
-  `errorCode=NL_QUERY_RATE_LIMITED` on exhaustion. Gated by
+  `errorCode=NL_QUERY_RATE_LIMITED` + `Retry-After` on exhaustion.
+  Because `/graphql` is a functional `RouterFunction` endpoint that
+  `@RestControllerAdvice` (`GlobalExceptionHandler`) does NOT cover,
+  the GraphQL 429 is rendered by `RateLimitProblemExceptionResolver`
+  (a `HandlerExceptionResolver`; P9.0b / ADR-0049 Amendment 2) which
+  reuses the same `ProblemDetailFactory` as the REST handler so the
+  bodies are byte-identical. Gated by
   `cortex.gateway.rate-limit.enabled=true` (the same switch as the
   MVC interceptor; OFF by default per LD100).
 - **CSRF**: disabled globally per ADR-0015 (stateless JSON API). POSTs

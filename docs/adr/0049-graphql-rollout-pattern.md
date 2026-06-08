@@ -419,3 +419,115 @@ GraphQL request path has no behavioural change versus P9.0.
 - memory.md LD104 -- triangle-gate (Leg C deferred for this
   amendment).
 
+## Amendment 2 -- P9.0b GraphQL rate-limit returns RFC 7807 429 (not 500)
+
+**Date**: 2026-06-08. **Status**: Accepted (supersedes the runtime
+claim made in Amendment 1).
+
+### Context -- a defect Amendment 1 could not see
+
+Amendment 1 (P9.0a) asserted that a rate-limit rejection on the
+GraphQL `nlToLogQL` resolver flows
+`RateLimitedException -> Mono.error -> GraphQlHttpHandler ->
+GlobalExceptionHandler -> RFC 7807 429`. That claim was **never
+exercised over the wire** -- the P9.0a Surefire slice mocked the
+`ProxyManager`, and Legs B + C were deferred. A new live boot smoke
+(`scripts/live-e2e/smoke-p9-0a.ps1`; booted gateway + Eureka + Redis +
+WireMock) proved the claim **false**:
+
+- When the **GraphQL** call exceeds the shared NL bucket, the gateway
+  returned **HTTP 500** (`{"status":500,"error":"Internal Server
+  Error","path":"/graphql"}`), NOT the documented `429`.
+- The **REST** surface (and the GraphQL->REST shared-bucket direction)
+  returned the correct `429` -- so the shared bucket itself is sound;
+  only the GraphQL-side error **mapping** was wrong.
+
+### Root cause
+
+`GlobalExceptionHandler` is a `@RestControllerAdvice`. Spring's
+`ExceptionHandlerExceptionResolver` only applies `@ExceptionHandler`
+methods to `HandlerMethod` handlers (i.e. `@RequestMapping`
+controllers). The GraphQL HTTP transport is a **functional**
+`RouterFunction` endpoint (`GraphQlWebMvcAutoConfiguration`), whose
+handler is not a `HandlerMethod`, so the advice is skipped and the
+`RateLimitedException` thrown by `RateLimitGraphQlInterceptor` escapes
+the resolver chain. Tomcat then renders a generic `500`. REST works
+because its interceptor runs under `@RequestMapping` dispatch where
+`@ExceptionHandler` applies.
+
+### Decision (Option A -- preserve the documented HTTP contract)
+
+Map `RateLimitedException` to RFC 7807 `429` for the functional
+GraphQL endpoint so REST and GraphQL emit **byte-identical** problem
+bodies (only `instance` differs: `/api/v1/query/nl` vs `/graphql`):
+
+1. New `RateLimitProblemExceptionResolver` (`@Component`,
+   `@ConditionalOnProperty(cortex.gateway.rate-limit.enabled=true)`,
+   `implements HandlerExceptionResolver, Ordered`). It runs at
+   `HIGHEST_PRECEDENCE` but **returns `null` for `HandlerMethod`
+   handlers** so the REST surface stays on `@ExceptionHandler`
+   untouched; it only acts on the functional (non-`HandlerMethod`)
+   GraphQL endpoint. On a `RateLimitedException` (scanned through the
+   cause chain) it writes `429` + `Retry-After` +
+   `application/problem+json`.
+2. The RFC 7807 builder is extracted from `GlobalExceptionHandler`
+   into a shared `ProblemDetailFactory` so REST and GraphQL produce
+   the same body by construction -- the parity contract becomes
+   **structural**, not coincidental.
+
+### Why a `HandlerExceptionResolver` (not the GraphQL error channel)
+
+Option B (a `DataFetcherExceptionResolver` emitting `200 OK` with a
+GraphQL `errors[]` payload + `extensions.classification=RATE_LIMITED`)
+was rejected: P9.0a/ADR-0049 already document the rate-limit response
+as an HTTP `429` with a `Retry-After` header, and the REST surface
+returns exactly that. Keeping the GraphQL surface on the same HTTP
+contract preserves operator tooling (load balancers, retry budgets,
+`Retry-After`-aware clients) and the cross-surface parity claim. A
+custom `HandlerExceptionResolver` is the correct MVC-layer tool for
+exceptions escaping a functional endpoint that `@ExceptionHandler`
+cannot reach.
+
+### Rejected alternatives
+
+1. **GraphQL-idiomatic `errors[]` at HTTP 200 (Option B).** Rejected
+   -- diverges from the REST surface and from the already-published
+   `429`/`Retry-After` contract; breaks HTTP-level rate-limit tooling.
+2. **Make `RateLimitGraphQlInterceptor` set the HTTP status on
+   `WebGraphQlResponse`.** Rejected -- the interceptor deals in
+   GraphQL response shapes; it cannot emit an RFC 7807 problem body,
+   which is the parity requirement.
+3. **Move the rate-limit check into a servlet `Filter` on
+   `/graphql`.** Rejected -- a filter runs before the GraphQL document
+   is parsed, so it cannot know which top-level fields (and therefore
+   which `@RateLimitFeature` sub-buckets) the request targets. The
+   interceptor's post-parse field walk is required.
+4. **Duplicate the RFC 7807 builder in the resolver.** Rejected --
+   parity is the contract; a shared `ProblemDetailFactory` prevents
+   drift between the two surfaces.
+
+### Verification (triangle)
+
+- **Leg A** GREEN: new `RateLimitProblemExceptionResolverTest` (5
+  scenarios: functional-endpoint 429 body + `Retry-After` +
+  problem+json + MDC trace id; `HandlerMethod` deferral; non-rate-limit
+  ignored; wrapped-cause unwrap; `HIGHEST_PRECEDENCE`).
+  `GlobalExceptionHandlerTest` stays GREEN (17/17) through the
+  `ProblemDetailFactory` extraction. `mvn verify` GREEN
+  (Checkstyle 0 / SpotBugs 0 / JaCoCo 0.80/0.80).
+- **Leg B** GREEN: `scripts/live-e2e/smoke-p9-0a.ps1` end-to-end
+  against the booted stack -- the GraphQL over-limit call now returns
+  `429 NL_QUERY_RATE_LIMITED` + `Retry-After`, and BOTH shared-bucket
+  directions (REST->GraphQL and GraphQL->REST) pass.
+- **Leg C** deferred: no new endpoint shape (same GraphQL URL +
+  request/response certified by P9.0).
+
+### References
+
+- Issue #131 -- `P9.0b: GraphQL NL rate-limit returns HTTP 500 instead
+  of RFC 7807 429`.
+- Amendment 1 (P9.0a) -- the parity contract whose runtime claim this
+  amendment corrects.
+- `scripts/live-e2e/smoke-p9-0a.ps1` -- the live smoke that caught the
+  defect (Leg B).
+
