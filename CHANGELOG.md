@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.0: log-gateway GraphQL scaffold + `nlToLogQL` query with REST
+  parity (PR for #127, ADR-0049 2026-06-08, closes #127). First
+  GraphQL surface in the project per ADR-0004 (REST + GraphQL parity
+  on four read queries, no mutations forever). Spring for GraphQL
+  pulled in via the bundled `spring-boot-starter-graphql` (Boot 3.3.6
+  BOM-managed; no explicit version). Schema-first under
+  `log-gateway/src/main/resources/graphql/schema.graphqls`:
+  `type Query { nlToLogQL(prompt: String!): NlQueryResult! }` with
+  `NlQueryResult { logql: String! confidence: Float! explanation: String! }`
+  mirroring the existing REST DTO field-by-field so a single client
+  model serialises identically over both surfaces. New resolver
+  `NlQueryGraphQlController` in new `io.cortex.gateway.graphql`
+  package -- `@QueryMapping @PreAuthorize("isAuthenticated()")`,
+  zero business logic, delegates to the existing shared
+  `NlQueryService.translate(NlQueryRequest, principalName)` so REST
+  + GraphQL are guaranteed identical at runtime. Per-query
+  `@ConditionalOnProperty(cortex.gateway.nl-query.enabled=true)`
+  matches the REST controller gate (LD100 OFF-by-default) so the
+  GraphQL surface ships dark and is rolled out per-query. Security
+  via the existing `anyRequest().authenticated()` filter chain in
+  `SecurityConfig` -- no per-path `permitAll` rule for `/graphql`;
+  the `@PreAuthorize` is defence-in-depth. Rate-limiting via the
+  existing global Bucket4j `RateLimitFilter` -- `/graphql` is
+  deliberately NOT in `excludedPaths()` so every request consumes
+  one token per JWT subject like every REST request. Production-safe
+  defaults `spring.graphql.graphiql.enabled` +
+  `spring.graphql.schema.introspection.enabled` both default `false`
+  via `CORTEX_GATEWAY_GRAPHQL_GRAPHIQL_ENABLED` +
+  `CORTEX_GATEWAY_GRAPHQL_INTROSPECTION_ENABLED` env vars (local dev
+  MAY flip on; staging/prod leave off). `spring.graphql.path`
+  defaults to `/graphql` via `CORTEX_GATEWAY_GRAPHQL_PATH`. New
+  `Graphql` layer in `ArchitectureRulesTest.LAYERING` mirrors the
+  `Controller` posture (`mayNotBeAccessedByAnyLayer`) with `Service`
+  + `Exception` allowed-callers extended to permit `Graphql` calls.
+  New Surefire slice `NlQueryGraphQlControllerTest` uses
+  `@GraphQlTest(NlQueryGraphQlController.class)` -- fast, no full
+  context; 2 tests (happy path + `NL_QUERY_INVALID` propagation).
+  First member of new `io.cortex.gateway.closer` package --
+  `NlQueryRestAndGraphQlParityIT` Failsafe IT (`@SpringBootTest
+  @AutoConfigureMockMvc`) acquires a real JWT via `POST
+  /api/v1/auth/login` with the bootstrap admin user, then asserts
+  REST + GraphQL produce identical `(logql, confidence, explanation)`
+  for the same prompt -- this is the parity contract. Failsafe
+  plugin activated in `log-gateway/pom.xml` (was Surefire-only
+  before this sub-phase). Per-phase verification triangle deferred
+  to Leg A only per LD104 (closer IT is the proxy for Spring-wiring
+  changes inside this scaffold sub-phase; smoke + Newman re-introduced
+  in P9.x when each query gains an operator-visible endpoint).
+  Per-query NL sub-bucket via `@RateLimitFeature` does NOT fire on
+  GraphQL resolvers in P9.0 because `RateLimitFeatureInterceptor` is
+  a Spring MVC `HandlerInterceptor` and never sees `DataFetcher`
+  invocations -- explicitly deferred to a follow-up P9.0a
+  `WebGraphQlInterceptor` extension (not a correctness gap; the
+  global bucket still caps abusive callers, only a convenience
+  parity gap on the NL-specific 10/min sub-quota).
+
 - P8.2b: log-monitoring-service multi-target probe pump +
   default availability SLO definitions (PR for #125,
   ADR-0046 Amendment 3 2026-06-08, closes #125). New

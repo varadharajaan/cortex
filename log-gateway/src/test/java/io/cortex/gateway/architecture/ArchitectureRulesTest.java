@@ -28,10 +28,15 @@ public final class ArchitectureRulesTest {
      *  P3.1 re-adds the Service layer (P3.0 omitted it temporarily because
      *  ArchUnit rejects empty layers; see memory.md EQ8).
      *  P3.4 introduces the {@code Annotation} + {@code Interceptor}
-     *  layers (ADR-0021 / memory.md LD41). */
+     *  layers (ADR-0021 / memory.md LD41).
+     *  P9.0 introduces the {@code Graphql} layer (ADR-0049). GraphQL
+     *  resolvers are a second "edge" surface beside REST controllers --
+     *  same allowed downstream dependencies (service + dto + exception +
+     *  constants + security), same "mayNotBeAccessedByAnyLayer" rule. */
     @ArchTest
     static final ArchRule LAYERING = Architectures.layeredArchitecture().consideringAllDependencies()
             .layer("Controller").definedBy("..controller..")
+            .layer("Graphql").definedBy("..graphql..")
             .layer("Service").definedBy("..service..", "..service.impl..")
             .layer("Filter").definedBy("..filter..")
             .layer("Interceptor").definedBy("..interceptor..")
@@ -43,9 +48,10 @@ public final class ArchitectureRulesTest {
             .layer("Constants").definedBy("..constants..")
 
             .whereLayer("Controller").mayNotBeAccessedByAnyLayer()
-            .whereLayer("Service").mayOnlyBeAccessedByLayers("Controller", "Service")
+            .whereLayer("Graphql").mayNotBeAccessedByAnyLayer()
+            .whereLayer("Service").mayOnlyBeAccessedByLayers("Controller", "Graphql", "Service")
             .whereLayer("Exception").mayOnlyBeAccessedByLayers(
-                    "Controller", "Service", "Filter", "Interceptor", "Config", "Security")
+                    "Controller", "Graphql", "Service", "Filter", "Interceptor", "Config", "Security")
             .whereLayer("Filter").mayNotBeAccessedByAnyLayer()
             .whereLayer("Interceptor").mayOnlyBeAccessedByLayers("Config")
             .whereLayer("Annotation").mayOnlyBeAccessedByLayers("Controller", "Interceptor");

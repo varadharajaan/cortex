@@ -17,6 +17,7 @@ This module is the public ingress for the platform. It owns:
 | Redis rate limiting     | planned    | P3.2      |
 | NL -> LogQL (Spring AI) | planned    | P3.3      |
 | Reverse-proxy routes    | planned    | P3.4      |
+| GraphQL scaffold (`nlToLogQL`) | live | P9.0      |
 
 ## Requirements
 
@@ -140,6 +141,71 @@ headers** -- only the global `RateLimitFilter` owns those (LD33);
 this keeps the per-feature 429 body the only marker for sub-bucket
 exhaustion (e.g. `errorCode=NL_QUERY_RATE_LIMITED` vs the global
 `errorCode=RATE_LIMITED`).
+
+## GraphQL (P9.0 / ADR-0049)
+
+`/graphql` is the GraphQL surface promised by ADR-0004 (REST + GraphQL
+parity on four read queries; no mutations forever). The scaffold ships
+**one** query whose REST counterpart already works -- `nlToLogQL`.
+
+Schema location: `src/main/resources/graphql/schema.graphqls` (Spring
+for GraphQL default discovery path).
+
+```graphql
+type Query {
+  nlToLogQL(prompt: String!): NlQueryResult!
+}
+
+type NlQueryResult {
+  logql: String!
+  confidence: Float!
+  explanation: String!
+}
+```
+
+| Property                                       | Default     | Meaning                                                           |
+|------------------------------------------------|-------------|-------------------------------------------------------------------|
+| `CORTEX_GATEWAY_GRAPHQL_PATH`                  | `/graphql`  | HTTP path of the GraphQL endpoint.                                |
+| `CORTEX_GATEWAY_GRAPHQL_INTROSPECTION_ENABLED` | `false`     | Schema introspection -- prod-safe OFF. Flip ON for local dev only. |
+| `CORTEX_GATEWAY_GRAPHQL_GRAPHIQL_ENABLED`      | `false`     | GraphiQL UI at `/graphiql` -- prod-safe OFF. Flip ON for local dev only. |
+| `cortex.gateway.nl-query.enabled`              | `false`     | Per-query feature gate (matches the REST controller gate). When `false`, the resolver bean is not instantiated. |
+
+Posture summary:
+
+- **Auth**: `anyRequest().authenticated()` in `SecurityConfig` covers
+  `/graphql` -- every GraphQL request requires a valid JWT.
+  `@PreAuthorize("isAuthenticated()")` on each resolver is
+  defence-in-depth.
+- **Rate limit**: the global Bucket4j `RateLimitFilter` covers
+  `/graphql` -- one token per JWT subject per GraphQL request,
+  exactly like every REST request. The NL-specific `@RateLimitFeature`
+  sub-bucket does NOT fire on GraphQL resolvers in P9.0 (deferred to
+  P9.0a via `WebGraphQlInterceptor`); the global bucket still caps
+  abusive callers.
+- **CSRF**: disabled globally per ADR-0015 (stateless JSON API). POSTs
+  to `/graphql` are not blocked.
+
+Sample request:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8090/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<your-pass>"}' | jq -r .accessToken)
+
+curl -s -X POST http://localhost:8090/graphql \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ nlToLogQL(prompt: \"errors in checkout in the last hour\") { logql confidence explanation } }"}' | jq
+```
+
+REST + GraphQL produce identical `(logql, confidence, explanation)` for
+the same prompt -- this is the parity contract enforced by
+`NlQueryRestAndGraphQlParityIT` (Failsafe closer under
+`io.cortex.gateway.closer`).
+
+Remaining three ADR-0004 queries (`searchLogs`, `getLogById`,
+`getAnomalies`) ship as their REST backers ship in subsequent P9.x
+sub-phases.
 
 ## Observability
 

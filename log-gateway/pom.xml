@@ -123,6 +123,19 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Spring for GraphQL (P9.0 / ADR-0004 / ADR-0049). Ships the
+             /graphql HTTP endpoint, schema-first wiring under
+             src/main/resources/graphql/, and the @Controller-based
+             resolver model used by NlQueryGraphQlController. GraphiQL +
+             schema introspection are disabled by default in
+             application.yml; operators flip them per environment via
+             CORTEX_GATEWAY_GRAPHQL_* env vars. Mutations are forever
+             rejected per ADR-0004; the schema only declares Query. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-graphql</artifactId>
+        </dependency>
+
         <!-- Observability: Micrometer Prometheus registry.
              OpenTelemetry tracing bridge + OTLP exporter are deferred to a
              later P3 sub-phase (no collector endpoint is wired yet). -->
@@ -175,6 +188,18 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring for GraphQL test harness (P9.0 / ADR-0049). Bundles
+             GraphQlTester / WebGraphQlTester / @GraphQlTest slice support
+             so NlQueryGraphQlControllerTest can exercise the resolver in
+             isolation against a mocked NlQueryService and
+             NlQueryRestAndGraphQlParityIT can drive the live /graphql
+             endpoint over HTTP. -->
+        <dependency>
+            <groupId>org.springframework.graphql</groupId>
+            <artifactId>spring-graphql-test</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -245,6 +270,19 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Activate Failsafe (P9.0 / ADR-0049 / LD104). The parent
+                 pluginManagement block configures includes/excludes;
+                 registering the plugin here is what causes
+                 integration-test + verify goals to actually bind to the
+                 lifecycle. First IT in this module:
+                 closer/NlQueryRestAndGraphQlParityIT, which proves
+                 REST + GraphQL payload parity for the nlToLogQL
+                 operation. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
 
         </plugins>
