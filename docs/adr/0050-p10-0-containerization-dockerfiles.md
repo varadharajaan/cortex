@@ -139,3 +139,67 @@ non-build infra subtrees — but deliberately keeps `infra/eureka/eureka-server`
   `package`, different jar path), and per-service `HEALTHCHECK` ports and
   start-periods read more clearly as explicit files. Eight small explicit
   Dockerfiles beat one branchy templated one.
+
+## Amendment 1 (P10.1 — full compose stack + naming convention, 2026-06-09)
+
+P10.1 composes the eight P10.0 images into a single runnable stack,
+`infra/docker/docker-compose.yml` (project `cortex`), so `docker compose
+up` brings the whole CORTEX ring online with container-to-container DNS —
+the wired-up, cross-container health that P10.0 deferred.
+
+**D-A1.1 — Canonical `cortex-<component>` naming, identical across Docker
+and Kubernetes.** One name per component is the container name, the
+in-network DNS host, and (P11) the K8s Deployment/Service name + pod
+prefix: `cortex-eureka`, `cortex-gateway`, `cortex-ingest`,
+`cortex-processor`, `cortex-remediation`, `cortex-indexer`,
+`cortex-monitoring`, `cortex-echo`, plus datastores `cortex-postgres`,
+`cortex-redis`, `cortex-kafka`, `cortex-quickwit`, `cortex-wiremock`. The
+pre-existing bridge stack `infra/local/docker-compose.smoke.yml` keeps its
+`cortex-smoke-*` names so the two coexist without collision.
+
+**D-A1.2 — One `cortex-net` bridge + Eureka IP registration.** All
+services share one user-defined bridge network. Every service already sets
+`eureka.instance.prefer-ip-address=true`, so each registers its container
+IP and the gateway's `lb://log-ingest-service` / `lb://log-indexer-service`
+resolve container-to-container with no hostname gymnastics. Only the
+gateway (`:8090`) and eureka (`:8761`) publish host ports; everything else
+is reachable only inside the network.
+
+**D-A1.3 — `depends_on: condition: service_healthy` gates every app on
+its datastores + eureka.** Datastore healthchecks are the ordering
+contract. Two were tuned: (a) Kafka uses a lightweight bash `/dev/tcp`
+port probe, not `kafka-broker-api-versions.sh` — the latter spins a full
+JVM per check and is too slow on a loaded host, so Docker false-flags the
+broker unhealthy and the dependent apps never start; (b) wiremock uses
+`curl` (the image ships it) instead of `wget --spider`.
+
+**D-A1.4 — Separate Postgres database per stateful service.**
+`postgres-init/01-init-databases.sql` creates `cortex_remediation`
+alongside `cortex_ingest` (the image's `POSTGRES_DB`), and
+`cortex-remediation` points at its own DB. This keeps the two services'
+Flyway schema histories from colliding on a shared database — the
+production-realistic posture.
+
+**D-A1.5 — Redis wiring stays at the compose layer (no module edits).**
+`log-remediation-service` now pulls `spring-boot-starter-data-redis` (the
+P19 SETNX anomaly-dedupe work in progress in that module), so the Spring
+Boot Redis health indicator defaults to `localhost:6379` and reports DOWN
+in a container. Rather than edit that module (a parallel workstream owns
+it), the compose file repoints it via the standard relaxed-binding env
+`SPRING_DATA_REDIS_HOST=cortex-redis`. All cross-container wiring for
+every service lives in the compose `environment:` blocks; no service pom
+or YAML was touched for P10.1.
+
+**Secrets.** Dev creds remain plain env (the gateway dev profile bakes in
+the dev JWT secret). There is no local secrets manager — "Vault" in this
+project means **Azure Key Vault**, prod-only, surfaced via the External
+Secrets Operator in Kubernetes (P11/P12). The compose file never carries a
+prod secret.
+
+**Verification (P10.1).** `scripts/live-e2e/smoke-p10.ps1` PASS 8 FAIL 0:
+all 13 containers healthy; all 8 app services `/actuator/health` UP
+(probed in-network via `docker exec`); the 6 registering services present
+in the Eureka registry; a log seeded into `cortex-ingest` round-trips
+through the published `cortex-gateway` over `lb://log-ingest-service`
+(real Eureka IP resolution on `cortex-net`) with REST = GraphQL
+field-identical, plus the 404 miss path. Closes #147.

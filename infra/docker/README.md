@@ -68,3 +68,55 @@ powershell -File scripts/live-e2e/smoke-p10-0.ps1
 # build only (no boot probes):
 powershell -File scripts/live-e2e/smoke-p10-0.ps1 -BuildOnly
 ```
+
+## Full stack — `docker-compose.yml` (P10.1)
+
+`docker-compose.yml` (project `cortex`) composes the eight images into one
+runnable stack on a single `cortex-net` bridge, on top of the datastores,
+so the whole ring comes online with container-to-container DNS. See
+**ADR-0050 Amendment 1**.
+
+```powershell
+# build (first time) + bring the whole stack up:
+docker compose -f infra/docker/docker-compose.yml up -d --build
+# prove the ring works end to end (all UP + Eureka registry + getLogById
+# REST/GraphQL parity through the gateway over lb://):
+powershell -File scripts/live-e2e/smoke-p10.ps1
+# tear down (volumes included):
+docker compose -f infra/docker/docker-compose.yml down -v
+```
+
+### Naming convention (Docker == Kubernetes)
+
+One canonical name per component — `cortex-<component>` — used as the
+container name, the in-network DNS host, and (P11) the K8s
+Deployment/Service name + pod prefix.
+
+| Component | Name / DNS host | Image | Published port |
+|---|---|---|---|
+| Discovery | `cortex-eureka` | `cortex/eureka-server` | 8761 |
+| API gateway (public entry) | `cortex-gateway` | `cortex/log-gateway` | 8090 |
+| Ingest | `cortex-ingest` | `cortex/log-ingest-service` | — (internal) |
+| Processor | `cortex-processor` | `cortex/log-processor-service` | — |
+| Remediation | `cortex-remediation` | `cortex/log-remediation-service` | — |
+| Indexer | `cortex-indexer` | `cortex/log-indexer-service` | — |
+| Monitoring | `cortex-monitoring` | `cortex/log-monitoring-service` | — |
+| Echo (dev stub) | `cortex-echo` | `cortex/log-echo-service` | — |
+| Postgres | `cortex-postgres` | `postgres:16-alpine` | — |
+| Redis | `cortex-redis` | `redis:7-alpine` | — |
+| Kafka (KRaft) | `cortex-kafka` | `apache/kafka:3.8.0` | — (`:9093` in-net) |
+| Quickwit | `cortex-quickwit` | `quickwit/quickwit:0.8.1` | — |
+| Ollama stub | `cortex-wiremock` | `wiremock/wiremock` | — |
+
+Only `cortex-gateway` (`:8090`, the single public entry point) and
+`cortex-eureka` (`:8761`, operator visibility) publish host ports. Eureka
+IP registration (`prefer-ip-address=true`) lets `lb://` resolve
+container-to-container on `cortex-net`.
+
+### Secrets
+
+Dev creds are plain env (the gateway `dev` profile bakes in the dev JWT
+secret + bootstrap users). **There is no local secrets manager.** "Vault"
+in this project means **Azure Key Vault**, prod-only, surfaced via the
+External Secrets Operator in Kubernetes (P11/P12). Never put a prod secret
+in the compose file.
