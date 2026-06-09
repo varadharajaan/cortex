@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.2a: `log-ingest-service` tenant-scoped `getLogById` REST backer
+  (ADR-0022 Amendment 2) -- the first step of P9.2 `getLogById` and the
+  read path over the `raw_logs` system-of-record (P4.1 shipped the write
+  path). New `LogQueryController` exposes
+  `GET /api/v1/logs/{eventId}`: it reads the required `X-Tenant-Id`
+  header as the single tenant source of truth, looks the row up via the
+  new `RawLogRepository.findByTenantIdAndEventId(...)` derived query (the
+  `UNIQUE (tenant_id, event_id)` constraint guarantees at most one row),
+  and maps the verdict to HTTP -- hit -> 200 with a `LogResponse`, miss
+  -> 404 NOT_FOUND, missing/blank tenant -> 400 VALIDATION_FAILED, all as
+  RFC 7807 via the existing `GlobalExceptionHandler`. The new
+  `LogResponse` record projects `RawLog` onto the public read shape
+  (`eventId, tenantId, ts, level, service, message, labels, receivedAt`)
+  and deliberately drops the internal surrogate `id` and the
+  `idempotencyKey`. The read lives in log-ingest-service (the
+  system-of-record) next to the write, mirroring the P9.1a decision that
+  put the search surface in log-indexer-service; the gateway (P9.2b) will
+  forward to this endpoint over `lb://log-ingest-service`. New
+  `LogQueryControllerTest` `@WebMvcTest` slice (200 hit / 404 miss / 400
+  missing + blank tenant; asserts `id` + `idempotencyKey` do not leak)
+  and three new `RawLogRepositoryIT` cases (hit, tenant-scoped isolation,
+  absent) against real Postgres via Testcontainers.
+
 - P9.1c: harden the log-gateway logs proxy predicate with a method
   discriminator (ADR-0049 Amendment 4) -- preemptive route cleanup that
   unblocks P9.2 `getLogById` and any future GET read under the

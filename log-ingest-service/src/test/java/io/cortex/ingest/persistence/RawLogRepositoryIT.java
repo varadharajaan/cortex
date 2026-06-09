@@ -115,4 +115,73 @@ class RawLogRepositoryIT {
                 .isInstanceOf(DbActionExecutionException.class)
                 .hasCauseInstanceOf(DuplicateKeyException.class);
     }
+
+    /**
+     * Persists a row, then looks it up by its {@code (tenant_id,
+     * event_id)} pair and asserts the projection round-trips
+     * (P9.2a / ADR-0022 Amendment 1 read path). Uses the seeded
+     * {@code cortex-dev} tenant because {@code raw_logs.tenant_id}
+     * is FK-constrained to {@code tenants.tenant_id} (V1 baseline
+     * seeds only {@code cortex-dev}).
+     */
+    @Test
+    void findByTenantIdAndEventIdReturnsRowOnHit() {
+        final Map<String, String> labels = Map.of("env", "prod");
+        this.repository.save(new RawLog(
+                null,
+                "cortex-dev",
+                "evt-find-1",
+                Instant.parse("2026-06-09T10:00:00Z"),
+                "ERROR",
+                "payment-svc",
+                "boom",
+                labels,
+                null,
+                Instant.parse("2026-06-09T10:00:01Z")));
+
+        final var found = this.repository.findByTenantIdAndEventId("cortex-dev", "evt-find-1");
+
+        assertThat(found).isPresent();
+        assertThat(found.get().tenantId()).isEqualTo("cortex-dev");
+        assertThat(found.get().eventId()).isEqualTo("evt-find-1");
+        assertThat(found.get().level()).isEqualTo("ERROR");
+        assertThat(found.get().labels()).containsEntry("env", "prod");
+    }
+
+    /**
+     * Persists a row owned by {@code cortex-dev} and asserts a lookup
+     * with the same {@code event_id} but a DIFFERENT tenant returns
+     * empty -- the tenant scoping ({@code WHERE tenant_id = ?}) that
+     * stops cross-tenant reads (ADR-0022 Amendment 1 / ADR-0009). The
+     * other tenant id is never inserted, so the FK is not involved on
+     * the read path.
+     */
+    @Test
+    void findByTenantIdAndEventIdIsTenantScoped() {
+        this.repository.save(new RawLog(
+                null,
+                "cortex-dev",
+                "evt-shared",
+                Instant.parse("2026-06-09T10:00:00Z"),
+                "INFO",
+                "svc",
+                "owned by cortex-dev",
+                Map.of(),
+                null,
+                Instant.parse("2026-06-09T10:00:01Z")));
+
+        assertThat(this.repository.findByTenantIdAndEventId("other-tenant", "evt-shared"))
+                .as("a different tenant must not read cortex-dev's row")
+                .isEmpty();
+    }
+
+    /**
+     * Asserts a lookup for an {@code event_id} that was never
+     * persisted returns empty (the 404 path).
+     */
+    @Test
+    void findByTenantIdAndEventIdReturnsEmptyWhenAbsent() {
+        assertThat(this.repository.findByTenantIdAndEventId("cortex-dev", "evt-does-not-exist"))
+                .isEmpty();
+    }
 }

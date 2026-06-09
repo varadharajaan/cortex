@@ -342,3 +342,68 @@ The amendments above were arrived at the hard way; the matching
 LD entries land in `memory.md` under "### P4.1 SHIPPED" so future
 modules do not relitigate them.
 
+## Amendment 2 - 2026-06-09 (P9.2a inbound REST read surface)
+
+Status: Accepted (amendment)
+Date: 2026-06-09
+Scope: adds the first **read** accessor over `raw_logs` and the
+tenant-scoped `GET /api/v1/logs/{eventId}` HTTP surface that backs the
+gateway `getLogById` query (P9.2b / ADR-0004 / ADR-0049). Issue #141.
+No previous decision is reversed; this is purely additive (P4.1 shipped
+the write path; P9.2a adds the read path on the same system-of-record).
+
+### A2.1. Why the read lives in log-ingest-service
+
+log-ingest-service owns `raw_logs` (it is the system-of-record). Rather
+than have the gateway reach into another service's database or duplicate
+the projection, the read endpoint lives next to the write, mirroring the
+P9.1a decision that put the indexer search surface in log-indexer-service
+(ADR-0042 Amendment 1). The gateway (P9.2b) forwards the resolved
+`X-Tenant-Id` + the `eventId` path variable over `lb://log-ingest-service`
+to this endpoint, exactly as P9.1b forwards to the indexer.
+
+### A2.2. Endpoint contract
+
+`GET /api/v1/logs/{eventId}` (constant `ApiPaths.LOGS_BY_ID`):
+
+- **Tenant** is taken from the required `X-Tenant-Id` header (the single
+  source of truth, ADR-0009). It is read as `@RequestHeader(required =
+  false)` + an explicit blank check that throws
+  `ApplicationException(VALIDATION_FAILED)` -> 400, because
+  `required = true` would raise `MissingRequestHeaderException`, for
+  which the ingest `GlobalExceptionHandler` has no arm (it would surface
+  as a generic 500). This mirrors the P9.1a / P9.1b posture.
+- **Lookup** is `RawLogRepository.findByTenantIdAndEventId(tenantId,
+  eventId)` -- a Spring Data JDBC derived query. The
+  `UNIQUE (tenant_id, event_id)` constraint (A1) guarantees at most one
+  row, so the return type is `Optional<RawLog>`.
+- **Verdict -> HTTP** (RFC 7807 via the existing `GlobalExceptionHandler`):
+  hit -> `200` with a `LogResponse`; miss -> `404 NOT_FOUND`;
+  missing/blank tenant -> `400 VALIDATION_FAILED`.
+- **No Spring Security** on the ingest side: the gateway authenticates
+  the caller and forwards the resolved tenant header. The tenant scoping
+  in the query is what stops one tenant reading another's row by guessing
+  an `eventId`.
+
+### A2.3. `LogResponse` projection
+
+`LogResponse` (a record, per rule 8.4) projects `RawLog` onto the public
+read shape: `eventId, tenantId, ts, level, service, message, labels,
+receivedAt`. The internal surrogate `id` and the `idempotencyKey` are
+deliberately NOT exposed -- the `id` is a database implementation detail
+and the idempotency key is an inbound-request artefact; the `eventId` is
+the stable caller-facing identifier (it is the path variable the caller
+supplied). `Instant` fields serialize as ISO-8601
+(`write-dates-as-timestamps=false`, Spring Boot default).
+
+### A2.4. Rejected alternatives
+
+1. **Gateway reads Postgres directly.** Rejected -- couples the gateway
+   to the ingest schema + credentials and duplicates the projection;
+   breaks the system-of-record boundary.
+2. **Return the `RawLog` aggregate directly.** Rejected -- leaks the
+   surrogate `id` + `idempotencyKey` onto the wire; the `LogResponse`
+   record is the read contract.
+3. **Expose by surrogate `id`.** Rejected -- `id` is a DB detail and is
+   not tenant-scoped; `(tenant_id, event_id)` is the stable, safe key.
+
