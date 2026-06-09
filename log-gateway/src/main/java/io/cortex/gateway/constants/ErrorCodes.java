@@ -51,6 +51,12 @@ public enum ErrorCodes {
     /** searchLogs downstream (log-indexer-service / Quickwit) was unavailable or failed transiently (P9.1b). */
     SEARCH_LOGS_UPSTREAM_FAILED,
 
+    /** Caller exceeded the per-feature {@code getLogById} sub-bucket (B5, P9.2b / ADR-0049). */
+    GET_LOG_BY_ID_RATE_LIMITED,
+
+    /** getLogById downstream (log-ingest-service) was unavailable or failed transiently (P9.2b). */
+    GET_LOG_BY_ID_UPSTREAM_FAILED,
+
     /** Fallback for any unexpected internal failure. */
     INTERNAL_ERROR;
 }

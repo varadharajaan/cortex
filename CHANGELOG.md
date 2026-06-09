@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.2b: `log-gateway` `getLogById` REST + GraphQL parity (ADR-0049
+  Amendment 5) -- the third of ADR-0004's four read queries and the
+  gateway half of P9.2 (P9.2a shipped the ingest REST backer). Both
+  surfaces delegate to one `GetLogByIdService`, which forwards the lookup
+  to log-ingest-service (`GET /api/v1/logs/{eventId}`) over
+  `lb://log-ingest-service` via the blocking `LoadBalancerClient` + a
+  plain, timeout-bounded `RestClient` (bean `ingestRestClient`, distinct
+  from P9.1b's `indexerRestClient`; a `@LoadBalanced` builder is
+  deliberately avoided so Spring AI's Ollama client is not affected).
+  REST: `GET /api/v1/logs/{eventId}` (`GetLogByIdController`). GraphQL:
+  `getLogById(id: ID!): LogEntry` (`GetLogByIdGraphQlController`). The
+  tenant is read from the `X-Tenant-Id` header (ADR-0009) -- REST via
+  `@RequestHeader`, GraphQL via the existing P9.1b
+  `TenantHeaderGraphQlInterceptor` -> `@ContextValue` -- and forwarded
+  downstream as the single source of truth. The new `LogEntry` type
+  carries timestamps as ISO-8601 strings (pass-through, no re-parse) and
+  exposes `labels` via the existing `JSON` scalar, so the GraphQL payload
+  is byte-identical to REST. Feature gate
+  `cortex.gateway.get-log-by-id.enabled`; a shared
+  `@RateLimitFeature("get-log-by-id")` sub-bucket is auto-registered on
+  both surfaces (inheriting the P9.0a interceptor + P9.0b 429 resolver).
+  Downstream verdicts map to HTTP: 404 -> 404 NOT_FOUND, everything else
+  (other 4xx, 5xx, transport) -> 502 GET_LOG_BY_ID_UPSTREAM_FAILED. No
+  route work was needed: P9.1c's POST-only ingest-proxy predicate already
+  lets the GET fall through, and the literal `/api/v1/logs/search` mapping
+  outranks the `{eventId}` pattern. Parity is enforced by
+  `GetLogByIdRestAndGraphQlParityIT` (payload identity + `@RateLimitFeature`
+  annotation equality).
+
 - P9.2a: `log-ingest-service` tenant-scoped `getLogById` REST backer
   (ADR-0022 Amendment 2) -- the first step of P9.2 `getLogById` and the
   read path over the `raw_logs` system-of-record (P4.1 shipped the write

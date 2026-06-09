@@ -45,6 +45,20 @@ public final class ApiPaths {
     public static final String LOGS_SEARCH = API_V1 + "/logs/search";
 
     /**
+     * Tenant-scoped get-log-by-id endpoint accepting {@code GET} with an
+     * {@code eventId} path variable plus an {@code X-Tenant-Id} header
+     * (P9.2b / ADR-0004 / ADR-0049).
+     *
+     * <p>Gateway-owned, not a proxy route. The {@code /api/v1/logs/**}
+     * ingest proxy matches only {@code POST} (P9.1c / ADR-0049
+     * Amendment 4), so this {@code GET} reaches the controller. The
+     * literal {@link #LOGS_SEARCH} mapping is more specific than this
+     * {@code {eventId}} pattern, so Spring routes {@code search} there
+     * and every other single segment here.</p>
+     */
+    public static final String LOGS_BY_ID = API_V1 + "/logs/{eventId}";
+
+    /**
      * Spring for GraphQL HTTP endpoint (P9.0 / ADR-0049).
      *
      * <p>Accepts {@code POST /graphql} with a standard GraphQL request
