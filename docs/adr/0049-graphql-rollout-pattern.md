@@ -635,6 +635,14 @@ annotated controller handles it. This is exactly the class of
 integration defect the cross-surface closer IT exists to catch
 (cf. the P7.1a `@Lazy` bean-cycle).
 
+> **Superseded by P9.1c (Amendment 4).** The per-path
+> `.negate("/api/v1/logs/search")` shown above does not scale to the
+> P9.2 path-variable read `GET /api/v1/logs/{eventId}` (negating a
+> `{eventId}` pattern would also exclude `batch`). Amendment 4 replaces
+> it with a method discriminator
+> `path("/api/v1/logs/**").and(method(POST))` that proxies every ingest
+> WRITE and lets every read fall through, with no per-path exclusion.
+
 ### Rejected alternatives
 
 1. **SCG `RouterFunction` proxy for searchLogs.** Rejected (D-A3.1) --
@@ -670,4 +678,83 @@ integration defect the cross-surface closer IT exists to catch
 - ADR-0009 -- tenant isolation via `X-Tenant-Id`.
 - memory.md LD42 / LD121 -- HTTP/1.1 pin + dual timeout on the
   outbound search client.
+
+## Amendment 4 -- P9.1c logs proxy method discriminator (supersedes Amendment 3 D-A3.5 negate)
+
+**Date**: 2026-06-09. **Status**: Accepted (supersedes the per-path
+`.negate()` in Amendment 3 D-A3.5).
+
+### Context -- the negate does not scale to path-variable reads
+
+Amendment 3 D-A3.5 resolved the `searchLogs` routing collision by
+narrowing the ingest proxy predicate to
+`path("/api/v1/logs/**").and(path("/api/v1/logs/search").negate())`.
+That works for a single literal read path, but **breaks the moment a
+path-variable read joins the prefix**: P9.2 adds
+`GET /api/v1/logs/{eventId}` (`getLogById`), and
+`path("/api/v1/logs/{eventId}").negate()` is a *pattern* that also
+matches `/api/v1/logs/batch` -- so it would exclude the ingest write
+too. There is no finite list of literal `.negate()` calls that isolates
+"every get-by-id request" (the `{eventId}` set is unbounded) while still
+proxying `batch`.
+
+### Decision -- discriminate by HTTP method, not by path
+
+The ingest surface under `/api/v1/logs/**` is **write-only**
+(`POST /api/v1/logs/batch` today; `POST /api/v1/logs/stream` planned per
+ADR-0004), and the read surface under the same prefix is **GET-only**
+(`GET /api/v1/logs/search` P9.1b; `GET /api/v1/logs/{eventId}` P9.2).
+Narrow the proxy predicate to the method:
+
+```java
+.route(path("/api/v1/logs/**").and(method(HttpMethod.POST)), http())
+```
+
+This proxies **every** ingest write to log-ingest-service (batch +
+future stream, for free) and lets **every** gateway-owned read fall
+through to its annotated controller (search now, getLogById next, future
+reads free) -- structurally, with zero per-path exclusions to maintain.
+The `.negate("/api/v1/logs/search")` is removed.
+
+### Why this is the strongest form of the LD148 principle
+
+LD148 says "the proxy owns an explicit contract, do not rely on handler
+order." The negate was the weak form ("everything except the paths I
+remember to exclude"); the method discriminator is the strong form ("the
+proxy owns exactly the writes"). The only assumption it bakes in --
+*writes are POST, reads are GET under this prefix* -- holds across the
+entire ADR-0004 surface (the one POST-shaped read, `nlToLogQL`, lives at
+`/api/v1/query/nl`, not under `/logs/`, so it never collides).
+
+### Rejected alternatives
+
+1. **Exact-path allowlist `POST("/api/v1/logs/batch")`.** Rejected --
+   correct but requires a new allowlist line per future ingest path
+   (e.g. `stream`), and `stream` is already on the ADR-0004 roadmap; the
+   method discriminator covers it with no future edit.
+2. **Multi-`.negate()` chain (`search` + `{eventId}`).** Rejected -- the
+   dead end above: a `{eventId}` pattern negation also excludes `batch`.
+3. **Reorder handler mappings / `@Order` on the controller.** Rejected --
+   LD148: do not rely on `RequestMappingHandlerMapping` vs
+   `RouterFunctionMapping` ordering; the predicate exclusion is explicit
+   and greppable.
+
+### Verification (triangle)
+
+- **Leg A** GREEN: `GatewayRoutesConfigTest.logsProxyMatchesPostWritesButNotGetReads`
+  evaluates the predicate directly via `ServerRequest.create(MockHttpServletRequest, ...)`
+  -- `POST /batch` + `POST /stream` match, `GET /search` + `GET /{eventId}`
+  do not. `SearchLogsRestAndGraphQlParityIT` stays GREEN (GET search
+  still reaches the controller). `mvn -pl log-gateway verify` GREEN.
+- **Leg B** the existing gateway-chain ingest smoke proves `POST /batch`
+  still proxies to log-ingest-service over `lb://` (the route internals
+  -- `rewritePath` + `lb()` -- are unchanged; only the predicate
+  narrowed, and `POST /batch` still satisfies it).
+
+### References
+
+- Issue #139 -- `P9.1c: harden logs proxy predicate (method discriminator)`.
+- Amendment 3 D-A3.5 -- the per-path negate this supersedes.
+- memory.md LD148 + `/memories/repo/gateway-scg-mvc-routing-precedence.md`
+  -- the routing-precedence lesson.
 

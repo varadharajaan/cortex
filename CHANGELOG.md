@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P9.1c: harden the log-gateway logs proxy predicate with a method
+  discriminator (ADR-0049 Amendment 4) -- preemptive route cleanup that
+  unblocks P9.2 `getLogById` and any future GET read under the
+  `/api/v1/logs/**` prefix. P9.1b resolved the `searchLogs` routing
+  collision by narrowing the ingest proxy to
+  `path("/api/v1/logs/**").and(path("/api/v1/logs/search").negate())`,
+  but that per-path `.negate()` cannot scale to the path-variable
+  `GET /api/v1/logs/{eventId}` (a `{eventId}` negation would also exclude
+  `batch`). The predicate is now
+  `path("/api/v1/logs/**").and(method(POST))`: every ingest WRITE
+  (`POST /batch` today, `POST /stream` planned per ADR-0004) proxies to
+  log-ingest-service, and every gateway-owned READ (GET search now,
+  getLogById next, future reads free) falls through to its annotated
+  controller -- structurally, with no per-path exclusion to maintain.
+  New `GatewayRoutesConfigTest.logsProxyMatchesPostWritesButNotGetReads`
+  evaluates the predicate directly (POST writes match; GET reads do not)
+  as the CI-protected LD148 regression guard;
+  `SearchLogsRestAndGraphQlParityIT` stays GREEN.
+
 - P9.1b: `log-gateway` `searchLogs` REST + GraphQL parity
   (ADR-0049 Amendment 3) -- the second of ADR-0004's four read queries
   and the gateway half of P9.1 (P9.1a shipped the indexer REST search
