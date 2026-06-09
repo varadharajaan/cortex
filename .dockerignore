@@ -46,7 +46,12 @@ NOTICE
 CHANGELOG.md
 
 # Tooling
-infra/
+# NOTE: infra/ is NOT fully excluded -- the eureka-server image
+# (infra/docker/eureka-server.Dockerfile) builds from source under
+# infra/eureka/eureka-server, so only the non-build infra subtrees are
+# dropped from the build context (P10.0).
+infra/local/
+infra/docker/
 .github/
 .mvn/wrapper/maven-wrapper.jar
 node_modules/

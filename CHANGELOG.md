@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P10.0: container images for every runnable service (ADR-0050) -- the
+  hard gate for the P10 `infra/docker/` compose stack. Eight hand-rolled
+  multi-stage JDK17 Dockerfiles under `infra/docker/` (the seven services
+  + the standalone eureka-server); `log-agent-lib` is a library and gets
+  no image. Stage 1 (`eclipse-temurin:17-jdk-jammy`) builds the fat jar
+  from source, stage 2 (`eclipse-temurin:17-jre-jammy`) runs it as a
+  non-root `cortex` user with a container-aware heap
+  (`-XX:MaxRAMPercentage=75`), a `/actuator/health` `HEALTHCHECK`, and an
+  exec-form entrypoint. The service poms do not declare
+  `spring-boot-maven-plugin`, so each builder runs a two-phase, pom-free
+  build -- `-pl <svc> -am … install` then an app-only
+  `package spring-boot:repackage` in one lifecycle -- to produce the
+  executable fat jar without editing any pom (eureka-server declares the
+  plugin and builds with a single `package`). Tests and the quality gates
+  (checkstyle/spotbugs/owasp/jacoco/sbom/enforcer) are skipped in the
+  image build -- those stay `mvn verify` / CI's job (P14). Builds use
+  `--network=host` (BuildKit's default bridge cannot reach Maven Central
+  on this host) and a shared `.m2` BuildKit cache mount. New root
+  `.dockerignore` reconciliation keeps `infra/eureka/eureka-server` in the
+  build context. Proven by `scripts/live-e2e/smoke-p10-0.ps1`: all eight
+  images build and each container boots (eureka + echo reach health UP;
+  dependency-bound services boot their web context -- full wired health is
+  P10.1). New `infra/docker/README.md` build/run matrix. Started ahead of
+  the externally-blocked P9.3 because the infra phases are
+  directory-isolated and carry no dependency on P9.3.
+
 - P9.2b: `log-gateway` `getLogById` REST + GraphQL parity (ADR-0049
   Amendment 5) -- the third of ADR-0004's four read queries and the
   gateway half of P9.2 (P9.2a shipped the ingest REST backer). Both
