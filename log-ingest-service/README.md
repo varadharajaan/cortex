@@ -13,6 +13,7 @@ HTTP client that speaks the `LogEntry` contract.
 | Method | Path                         | Status   | Notes                                                     |
 |--------|------------------------------|----------|-----------------------------------------------------------|
 | POST   | `/api/v1/ingest/batch`       | 202      | `IngestBatchRequest -> IngestAcceptedResponse`            |
+| GET    | `/api/v1/logs/{eventId}`     | 200/404  | `getLogById` read backer (P9.2a / ADR-0022 Amd 2); `X-Tenant-Id` required -> `LogResponse`; 404 on miss, 400 on missing tenant |
 | GET    | `/actuator/health`           | 200      | K8s probes                                                |
 | GET    | `/actuator/health/liveness`  | 200      | K8s probes                                                |
 | GET    | `/actuator/health/readiness` | 200      | K8s probes (requires Eureka registration to flip ready)   |
