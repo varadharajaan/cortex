@@ -1,0 +1,301 @@
+# ---------------------------------------------------------------------------
+# CORTEX - full local stack (P10.1 / ADR-0050 Amendment 1).
+#
+# Brings the WHOLE CORTEX ring online with one command, on a single
+# `cortex-net` bridge network, using container-to-container DNS. This is the
+# wired-up health that P10.0 (the per-service Dockerfiles, #145) deferred.
+#
+# Naming convention (Docker == Kubernetes): one canonical name per component,
+# `cortex-<component>`, used as the container name, the in-network DNS host,
+# and (P11) the K8s Deployment/Service name + pod prefix. The bridge stack
+# `infra/local/docker-compose.smoke.yml` keeps its `cortex-smoke-*` names so
+# the two can coexist.
+#
+# Secrets: dev creds are plain env here (the gateway dev profile bakes in the
+# dev JWT secret). There is NO local secrets manager -- "Vault" in this repo
+# means Azure Key Vault, prod-only, surfaced via the External Secrets Operator
+# in K8s (P11/P12). Never put prod secrets in this file.
+#
+# Lifecycle:
+#   docker compose -f infra/docker/docker-compose.yml up -d --build
+#   ... powershell scripts/live-e2e/smoke-p10.ps1 ...
+#   docker compose -f infra/docker/docker-compose.yml down -v
+#
+# Eureka-in-Docker: every service sets eureka.instance.prefer-ip-address=true,
+# so each registers its container IP and `lb://log-ingest-service` etc. resolve
+# container-to-container on the one network without hostname gymnastics.
+# ---------------------------------------------------------------------------
+
+name: cortex
+
+networks:
+  cortex-net:
+    name: cortex-net
+    driver: bridge
+
+volumes:
+  cortex-postgres-data:
+  cortex-quickwit-data:
+
+services:
+
+  # ======================== datastores ===================================
+
+  cortex-postgres:
+    image: postgres:16-alpine
+    container_name: cortex-postgres
+    hostname: cortex-postgres
+    networks: [cortex-net]
+    environment:
+      POSTGRES_USER: cortex_ingest
+      POSTGRES_PASSWORD: cortex_ingest
+      POSTGRES_DB: cortex_ingest
+    volumes:
+      - cortex-postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cortex_ingest -d cortex_ingest"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  cortex-redis:
+    image: redis:7-alpine
+    container_name: cortex-redis
+    hostname: cortex-redis
+    networks: [cortex-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # KRaft single-broker. Advertises the in-network listener as
+  # cortex-kafka:9093 so the app containers connect via CORTEX_KAFKA_BROKERS.
+  cortex-kafka:
+    image: apache/kafka:3.8.0
+    container_name: cortex-kafka
+    hostname: cortex-kafka
+    networks: [cortex-net]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9094
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://cortex-kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 1
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+    # Lightweight TCP-liveness probe on the in-network listener (9093). The
+    # kafka-broker-api-versions.sh probe spins a full JVM per check and is too
+    # slow on a loaded host -> Docker false-flags the broker unhealthy and the
+    # dependent apps never start. A bash /dev/tcp port check is instant and is
+    # sufficient: the broker only binds 9093 once it has fully started.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9093' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+
+  cortex-quickwit:
+    image: quickwit/quickwit:0.8.1
+    container_name: cortex-quickwit
+    hostname: cortex-quickwit
+    networks: [cortex-net]
+    command: ["run"]
+    volumes:
+      - cortex-quickwit-data:/quickwit/qwdata
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7280/health/livez || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    restart: unless-stopped
+
+  # Ollama stub for the gateway NL surface + processor classifier (served via
+  # the canonical infra/local/wiremock mappings, reused read-only).
+  cortex-wiremock:
+    image: wiremock/wiremock:3.10.0
+    container_name: cortex-wiremock
+    hostname: cortex-wiremock
+    networks: [cortex-net]
+    command: ["--port=8080", "--global-response-templating"]
+    volumes:
+      - ../local/wiremock/mappings:/home/wiremock/mappings:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/__admin/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  # ======================== discovery ====================================
+
+  cortex-eureka:
+    image: cortex/eureka-server:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/eureka-server.Dockerfile
+    container_name: cortex-eureka
+    hostname: cortex-eureka
+    networks: [cortex-net]
+    ports:
+      - "8761:8761"   # published for operator visibility
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
+  # ======================== application services =========================
+
+  cortex-ingest:
+    image: cortex/log-ingest-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-ingest-service.Dockerfile
+    container_name: cortex-ingest
+    hostname: cortex-ingest
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      CORTEX_INGEST_DB_URL: jdbc:postgresql://cortex-postgres:5432/cortex_ingest
+      CORTEX_INGEST_DB_USERNAME: cortex_ingest
+      CORTEX_INGEST_DB_PASSWORD: cortex_ingest
+      REDIS_HOST: cortex-redis
+      REDIS_PORT: "6379"
+      CORTEX_KAFKA_BROKERS: cortex-kafka:9093
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+      cortex-postgres: { condition: service_healthy }
+      cortex-redis: { condition: service_healthy }
+      cortex-kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-processor:
+    image: cortex/log-processor-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-processor-service.Dockerfile
+    container_name: cortex-processor
+    hostname: cortex-processor
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      CORTEX_KAFKA_BROKERS: cortex-kafka:9093
+      SPRING_AI_OLLAMA_BASE_URL: http://cortex-wiremock:8080
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+      cortex-kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-remediation:
+    image: cortex/log-remediation-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-remediation-service.Dockerfile
+    container_name: cortex-remediation
+    hostname: cortex-remediation
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      CORTEX_KAFKA_BROKERS: cortex-kafka:9093
+      # Separate DB (created by postgres-init) so remediation's Flyway history
+      # never collides with ingest's on a shared database.
+      CORTEX_REMEDIATION_DB_URL: jdbc:postgresql://cortex-postgres:5432/cortex_remediation
+      CORTEX_REMEDIATION_DB_USERNAME: cortex_ingest
+      CORTEX_REMEDIATION_DB_PASSWORD: cortex_ingest
+      # The service pulls spring-boot-starter-data-redis (anomaly-dedupe
+      # SETNX), so the Spring Boot Redis health indicator + connection factory
+      # default to localhost:6379 -- repoint them at the Redis container via the
+      # standard SPRING_DATA_REDIS_* relaxed-binding env vars.
+      SPRING_DATA_REDIS_HOST: cortex-redis
+      SPRING_DATA_REDIS_PORT: "6379"
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+      cortex-kafka: { condition: service_healthy }
+      cortex-postgres: { condition: service_healthy }
+      cortex-redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-indexer:
+    image: cortex/log-indexer-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-indexer-service.Dockerfile
+    container_name: cortex-indexer
+    hostname: cortex-indexer
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      CORTEX_INDEXER_BACKEND: quickwit
+      CORTEX_INDEXER_SEARCH_BACKEND: quickwit
+      CORTEX_QUICKWIT_BASE_URL: http://cortex-quickwit:7280
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+      cortex-quickwit: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-monitoring:
+    image: cortex/log-monitoring-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-monitoring-service.Dockerfile
+    container_name: cortex-monitoring
+    hostname: cortex-monitoring
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      CORTEX_MONITORING_PROBE_BACKEND: eureka-actuator
+      CORTEX_MONITORING_PROBE_ENABLED: "true"
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-echo:
+    image: cortex/log-echo-service:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-echo-service.Dockerfile
+    container_name: cortex-echo
+    hostname: cortex-echo
+    networks: [cortex-net]
+    environment:
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+    restart: unless-stopped
+
+  cortex-gateway:
+    image: cortex/log-gateway:0.1.0
+    build:
+      context: ../..
+      dockerfile: infra/docker/log-gateway.Dockerfile
+    container_name: cortex-gateway
+    hostname: cortex-gateway
+    networks: [cortex-net]
+    ports:
+      - "8090:8090"   # the single public entry point
+    environment:
+      SPRING_PROFILES_ACTIVE: dev   # base profile leaves the JWT secret empty
+      EUREKA_CLIENT_ENABLED: "true"
+      EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+      REDIS_URI: redis://cortex-redis:6379/0
+      SPRING_AI_OLLAMA_BASE_URL: http://cortex-wiremock:8080
+    depends_on:
+      cortex-eureka: { condition: service_healthy }
+      cortex-redis: { condition: service_healthy }
+    restart: unless-stopped
