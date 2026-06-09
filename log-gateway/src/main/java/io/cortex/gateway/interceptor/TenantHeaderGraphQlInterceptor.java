@@ -2,7 +2,6 @@ package io.cortex.gateway.interceptor;
 
 import io.cortex.gateway.constants.GraphQlContextKeys;
 import io.cortex.gateway.constants.HeaderNames;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.graphql.server.WebGraphQlInterceptor;
 import org.springframework.graphql.server.WebGraphQlRequest;
 import org.springframework.graphql.server.WebGraphQlResponse;
@@ -24,12 +23,15 @@ import reactor.core.publisher.Mono;
  * only {@code X-Tenant-Id}, ADR-0042 D3), so a GraphQL {@code input}
  * field can never spoof another tenant.</p>
  *
- * <p>Gated on {@code cortex.gateway.search-logs.enabled=true}; when the
- * search feature is disabled the interceptor is absent and adds no
- * per-request work.</p>
+ * <p>This is a shared, cross-query tenant-propagation concern (searchLogs
+ * P9.1b, getLogById P9.2b, and future tenant-scoped read queries), so it
+ * is intentionally not gated on any single per-query feature flag: gating
+ * it on one query's flag would silently break tenant resolution for every
+ * other tenant-scoped query enabled on its own. When no tenant header is
+ * present (or no resolver reads the context value) it does negligible
+ * per-request work -- a single header lookup.</p>
  */
 @Component
-@ConditionalOnProperty(prefix = "cortex.gateway.search-logs", name = "enabled", havingValue = "true")
 public class TenantHeaderGraphQlInterceptor implements WebGraphQlInterceptor {
 
     @Override

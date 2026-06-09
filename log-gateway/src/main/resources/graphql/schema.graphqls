@@ -44,6 +44,21 @@ type Query {
     (shared with the REST surface) rate-limits the operation.
     """
     searchLogs(input: LogSearchInput!): LogSearchResult!
+
+    """
+    Fetch a single persisted log row by its event id (P9.2b / ADR-0004 / ADR-0049).
+
+    REST parity: GET /api/v1/logs/{eventId} . The gateway resolves the
+    tenant from the X-Tenant-Id header (ADR-0009) and forwards the lookup
+    to log-ingest-service (P9.2a) via the same GetLogByIdService used by
+    the REST controller, so downstream-failure mapping is identical
+    across both surfaces. A miss surfaces as a GraphQL error (RFC 7807
+    404 on REST), not null.
+
+    Authentication is required; a per-principal sub-bucket (shared with
+    the REST surface) rate-limits the operation.
+    """
+    getLogById(id: ID!): LogEntry
 }
 
 "Result of a natural-language query translation (ADR-0018)."
@@ -79,4 +94,24 @@ type LogSearchResult {
     numHits: Long!
     "Matched hit documents as opaque JSON objects; empty list on a zero-hit query."
     hits: [JSON!]!
+}
+
+"A single persisted log row (P9.2b / ADR-0004); payload-identical to the REST surface."
+type LogEntry {
+    "Server-computed dedupe key (the caller-facing id)."
+    eventId: ID!
+    "Owning tenant id (echoes the request tenant)."
+    tenantId: String!
+    "Event UTC timestamp, ISO-8601."
+    ts: String!
+    "Severity name (TRACE / DEBUG / INFO / WARN / ERROR)."
+    level: String!
+    "Logical service name that produced the line."
+    service: String!
+    "Human-readable message (post server-side PII mask)."
+    message: String!
+    "Flat string-string label map, exposed via the JSON scalar."
+    labels: JSON!
+    "Server-side acceptance timestamp, ISO-8601."
+    receivedAt: String!
 }

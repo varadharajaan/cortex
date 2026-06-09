@@ -54,6 +54,10 @@ cortex:
     # downstream indexer.
     search-logs:
       enabled: false
+    # Disable the getLogById endpoint in MockMvc tests by default
+    # (P9.2b / ADR-0049). Get-by-id-specific test classes re-enable it.
+    get-log-by-id:
+      enabled: false
 
 spring:
   ai:

@@ -150,6 +150,19 @@ cortex:
       sub-bucket-capacity: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_CAPACITY:30}
       sub-bucket-refill-period: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_REFILL:PT1M}
       sub-bucket-key-prefix: ${CORTEX_GATEWAY_SEARCH_LOGS_SUB_BUCKET_PREFIX:cortex:rl:search:}
+    # Get-log-by-id endpoint (P9.2b / ADR-0004 / ADR-0049). Forwards the
+    # lookup to log-ingest-service (P9.2a) over lb:// via the blocking
+    # LoadBalancerClient. Disabled in src/test/resources for MockMvc
+    # tests that don't need it. The sub-bucket fields drive the
+    # @RateLimitFeature("get-log-by-id") shared by the REST + GraphQL
+    # surfaces (one bucket per JWT subject, P9.0a parity).
+    get-log-by-id:
+      enabled: ${CORTEX_GATEWAY_GET_LOG_BY_ID_ENABLED:true}
+      service-id: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SERVICE_ID:log-ingest-service}
+      request-timeout: ${CORTEX_GATEWAY_GET_LOG_BY_ID_REQUEST_TIMEOUT:PT5S}
+      sub-bucket-capacity: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_CAPACITY:60}
+      sub-bucket-refill-period: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_REFILL:PT1M}
+      sub-bucket-key-prefix: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_PREFIX:cortex:rl:getlog:}
 
 logging:
   level:

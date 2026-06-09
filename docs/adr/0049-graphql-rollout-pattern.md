@@ -758,3 +758,139 @@ entire ADR-0004 surface (the one POST-shaped read, `nlToLogQL`, lives at
 - memory.md LD148 + `/memories/repo/gateway-scg-mvc-routing-precedence.md`
   -- the routing-precedence lesson.
 
+## Amendment 5 -- P9.2b `getLogById` REST + GraphQL parity (third query)
+
+**Date**: 2026-06-09. **Status**: Accepted (third mechanical extension
+of the D1-D7 pattern, mirroring Amendment 3's `searchLogs`).
+
+### Context
+
+P9.2a exposed log-ingest-service's `raw_logs` read path over REST
+(`GET /api/v1/logs/{eventId}` -> `LogResponse`, ADR-0022 Amendment 2).
+P9.2b adds the third of ADR-0004's four queries, `getLogById`, on both
+gateway surfaces by following the D1-D7 pattern + the P9.1b
+client-side-LB shape (Amendment 3) verbatim. This amendment records only
+what is **new** relative to `searchLogs`.
+
+### D-A5.1 -- Reuses the P9.1b downstream-call + tenant machinery wholesale
+
+`getLogById` is structurally identical to `searchLogs`, just a different
+HTTP method + path + downstream service:
+
+- shared `GetLogByIdService` -> blocking `LoadBalancerClient.choose(
+  "log-ingest-service")` + a plain `RestClient` (a SECOND bean,
+  `ingestRestClient`, distinct from P9.1b's `indexerRestClient` so the
+  two read features stay independently gated; by-name injection
+  disambiguates the two `RestClient` beans -- D-A5.3);
+- tenant from `X-Tenant-Id`: REST `@RequestHeader`, GraphQL via the
+  P9.1b `TenantHeaderGraphQlInterceptor` -> `@ContextValue`. The
+  interceptor is reused, but P9.2b promotes it from a search-gated
+  component to an unconditional shared concern (D-A5.5);
+- `labels` exposed through the EXISTING `JSON` scalar
+  (`GraphQlScalarConfig` from P9.1b);
+- `@RateLimitFeature("get-log-by-id")` on both surfaces (auto-registered
+  by the P9.0a interceptor; inherits the P9.0b 429 resolver).
+
+### D-A5.2 -- Routing is already clean (no route work)
+
+`GET /api/v1/logs/{eventId}` sits under the `/api/v1/logs/**` ingest
+proxy prefix, but P9.1c (Amendment 4) narrowed that proxy to `POST`
+only, so the `GET` falls through to the controller with NO route edit.
+Within the gateway, the literal `/api/v1/logs/search` mapping
+(`SearchLogsController`) is more specific than this `{eventId}` pattern,
+so Spring routes `search` to the search controller and every other
+single segment to `GetLogByIdController` -- no ambiguity. The
+`GatewayRoutesConfigTest` predicate guard already asserts
+`GET /api/v1/logs/{eventId}` does not match the proxy.
+
+### D-A5.3 -- Two `RestClient` beans coexist by name
+
+P9.1b's `SearchLogsClientConfig` declares `indexerRestClient`; P9.2b's
+`GetLogByIdClientConfig` declares `ingestRestClient`. Both are plain
+timeout-bounded `RestClient`s with no base URL. When both features are
+enabled, two `RestClient` beans exist; Spring resolves the constructor
+parameters by name (`indexerRestClient` / `ingestRestClient`), so there
+is no ambiguity. Keeping two beans (vs. one shared bean gated on an OR
+of the two flags) preserves independent feature gating and matches the
+parity pattern.
+
+### D-A5.4 -- `LogEntry` carries timestamps as ISO-8601 strings
+
+The gateway is a pass-through; it does not re-parse the ingest response.
+`LogEntry.ts` / `receivedAt` are `String` (the ISO-8601 value the ingest
+backer emits) so the REST JSON and the GraphQL `String` scalar produce
+byte-identical values without any temporal-coercion mismatch. The
+GraphQL `getLogById(id: ID!): LogEntry` returns a nullable `LogEntry`
+per ADR-0004; a miss surfaces as a GraphQL error (the gateway throws
+`NOT_FOUND`), not `null`.
+
+### D-A5.5 -- Tenant interceptor promoted to an unconditional shared concern
+
+P9.1b gated `TenantHeaderGraphQlInterceptor` on
+`cortex.gateway.search-logs.enabled=true` -- correct when `searchLogs`
+was the only tenant-scoped GraphQL query. P9.2b makes that gate a latent
+bug: with `search-logs` disabled and `get-log-by-id` enabled, the
+interceptor would be absent, the tenant header would never reach the
+GraphQL context, and `getLogById`'s `@ContextValue` tenant would be
+`null` -- so every GraphQL `getLogById` call would fail validation while
+the REST surface kept working, breaking parity. The full-context
+`GetLogByIdRestAndGraphQlParityIT` (which enables only `get-log-by-id`)
+caught this: the GraphQL envelope carried a `VALIDATION_FAILED` error.
+The fix removes the `@ConditionalOnProperty` entirely: tenant
+propagation is a cross-query concern shared by `searchLogs`, `getLogById`,
+and the future `getAnomalies`, so it must not hinge on any one query's
+flag. The interceptor is cheap (a single header lookup; a no-op when the
+header is absent or no resolver reads the context value), so running it
+whenever the GraphQL surface is present costs nothing measurable. This
+is the same lesson as P9.1c's routing fix (Amendment 4): a shared
+cross-cutting concern must not be gated on one feature's flag.
+
+### Verdict -> HTTP mapping
+
+The ingest backer returns `404` on a miss (and `400` only if the tenant
+header were absent, which the gateway always supplies). The gateway
+maps: `404` -> `404 NOT_FOUND`; everything else (other 4xx, 5xx,
+transport) -> `502 GET_LOG_BY_ID_UPSTREAM_FAILED`. Two new `ErrorCodes`
+(`GET_LOG_BY_ID_RATE_LIMITED` / `_UPSTREAM_FAILED`) + the matching
+`GlobalExceptionHandler` switch cases.
+
+### Rejected alternatives
+
+1. **One shared downstream `RestClient` bean for both read features.**
+   Rejected (D-A5.3) -- would need an OR-of-two-flags condition
+   (`@ConditionalOnExpression`) and couples the two features' lifecycles;
+   two named beans are simpler and independently gated.
+2. **Typed `Instant` timestamps on `LogEntry`.** Rejected (D-A5.4) --
+   the gateway is a relay; `String` passthrough guarantees byte-identical
+   REST/GraphQL payloads with no coercion surprises.
+3. **A new route entry for `GET /api/v1/logs/{eventId}`.** Rejected
+   (D-A5.2) -- P9.1c's method discriminator already lets the GET fall
+   through; no route work is needed.
+4. **Fix the parity IT by also enabling `search-logs` (so the existing
+   gated interceptor loads).** Rejected (D-A5.5) -- that papers over a
+   real production defect (only-`get-log-by-id`-enabled deployments
+   would have broken GraphQL tenant propagation); decoupling the
+   interceptor from the search flag fixes the root cause instead.
+
+### Verification (triangle)
+
+- **Leg A** GREEN: `mvn -pl log-gateway verify` -- new Surefire slices
+  (`GetLogByIdControllerTest`, `GetLogByIdGraphQlControllerTest`,
+  `GetLogByIdServiceImplTest` WireMock, `GetLogByIdPropertiesTest`) +
+  Failsafe `GetLogByIdRestAndGraphQlParityIT` (payload identity +
+  `@RateLimitFeature` annotation equality) + ArchUnit + Checkstyle 0 +
+  SpotBugs 0 + JaCoCo 0.80/0.80.
+- **Leg B** GREEN: live boot smoke `scripts/live-e2e/smoke-p9-2b.ps1`
+  (gateway + ingest + Postgres + Eureka) -- `getLogById` returns an
+  identical payload on REST and GraphQL for a seeded row, and 404 on a
+  miss. This Leg B closes both P9.2a and P9.2b per LD104.
+
+### References
+
+- Issue #143 -- `P9.2b: gateway getLogById REST + GraphQL parity`.
+- ADR-0022 Amendment 2 -- the P9.2a ingest REST read backer this query
+  consumes.
+- Amendment 3 (P9.1b) -- the `searchLogs` shape this mirrors.
+- Amendment 4 (P9.1c) -- the method discriminator that makes the GET
+  route fall through for free.
+

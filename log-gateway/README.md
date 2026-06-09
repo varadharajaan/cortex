@@ -21,6 +21,7 @@ This module is the public ingress for the platform. It owns:
 | GraphQL NL sub-bucket parity   | live | P9.0a     |
 | GraphQL rate-limit 429 (RFC 7807) | live | P9.0b  |
 | `searchLogs` REST + GraphQL parity | live | P9.1b |
+| `getLogById` REST + GraphQL parity | live | P9.2b |
 
 ## Requirements
 
@@ -283,6 +284,58 @@ Sample env vars:
 | `CORTEX_GATEWAY_SEARCH_LOGS_SERVICE_ID`        | `log-indexer-service`| Discovery id of the downstream indexer.       |
 | `CORTEX_GATEWAY_SEARCH_LOGS_REQUEST_TIMEOUT`   | `PT5S`               | Connect + read timeout on the indexer call.   |
 | `CORTEX_GATEWAY_SEARCH_LOGS_MAX_HITS_CEILING`  | `1000`               | Hard clamp on a requested `maxHits`.          |
+
+### `getLogById` (P9.2b / ADR-0049 Amendment 5)
+
+The third ADR-0004 query. Both surfaces delegate to one
+`GetLogByIdService`, which forwards the lookup to log-ingest-service
+(P9.2a) over `lb://log-ingest-service` via the blocking
+`LoadBalancerClient` + a plain `RestClient`. The tenant is taken from the
+`X-Tenant-Id` header (ADR-0009) and forwarded downstream.
+
+```graphql
+type Query {
+  getLogById(id: ID!): LogEntry
+}
+
+type LogEntry {
+  eventId: ID!
+  tenantId: String!
+  ts: String!          # ISO-8601
+  level: String!
+  service: String!
+  message: String!
+  labels: JSON!        # flat string-string map (JSON scalar)
+  receivedAt: String!  # ISO-8601
+}
+```
+
+| Surface | Shape |
+|---------|-------|
+| REST    | `GET /api/v1/logs/{eventId}` + `X-Tenant-Id` header |
+| GraphQL | `getLogById(id: "<eventId>")` + `X-Tenant-Id` header |
+
+Feature gate `cortex.gateway.get-log-by-id.enabled` (default `true`).
+A shared `@RateLimitFeature("get-log-by-id")` sub-bucket is auto-registered
+on both surfaces (inheriting the P9.0a interceptor + P9.0b 429 resolver).
+Downstream verdicts map to HTTP: miss -> 404, downstream failure/transport
+-> 502 (`GET_LOG_BY_ID_UPSTREAM_FAILED`). REST + GraphQL return identical
+payloads -- the parity contract enforced by `GetLogByIdRestAndGraphQlParityIT`.
+No route work was needed: P9.1c's POST-only ingest-proxy predicate lets the
+GET fall through, and the literal `/api/v1/logs/search` mapping outranks the
+`{eventId}` pattern.
+
+```bash
+curl -s "http://localhost:8090/api/v1/logs/evt-abc-123" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'X-Tenant-Id: acme' | jq
+```
+
+| Property                                        | Default              | Meaning                                       |
+|-------------------------------------------------|----------------------|-----------------------------------------------|
+| `CORTEX_GATEWAY_GET_LOG_BY_ID_ENABLED`          | `true`               | Per-query feature gate (REST + GraphQL).      |
+| `CORTEX_GATEWAY_GET_LOG_BY_ID_SERVICE_ID`       | `log-ingest-service` | Discovery id of the downstream ingest backer. |
+| `CORTEX_GATEWAY_GET_LOG_BY_ID_REQUEST_TIMEOUT`  | `PT5S`               | Connect + read timeout on the ingest call.    |
 
 ## Observability
 
