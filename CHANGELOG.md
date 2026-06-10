@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P15 Postman + Newman in CI (ADR-0059). A `newman` job in
+  `.github/workflows/ci.yml` boots the P10 compose stack, waits for the gateway
+  health endpoint, and runs the six committed per-service Postman collections
+  (gateway, ingest, processor, remediation, indexer, monitoring) inside a
+  `postman/newman:6-alpine` container attached to `cortex-net`, each targeting
+  its in-network service DNS via a `base_url` override. A Newman failure fails
+  the pipeline; compose logs are dumped on failure and the stack is always torn
+  down.
+
 - P14 full CI/CD (ADR-0058). Replaced the P0 GitHub Actions stub with a
   production CI/CD workflow: PR commitlint, root `./mvnw -B -ntp verify`
   with Docker available for Testcontainers, retained Maven verification
