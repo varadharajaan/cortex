@@ -59,6 +59,22 @@ type Query {
     the REST surface) rate-limits the operation.
     """
     getLogById(id: ID!): LogEntry
+
+    """
+    List a tenant's persisted anomalies, newest first (P9.3b / ADR-0004 / ADR-0049).
+
+    REST parity: GET /api/v1/anomalies?since=&until=&limit= . The gateway
+    resolves the tenant from the X-Tenant-Id header (ADR-0009) and
+    forwards the listing to log-remediation-service (P9.3a) via the same
+    GetAnomaliesService used by the REST controller, so validation and
+    downstream-failure mapping are identical across both surfaces. The
+    optional since/until bounds are ISO-8601 strings; limit is strictly
+    positive when present. An empty list is a valid result.
+
+    Authentication is required; a per-principal sub-bucket (shared with
+    the REST surface) rate-limits the operation.
+    """
+    getAnomalies(since: String, until: String, limit: Int): [Anomaly!]!
 }
 
 "Result of a natural-language query translation (ADR-0018)."
@@ -113,5 +129,33 @@ type LogEntry {
     "Flat string-string label map, exposed via the JSON scalar."
     labels: JSON!
     "Server-side acceptance timestamp, ISO-8601."
+    receivedAt: String!
+}
+
+"A single persisted anomaly row (P9.3b / ADR-0004); payload-identical to the REST surface."
+type Anomaly {
+    "Owning tenant id (echoes the request tenant)."
+    tenantId: String!
+    "Upstream anomaly event id (the caller-facing id)."
+    eventId: ID!
+    "Anomaly severity bucket."
+    severity: String!
+    "Classifier / playbook reason text."
+    reason: String!
+    "Original log UTC timestamp, ISO-8601."
+    ts: String!
+    "Original log level."
+    level: String!
+    "Logical source service name."
+    service: String!
+    "Original log message."
+    message: String!
+    "Classifier confidence score in [0.0, 1.0]."
+    confidence: Float!
+    "Classifier anomaly type."
+    anomalyType: String!
+    "Playbook lookup key."
+    remediationKey: String!
+    "Remediation-service receive timestamp, ISO-8601."
     receivedAt: String!
 }

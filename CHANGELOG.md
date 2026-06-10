@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- P9.3b gateway `getAnomalies` REST + GraphQL parity (ADR-0049 Amendment 6),
+  the fourth and final ADR-0004 read query. A shared `GetAnomaliesService`
+  forwards to log-remediation-service (P9.3a) over `lb://` via the blocking
+  `LoadBalancerClient` + a plain `remediationRestClient`; REST
+  `GET /api/v1/anomalies?since=&until=&limit=` (`GetAnomaliesController`) and
+  GraphQL `getAnomalies(since, until, limit): [Anomaly!]!`
+  (`GetAnomaliesGraphQlController`) resolve identically. The tenant is read
+  from `X-Tenant-Id` (REST header / GraphQL context) and forwarded downstream
+  as the `tenantId` query parameter. Three new error codes
+  (`GET_ANOMALIES_RATE_LIMITED` -> 429, `_INVALID` -> 422, `_UPSTREAM_FAILED`
+  -> 502) + a shared `@RateLimitFeature("get-anomalies")` sub-bucket; gate
+  `cortex.gateway.get-anomalies.enabled`. Closes the P9 GraphQL-parity track.
+
 ### Fixed
 
 - log-ingest-service unknown-tenant ingest now returns `400 VALIDATION_FAILED`

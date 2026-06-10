@@ -59,6 +59,22 @@ public final class ApiPaths {
     public static final String LOGS_BY_ID = API_V1 + "/logs/{eventId}";
 
     /**
+     * Tenant-scoped anomalies-read endpoint accepting {@code GET} with
+     * optional {@code since}, {@code until}, and {@code limit} query
+     * parameters plus an {@code X-Tenant-Id} header (P9.3b / ADR-0004 /
+     * ADR-0049).
+     *
+     * <p>Gateway-owned, not a proxy route -- the gateway does not proxy
+     * {@code /api/v1/anomalies} to any service, so the request reaches
+     * {@link io.cortex.gateway.controller.GetAnomaliesController}
+     * directly. The resolved tenant is forwarded downstream to
+     * log-remediation-service (P9.3a) as the {@code tenantId} query
+     * parameter, the backer's single source of truth for tenant
+     * scoping.</p>
+     */
+    public static final String ANOMALIES = API_V1 + "/anomalies";
+
+    /**
      * Spring for GraphQL HTTP endpoint (P9.0 / ADR-0049).
      *
      * <p>Accepts {@code POST /graphql} with a standard GraphQL request

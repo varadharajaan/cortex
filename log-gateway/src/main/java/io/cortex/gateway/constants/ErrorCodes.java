@@ -57,6 +57,15 @@ public enum ErrorCodes {
     /** getLogById downstream (log-ingest-service) was unavailable or failed transiently (P9.2b). */
     GET_LOG_BY_ID_UPSTREAM_FAILED,
 
+    /** Caller exceeded the per-feature {@code getAnomalies} sub-bucket (B5, P9.3b / ADR-0049). */
+    GET_ANOMALIES_RATE_LIMITED,
+
+    /** getAnomalies query was rejected as permanently unprocessable by the remediation backer (P9.3b). */
+    GET_ANOMALIES_INVALID,
+
+    /** getAnomalies downstream (log-remediation-service) was unavailable or failed transiently (P9.3b). */
+    GET_ANOMALIES_UPSTREAM_FAILED,
+
     /** Fallback for any unexpected internal failure. */
     INTERNAL_ERROR;
 }

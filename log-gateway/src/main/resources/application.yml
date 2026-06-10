@@ -163,6 +163,19 @@ cortex:
       sub-bucket-capacity: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_CAPACITY:60}
       sub-bucket-refill-period: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_REFILL:PT1M}
       sub-bucket-key-prefix: ${CORTEX_GATEWAY_GET_LOG_BY_ID_SUB_BUCKET_PREFIX:cortex:rl:getlog:}
+    # Get-anomalies endpoint (P9.3b / ADR-0004 / ADR-0049). Forwards the
+    # listing to log-remediation-service (P9.3a) over lb:// via the
+    # blocking LoadBalancerClient. Disabled in src/test/resources for
+    # MockMvc tests that don't need it. The sub-bucket fields drive the
+    # @RateLimitFeature("get-anomalies") shared by the REST + GraphQL
+    # surfaces (one bucket per JWT subject, P9.0a parity).
+    get-anomalies:
+      enabled: ${CORTEX_GATEWAY_GET_ANOMALIES_ENABLED:true}
+      service-id: ${CORTEX_GATEWAY_GET_ANOMALIES_SERVICE_ID:log-remediation-service}
+      request-timeout: ${CORTEX_GATEWAY_GET_ANOMALIES_REQUEST_TIMEOUT:PT5S}
+      sub-bucket-capacity: ${CORTEX_GATEWAY_GET_ANOMALIES_SUB_BUCKET_CAPACITY:60}
+      sub-bucket-refill-period: ${CORTEX_GATEWAY_GET_ANOMALIES_SUB_BUCKET_REFILL:PT1M}
+      sub-bucket-key-prefix: ${CORTEX_GATEWAY_GET_ANOMALIES_SUB_BUCKET_PREFIX:cortex:rl:anom:}
 
 logging:
   level:
