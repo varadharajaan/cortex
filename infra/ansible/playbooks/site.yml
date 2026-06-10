@@ -1,0 +1,9 @@
+---
+- name: Validate infrastructure prerequisites
+  ansible.builtin.import_playbook: provision.yml
+
+- name: Deploy application workloads
+  ansible.builtin.import_playbook: deploy.yml
+
+- name: Smoke-test application workloads
+  ansible.builtin.import_playbook: smoke.yml

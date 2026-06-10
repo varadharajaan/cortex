@@ -1,0 +1,30 @@
+---
+cortex_namespace: cortex
+cortex_release_name: cortex
+cortex_rollout_timeout: 300s
+
+cortex_deployments:
+  - cortex-eureka
+  - cortex-gateway
+  - cortex-ingest
+  - cortex-processor
+  - cortex-remediation
+  - cortex-indexer
+  - cortex-monitoring
+  - cortex-echo
+
+cortex_helm_values_files: []
+cortex_helm_set_values: []
+cortex_helm_dry_run: false
+cortex_helm_wait: true
+
+cortex_terraform_backend_enabled: false
+cortex_terraform_plan_enabled: false
+cortex_terraform_apply: false
+cortex_confirm_apply: ""
+cortex_terraform_plan_file: cortex.tfplan
+
+cortex_rollback_revision: ""
+cortex_smoke_http_enabled: true
+cortex_smoke_curl_image: curlimages/curl:8.10.1
+cortex_smoke_gateway_url: http://cortex-gateway:8090/actuator/health

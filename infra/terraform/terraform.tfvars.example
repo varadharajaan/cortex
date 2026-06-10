@@ -1,0 +1,20 @@
+name_prefix = "cortex"
+environment = "dev"
+location    = "eastus2"
+
+tags = {
+  owner = "platform"
+}
+
+# Optional data-plane resources. Defaults are false so `terraform validate`
+# and early planning stay cheap and explicit. Turn on per environment when
+# you are ready to pay for managed services.
+enable_postgres = false
+enable_redis    = false
+
+# Required only when enable_postgres=true. Prefer passing via environment:
+#   $env:TF_VAR_postgres_admin_password = "<secret>"
+# postgres_admin_password = "replace-with-strong-secret"
+
+# Optional Key Vault seed. Prefer Azure Key Vault / External Secrets workflow.
+# gateway_jwt_secret = "replace-with-strong-base64-secret"

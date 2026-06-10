@@ -1,0 +1,70 @@
+---
+- name: Validate or run the P12 Terraform stack
+  hosts: local
+  gather_facts: false
+  vars:
+    cortex_repo_root: "{{ playbook_dir }}/../../.."
+    cortex_terraform_dir: "{{ cortex_repo_root }}/infra/terraform"
+  tasks:
+    - name: Check Terraform formatting
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - fmt
+          - -recursive
+          - -check
+      args:
+        chdir: "{{ cortex_terraform_dir }}"
+      changed_when: false
+
+    - name: Initialize Terraform providers
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - init
+          - "-backend={{ cortex_terraform_backend_enabled | bool | ternary('true', 'false') }}"
+          - -input=false
+      args:
+        chdir: "{{ cortex_terraform_dir }}"
+      changed_when: false
+
+    - name: Validate Terraform configuration
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - validate
+      args:
+        chdir: "{{ cortex_terraform_dir }}"
+      changed_when: false
+
+    - name: Build Terraform plan when explicitly requested
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - plan
+          - -input=false
+          - "-out={{ cortex_terraform_plan_file }}"
+      args:
+        chdir: "{{ cortex_terraform_dir }}"
+      when: cortex_terraform_plan_enabled | bool
+      changed_when: true
+
+    - name: Require explicit apply confirmation
+      ansible.builtin.assert:
+        that:
+          - cortex_confirm_apply == "APPLY"
+        fail_msg: "Set cortex_confirm_apply=APPLY to allow terraform apply."
+      when: cortex_terraform_apply | bool
+
+    - name: Apply Terraform plan when explicitly approved
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - apply
+          - -input=false
+          - -auto-approve
+          - "{{ cortex_terraform_plan_file }}"
+      args:
+        chdir: "{{ cortex_terraform_dir }}"
+      when: cortex_terraform_apply | bool
+      changed_when: true

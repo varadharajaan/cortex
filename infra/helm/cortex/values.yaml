@@ -1,0 +1,31 @@
+global:
+  imagePullSecrets: []
+  podAnnotations: {}
+  podLabels: {}
+
+cortex-eureka:
+  enabled: true
+
+cortex-gateway:
+  enabled: true
+  service:
+    type: LoadBalancer
+    port: 8090
+
+cortex-ingest:
+  enabled: true
+
+cortex-processor:
+  enabled: true
+
+cortex-remediation:
+  enabled: true
+
+cortex-indexer:
+  enabled: true
+
+cortex-monitoring:
+  enabled: true
+
+cortex-echo:
+  enabled: true
