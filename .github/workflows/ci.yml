@@ -267,8 +267,15 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
+      - name: Build the service images (host network for Maven Central)
+        run: |
+          set -e
+          for df in infra/docker/*.Dockerfile; do
+            name=$(basename "$df" .Dockerfile)
+            docker build --network=host -f "$df" -t "cortex/${name}:0.1.0" .
+          done
       - name: Boot the compose stack
-        run: docker compose -f infra/docker/docker-compose.yml up -d --build
+        run: docker compose -f infra/docker/docker-compose.yml up -d
       - name: Wait for the gateway to be healthy
         run: |
           for i in $(seq 1 60); do
