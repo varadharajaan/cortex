@@ -9,6 +9,8 @@
 #   - Trivy vulnerability scan of every built image (blocking on fixable
 #     HIGH/CRITICAL; framework-locked residuals allowlisted in .trivyignore).
 #   - GHCR publish + keyless cosign signing only for trusted push/tag events.
+#   - Newman API tests: boot the compose stack and run the six per-service
+#     Postman collections against the in-network services (P15).
 #   - Gatling SLO load test against the booted compose stack (P16).
 
 name: CI
@@ -258,6 +260,101 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cosign sign --yes "${IMAGE}:${TAG}"
+
+  newman:
+    name: Newman API tests (compose)
+    runs-on: ubuntu-latest
+    needs: maven-verify
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the service images (host network for Maven Central)
+        run: |
+          set -e
+          for df in infra/docker/*.Dockerfile; do
+            name=$(basename "$df" .Dockerfile)
+            docker build --network=host -f "$df" -t "cortex/${name}:0.1.0" .
+          done
+      - name: Boot the compose stack
+        run: docker compose -f infra/docker/docker-compose.yml up -d
+      - name: Wait for the gateway to be healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8090/actuator/health >/dev/null 2>&1; then
+              echo "gateway healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "gateway did not become healthy in time" >&2
+          docker compose -f infra/docker/docker-compose.yml ps
+          exit 1
+      - name: Wait for gateway discovery convergence (downstreams routable)
+        run: |
+          # The gateway's own health flips UP before its Eureka-discovered
+          # downstreams (echo/ingest/indexer) have registered and entered the
+          # gateway route cache, so a suite that fires the instant the gateway
+          # is healthy races discovery and sees 5xx "no instance available".
+          # Gate on the real authenticated routes -- one token, reused -- until
+          # the gateway can actually reach each downstream, then flush the
+          # rate-limit buckets the probe drained so the suite starts clean.
+          token=$(curl -fsS -X POST http://localhost:8090/api/v1/auth/login \
+            -H 'Content-Type: application/json' -H 'X-Tenant-Id: cortex-dev' \
+            -d '{"username":"admin","password":"dev-admin-pass"}' | jq -r .accessToken)
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "could not mint a bootstrap token for the convergence probe" >&2
+            exit 1
+          fi
+          batch='{"entries":[{"timestamp":"2026-01-01T00:00:00Z","level":"INFO","service":"ci-readiness","message":"discovery probe"}]}'
+          for i in $(seq 1 60); do
+            b=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/v1/logs/batch \
+              -H 'Content-Type: application/json' -H 'X-Tenant-Id: cortex-dev' -H "Authorization: Bearer $token" -d "$batch" || echo 000)
+            s=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8090/api/v1/logs/search?index=cortex-cortex-dev-app&q=level:ERROR&maxHits=1" \
+              -H 'X-Tenant-Id: cortex-dev' -H "Authorization: Bearer $token" || echo 000)
+            e=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/echo/ping -H "Authorization: Bearer $token" || echo 000)
+            echo "convergence probe #$i: logs/batch=$b logs/search=$s echo/ping=$e"
+            if [ "$b" = "202" ] && { [ "$s" = "200" ] || [ "$s" = "404" ]; } && [ "$e" = "200" ]; then
+              echo "all gateway downstreams routable"
+              docker exec cortex-redis redis-cli FLUSHALL >/dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "gateway downstreams did not become routable in time" >&2
+          docker compose -f infra/docker/docker-compose.yml ps
+          exit 1
+      - name: Run Newman against the in-network services
+        run: |
+          set -e
+          # $1 collection, $2 environment, $3 base_url, $4.. extra "key=value"
+          # overrides (cross-service URLs that must resolve on cortex-net, not
+          # the host loopback the local env files default to).
+          run() {
+            local collection="$1" environment="$2" base_url="$3"
+            shift 3
+            local extra=()
+            local kv
+            for kv in "$@"; do extra+=(--env-var "$kv"); done
+            docker run --rm --network cortex-net \
+              -v "$PWD/postman:/etc/newman" \
+              postman/newman:6-alpine \
+              run "/etc/newman/$collection" \
+              -e "/etc/newman/$environment" \
+              --env-var "base_url=$base_url" \
+              "${extra[@]}" \
+              --reporters cli --bail
+          }
+          run log-gateway.postman_collection.json     log-gateway.postman_environment_local.json     http://cortex-gateway:8090
+          run log-ingest.postman_collection.json      log-ingest.postman_environment_local.json      http://cortex-ingest:8092
+          run log-processor.postman_collection.json   log-processor.postman_environment_local.json   http://cortex-processor:8095   ingest_base_url=http://cortex-ingest:8092 gateway_base_url=http://cortex-gateway:8090
+          run log-remediation.postman_collection.json log-remediation.postman_environment_local.json http://cortex-remediation:8096 wiremock_base_url=http://cortex-wiremock:8080
+          run log-indexer.postman_collection.json     log-indexer.postman_environment_local.json     http://cortex-indexer:8097     quickwit_base_url=http://cortex-quickwit:7280
+          run log-monitoring.postman_collection.json  log-monitoring.postman_environment_local.json  http://cortex-monitoring:8098  prometheus_base_url=http://cortex-prometheus:9090
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f infra/docker/docker-compose.yml logs --no-color --tail 200
+      - name: Tear down the compose stack
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down -v
 
   load-test:
     name: Gatling load (SLO gate)
