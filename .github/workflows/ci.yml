@@ -269,6 +269,10 @@ jobs:
   newman:
     name: Newman API tests (compose)
     runs-on: ubuntu-latest
+    # Compose-booting validation gate: runs on PRs only. It rebuilds all eight
+    # images and boots the full stack, so re-running it on every main/tag push
+    # would burn Actions minutes re-proving what the PR already proved.
+    if: github.event_name == 'pull_request'
     needs: maven-verify
     timeout-minutes: 40
     steps:
@@ -364,6 +368,9 @@ jobs:
   load-test:
     name: Gatling load (SLO gate)
     runs-on: ubuntu-latest
+    # Compose-booting SLO gate: runs on PRs only (same Actions-minute rationale
+    # as the newman job). The release tag build does not re-run the load test.
+    if: github.event_name == 'pull_request'
     needs: maven-verify
     timeout-minutes: 40
     steps:
