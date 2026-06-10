@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    CORTEX :: log-load-tests (P16 / ADR-0060).
+
+    Standalone Gatling load + E2E module. DELIBERATELY NOT under the
+    cortex-parent reactor (like infra/eureka): load simulations run against a
+    LIVE stack, not in the unit/IT build, and they should not inherit the
+    parent's Checkstyle/SpotBugs/JaCoCo gates (those target production code,
+    not throughput probes).
+
+    Run against a booted stack (gateway on :8090 by default):
+        cd log-load-tests
+        ..\mvnw.cmd -B gatling:test "-Dcortex.load.baseUrl=http://localhost:8090"
+    Tunables (all -D system properties, defaults in GatewayLoadSimulation):
+        cortex.load.baseUrl, cortex.load.users, cortex.load.rampSeconds,
+        cortex.load.username, cortex.load.password, cortex.load.tenant,
+        cortex.load.p95Millis, cortex.load.successPercent.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.cortex.load</groupId>
+    <artifactId>cortex-load-tests</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>CORTEX :: log-load-tests (P16, standalone)</name>
+    <description>Gatling SLO-driven load and E2E simulations for CORTEX.</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <gatling.version>3.13.5</gatling.version>
+        <gatling-maven-plugin.version>4.16.3</gatling-maven-plugin.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.gatling.highcharts</groupId>
+            <artifactId>gatling-charts-highcharts</artifactId>
+            <version>${gatling.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>io.gatling</groupId>
+                <artifactId>gatling-maven-plugin</artifactId>
+                <version>${gatling-maven-plugin.version}</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

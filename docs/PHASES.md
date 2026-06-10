@@ -38,7 +38,7 @@
 - `[x]` **P14 - CI/CD hardening** - matrix, caching, SBOM upload,
   Trivy, Cosign signatures.
 - `[x]` **P15 - Postman + Newman** - collection + environment + CI run.
-- `[ ]` **P16 - E2E and load** - k6 + Gatling, SLO-driven.
+- `[x]` **P16 - E2E and load** - k6 + Gatling, SLO-driven.
 - `[x]` **P17 - Grafana and SLO** - provisioned dashboards, burn alerts.
 - `[-]` **P18 - v0.1.0 release** - tag, GitHub release, changelog freeze,
   signed artifacts.

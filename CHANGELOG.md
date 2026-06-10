@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P16 E2E + load testing with Gatling (ADR-0060). New standalone
+  `log-load-tests` Maven module (outside the reactor) with a `GatewayLoadSimulation`
+  that authenticates against the gateway and drives the NL-to-LogQL and
+  searchLogs read paths, asserting the gateway round-trip SLOs (p95 latency +
+  success rate) so a regression fails the build. A `load-test` CI job boots the
+  compose stack, runs `gatling:test` against it, and uploads the Gatling HTML
+  report. All load knobs are `-D` tunables.
+
 - P15 Postman + Newman in CI (ADR-0059). A `newman` job in
   `.github/workflows/ci.yml` boots the P10 compose stack, waits for the gateway
   health endpoint, and runs the six committed per-service Postman collections
