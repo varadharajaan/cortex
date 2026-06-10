@@ -135,8 +135,8 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
             ^                 |    1.0)        |              v                         ^
             |                 +----------------+   +----------------------+   +-------------------+
             |                                      | log-remediation[E][M]|   | log-indexer [E][M]|
-            |                                      | (dedupe, policy,    |   | (Quickwit writer, |
-            |                                      |  playbook, fallback)|   |  retention, cold) |
+            |                                      | (dedupe, policy,     |   | (Quickwit writer, |
+            |                                      |  playbook, fallback) |   |  retention, cold) |
             |                                      +----------------------+   +-------------------+
             |                                               |
             |                                               v
