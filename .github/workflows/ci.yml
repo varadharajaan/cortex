@@ -195,6 +195,7 @@ jobs:
           tags: |
             type=sha,prefix=sha-,format=long
             type=ref,event=tag
+            type=semver,pattern={{version}}
       - name: Build image for Trivy scan
         id: build-scan
         uses: docker/build-push-action@v6
@@ -259,7 +260,11 @@ jobs:
           IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ steps.image-scope.outputs.namespace }}/${{ matrix.image }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Sign both the v-prefixed git tag (:v0.1.0) and the canonical semver
+          # tag (:0.1.0, what docs/release/v0.1.0-runbook.md + sign-images.ps1
+          # reference). metadata-action publishes both, so both are real refs.
           cosign sign --yes "${IMAGE}:${TAG}"
+          cosign sign --yes "${IMAGE}:${TAG#v}"
 
   newman:
     name: Newman API tests (compose)
