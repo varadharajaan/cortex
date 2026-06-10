@@ -35,9 +35,9 @@
 - `[x]` **P12 - Terraform (Azure)** - AKS, Postgres flexible server, Blob.
 - `[x]` **P13 - Ansible (real)** - provision, deploy, rollback,
   smoke-test, remediation playbooks.
-- `[ ]` **P14 - CI/CD hardening** - matrix, caching, SBOM upload,
+- `[x]` **P14 - CI/CD hardening** - matrix, caching, SBOM upload,
   Trivy, Cosign signatures.
-- `[ ]` **P15 - Postman + Newman** - collection + environment + CI run.
+- `[x]` **P15 - Postman + Newman** - collection + environment + CI run.
 - `[ ]` **P16 - E2E and load** - k6 + Gatling, SLO-driven.
 - `[x]` **P17 - Grafana and SLO** - provisioned dashboards, burn alerts.
 - `[-]` **P18 - v0.1.0 release** - tag, GitHub release, changelog freeze,

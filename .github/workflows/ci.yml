@@ -9,6 +9,8 @@
 #   - Trivy vulnerability scan of every built image (blocking on fixable
 #     HIGH/CRITICAL; framework-locked residuals allowlisted in .trivyignore).
 #   - GHCR publish + keyless cosign signing only for trusted push/tag events.
+#   - Newman API tests: boot the compose stack and run the six per-service
+#     Postman collections against the in-network services (P15).
 
 name: CI
 
@@ -257,3 +259,48 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cosign sign --yes "${IMAGE}:${TAG}"
+
+  newman:
+    name: Newman API tests (compose)
+    runs-on: ubuntu-latest
+    needs: maven-verify
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Boot the compose stack
+        run: docker compose -f infra/docker/docker-compose.yml up -d --build
+      - name: Wait for the gateway to be healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8090/actuator/health >/dev/null 2>&1; then
+              echo "gateway healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "gateway did not become healthy in time" >&2
+          docker compose -f infra/docker/docker-compose.yml ps
+          exit 1
+      - name: Run Newman against the in-network services
+        run: |
+          set -e
+          run() {
+            docker run --rm --network cortex-net \
+              -v "$PWD/postman:/etc/newman" \
+              postman/newman:6-alpine \
+              run "/etc/newman/$1" \
+              -e "/etc/newman/$2" \
+              --env-var "base_url=$3" \
+              --reporters cli --bail
+          }
+          run log-gateway.postman_collection.json     log-gateway.postman_environment_local.json     http://cortex-gateway:8090
+          run log-ingest.postman_collection.json      log-ingest.postman_environment_local.json      http://cortex-ingest:8092
+          run log-processor.postman_collection.json   log-processor.postman_environment_local.json   http://cortex-processor:8095
+          run log-remediation.postman_collection.json log-remediation.postman_environment_local.json http://cortex-remediation:8096
+          run log-indexer.postman_collection.json     log-indexer.postman_environment_local.json     http://cortex-indexer:8097
+          run log-monitoring.postman_collection.json  log-monitoring.postman_environment_local.json  http://cortex-monitoring:8098
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f infra/docker/docker-compose.yml logs --no-color --tail 200
+      - name: Tear down the compose stack
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down -v
