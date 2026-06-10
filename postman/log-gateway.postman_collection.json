@@ -708,44 +708,6 @@
       ]
     },
     {
-      "name": "SearchRoute",
-      "description": "P3.4: Spring Cloud Gateway MVC RouteLocator for `/api/v1/search/**` -> `lb://log-echo-service` (log-echo-service stands in until P7 brings up the real search service). Same Eureka-discovery / lb:// posture as LogsRoute.",
-      "item": [
-        {
-          "name": "GET /api/v1/search/echo (bearer -> 200 routed via lb://log-echo-service)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "X-Request-Id", "value": "{{request_id}}" },
-              { "key": "Authorization", "value": "Bearer {{jwt}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/search/echo",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "search", "echo"]
-            },
-            "description": "Authenticated GET against the P3.4 search route. Same end-to-end proof as LogsRoute: Eureka resolution + lb:// forwarding + no path rewrite."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('upstream is log-echo-service', () => pm.expect(body.upstream).to.eql('log-echo-service'));",
-                  "pm.test('path is /api/v1/search/echo (no rewrite)', () => pm.expect(body.path).to.eql('/api/v1/search/echo'));",
-                  "pm.test('method is GET', () => pm.expect(body.method).to.eql('GET'));"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
       "name": "Error Scenarios",
       "item": [
         {

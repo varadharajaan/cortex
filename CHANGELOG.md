@@ -7,7 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- log-ingest-service unknown-tenant ingest now returns `400 VALIDATION_FAILED`
+  instead of `500` (ADR-0022 Amendment 3). Posting a batch for an
+  unprovisioned tenant tripped a Postgres foreign-key violation on
+  `raw_logs.tenant_id` that surfaced as a generic server error;
+  `GlobalExceptionHandler` gains one arm for
+  `DataIntegrityViolationException` / `DbActionExecutionException` that maps it
+  to an RFC 7807 400 with a bounded, non-leaking message (the SQL / constraint
+  name is logged server-side only, never echoed -- OWASP A09). Caught by the
+  P10.1 live end-to-end sweep.
+
 ### Added
+
+- P10.1 compose-stack observability + fan-out wiring (no service code changes).
+  Added `infra/docker/prometheus.yml` and a `cortex-prometheus` service that
+  scrapes `cortex-monitoring` in-network and loads the shared SLO burn-rate
+  rules; enabled the monitoring SLO engine (`micrometer-derivation`) and the
+  processor's classifier + Loki/Quickwit sinks against the in-stack WireMock so
+  the per-service Postman/Newman collections exercise the full pipeline; exposed
+  the named `quickwit` / `monitoring` health contributors. All six service
+  collections pass in-network (368 assertions / 0 failures) alongside the ring
+  smoke and the P11/P12/P13 infra gates.
+
+
+  operator runbook and draft release notes plus guarded release scripts under
+  `scripts/release` for preflight, SBOM generation, cosign image signing, and
+  GitHub Release creation. Publishing is explicitly guarded: image signing
+  requires `-ConfirmSign SIGN`, release creation requires
+  `-ConfirmRelease RELEASE`, and the dry-run path does not tag, sign, push, or
+  publish. Verified by `scripts/live-e2e/smoke-p18-release-prep.ps1`
+  (PASS 4 / FAIL 0). Actual v0.1.0 publication remains pending operator
+  approval.
+
+- P17 Grafana dashboards + SLO operator surface (ADR-0056). Added
+  `infra/grafana` with provisioned Prometheus datasource
+  (`cortex-prometheus`), `CORTEX Overview` and `CORTEX SLO` dashboards, and a
+  CORTEX availability SLO catalog mirroring the runtime defaults in
+  `log-monitoring-service`. Wired Grafana into the local smoke compose and the
+  full Docker compose stack on `:3000`; Prometheus remains the alert-rule
+  source of truth via `infra/local/alerts/slo-burn-rate.rules.yml`. Verified by
+  `scripts/live-e2e/smoke-p17-grafana.ps1` (PASS 7 / FAIL 0: dashboard JSON,
+  SLO catalog, `promtool`, live Prometheus/Grafana boot, datasource/dashboard
+  API proof, alert rules loaded).
+
+- P13: Ansible operational orchestration (ADR-0055). Added
+  `infra/ansible` with local inventory, shared variables, and playbooks for
+  Terraform validation/provision, Helm deploy, Helm rollback, and rollout +
+  in-cluster gateway health smoke. The playbooks delegate to Terraform,
+  Helm, and kubectl instead of redefining infrastructure or Kubernetes
+  manifests. Terraform apply is guarded by both
+  `cortex_terraform_apply=true` and `cortex_confirm_apply=APPLY`. Added
+  `scripts/live-e2e/smoke-p13-ansible.ps1`, verified with containerized
+  `ansible-core 2.17.7` syntax checks for all playbooks (PASS 2 / FAIL 0).
+  No real apply, deploy, rollback, or cluster smoke was executed.
+
+- P12: Terraform Azure infrastructure scaffold (ADR-0054). Added
+  `infra/terraform` root stack for Resource Group, AKS with OIDC/workload
+  identity, ACR with AKS `AcrPull`, Log Analytics, Application Insights,
+  Key Vault with RBAC, Storage account + private Blob containers, Azure
+  Service Bus namespace/topics/subscriptions, and optional PostgreSQL/Redis
+  resources behind explicit toggles. Terraform owns infrastructure only and
+  outputs Helm handoff values; P11 remains the app manifest layer and P13
+  will own deploy/rollback/smoke orchestration. Added
+  `scripts/live-e2e/smoke-p12-terraform.ps1`, verified with
+  `terraform fmt -recursive -check`, `terraform init -backend=false`, and
+  `terraform validate` (PASS 4 / FAIL 0). No `terraform apply` was run.
+
+- P11: Helm deployment layer for Kubernetes (ADR-0053). Added
+  `infra/helm/cortex` umbrella chart plus one service chart per runnable
+  component: `cortex-eureka`, `cortex-gateway`, `cortex-ingest`,
+  `cortex-processor`, `cortex-remediation`, `cortex-indexer`,
+  `cortex-monitoring`, and `cortex-echo`. A shared `cortex-common` library
+  template renders ServiceAccount, ConfigMap/Secret, Deployment, Service,
+  optional Ingress, and optional HPA while preserving the P10 canonical
+  `cortex-<component>` names as Kubernetes Deployment/Service names. The
+  chart owns application workloads only; stateful dependencies remain
+  external inputs from P10 local infrastructure or future P12 Azure outputs.
+  Added `values-prod.example.yaml` for P12 handoff and
+  `scripts/live-e2e/smoke-p11-helm.ps1`, verified with Helm lint/template,
+  kubectl client dry-run, and Docker Desktop Kubernetes server dry-run
+  (PASS 6 / FAIL 0).
+
+- P9.3/P9.3a: `log-remediation-service` anomalies read model and direct
+  REST backer (ADR-0052). Valid parsed anomaly CloudEvents are copied into
+  a remediation-owned Postgres `anomalies` table through a fail-open writer
+  in `AnomalyConsumer`; duplicates are absorbed by `(tenant_id,event_id)`.
+  New `GET /api/v1/anomalies?tenantId&since&until&limit` returns
+  tenant-scoped newest-first anomaly rows and maps validation failures to
+  `400 VALIDATION_FAILED`. Added Flyway migration, JDBC repository/query
+  service/controller, Postman/Newman coverage, and
+  `scripts/live-e2e/smoke-p9-3a.ps1` for live Kafka -> read model -> API
+  verification. P9.3b gateway REST + GraphQL parity remains the next
+  boundary.
+
+- P10.1: `infra/docker/docker-compose.yml` full CORTEX stack (ADR-0050
+  Amendment 1) -- composes the eight P10.0 images into one runnable stack on
+  a single `cortex-net` bridge, on top of the datastores, so `docker compose
+  up` brings the whole ring online with container-to-container DNS (the
+  wired-up health P10.0 deferred). Canonical `cortex-<component>` naming,
+  identical across Docker and Kubernetes (container name == DNS host == future
+  K8s Deployment/Service + pod prefix): `cortex-eureka`, `cortex-gateway`,
+  `cortex-ingest`, `cortex-processor`, `cortex-remediation`, `cortex-indexer`,
+  `cortex-monitoring`, `cortex-echo` + datastores `cortex-postgres`,
+  `cortex-redis`, `cortex-kafka`, `cortex-quickwit`, `cortex-wiremock` (the
+  bridge stack keeps its `cortex-smoke-*` names). Only the gateway (`:8090`,
+  the single public entry point) and eureka (`:8761`) publish host ports;
+  Eureka IP registration (`prefer-ip-address`) resolves `lb://` container-to-
+  container. `depends_on: service_healthy` gates every app on its datastores +
+  eureka; Kafka uses a lightweight bash `/dev/tcp` probe (the JVM-spawning
+  `kafka-broker-api-versions.sh` is too slow under load). `postgres-init`
+  creates a separate `cortex_remediation` database so the two services' Flyway
+  histories never collide. All cross-container wiring lives in the compose
+  `environment:` blocks -- no service pom or YAML was touched (the
+  remediation Redis dep is repointed via `SPRING_DATA_REDIS_HOST` at the
+  compose layer). No local secrets manager: dev creds are plain env; "Vault"
+  means Azure Key Vault, prod-only (P11/P12). Proven by
+  `scripts/live-e2e/smoke-p10.ps1` (PASS 8: 13/13 healthy + Eureka registry +
+  getLogById REST/GraphQL parity through the gateway over `lb://`).
 
 - P10.0: container images for every runnable service (ADR-0050) -- the
   hard gate for the P10 `infra/docker/` compose stack. Eight hand-rolled
@@ -2386,4 +2504,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     cross-references to ADR-0027 / 0029 / 0030 / 0031 + LD117 +
     PR #81. No new ADR -- the contract content already lives in
     ADR-0031; this is a navigation aid for the P6 author.
-

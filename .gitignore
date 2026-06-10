@@ -165,3 +165,4 @@ infra/helm/charts/**/*.tgz
 /SCRATCH_*.md
 /SCRATCH_*.txt
 /scratch_*.ps1
+/docs/auto-remedy-discussion/*

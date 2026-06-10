@@ -19,27 +19,28 @@
 - `[x]` **P0 - Repo bootstrap** - parent POM, Maven wrapper, Checkstyle,
   SpotBugs, JaCoCo, OWASP, Enforcer, CI stub, READMEs, LICENSE, labels,
   milestones, issues. Build validates green.
-- `[-]` **P1 - Docs and ADRs** - this document, architecture write-up,
+- `[x]` **P1 - Docs and ADRs** - this document, architecture write-up,
   and ADRs 0001..0012 capturing every locked decision.
-- `[ ]` **P2 - log-agent-lib** - Java client SDK module.
-- `[ ]` **P3 - log-gateway** - edge service (auth, rate limit, route).
-- `[ ]` **P4 - log-ingest-service** - REST ingest + bus publish.
-- `[ ]` **P5 - log-processor-service** - AI enrichment via Spring AI.
-- `[ ]` **P6 - log-remediation-service** - Ansible playbook runner.
-- `[ ]` **P7 - log-indexer-service** - Postgres + Loki + Quickwit writers.
-- `[ ]` **P8 - log-monitoring-service** - OTel, Micrometer, SLO.
-- `[ ]` **P9 - GraphQL parity** - four query operations, schema-first.
-- `[ ]` **P10 - Docker images** - multi-stage, distroless, reproducible.
-- `[ ]` **P11 - Helm charts** - one umbrella + one chart per service.
-- `[ ]` **P12 - Terraform (Azure)** - AKS, Postgres flexible server, Blob.
-- `[ ]` **P13 - Ansible (real)** - provision, deploy, rollback,
+- `[x]` **P2 - log-agent-lib** - Java client SDK module.
+- `[x]` **P3 - log-gateway** - edge service (auth, rate limit, route).
+- `[x]` **P4 - log-ingest-service** - REST ingest + bus publish.
+- `[x]` **P5 - log-processor-service** - AI enrichment via Spring AI.
+- `[x]` **P6 - log-remediation-service** - anomaly consumer + Slack/PD/Jira.
+- `[x]` **P7 - log-indexer-service** - Postgres + Loki + Quickwit writers.
+- `[x]` **P8 - log-monitoring-service** - OTel, Micrometer, SLO.
+- `[-]` **P9 - GraphQL parity** - four query operations, schema-first
+  (P9.0..P9.2 + P9.3a shipped; P9.3b gateway parity pending).
+- `[x]` **P10 - Docker images** - multi-stage, distroless, reproducible.
+- `[x]` **P11 - Helm charts** - one umbrella + one chart per service.
+- `[x]` **P12 - Terraform (Azure)** - AKS, Postgres flexible server, Blob.
+- `[x]` **P13 - Ansible (real)** - provision, deploy, rollback,
   smoke-test, remediation playbooks.
 - `[ ]` **P14 - CI/CD hardening** - matrix, caching, SBOM upload,
   Trivy, Cosign signatures.
 - `[ ]` **P15 - Postman + Newman** - collection + environment + CI run.
 - `[ ]` **P16 - E2E and load** - k6 + Gatling, SLO-driven.
-- `[ ]` **P17 - Grafana and SLO** - provisioned dashboards, burn alerts.
-- `[ ]` **P18 - v0.1.0 release** - tag, GitHub release, changelog freeze,
+- `[x]` **P17 - Grafana and SLO** - provisioned dashboards, burn alerts.
+- `[-]` **P18 - v0.1.0 release** - tag, GitHub release, changelog freeze,
   signed artifacts.
 
 ---

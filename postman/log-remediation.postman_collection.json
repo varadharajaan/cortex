@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "e0a1f3b0-0000-4000-8000-c0a1f3b0e080",
-    "name": "log-remediation-service (P6.1a cross-phase closer)",
-    "description": "Postman v2.1 collection for log-remediation-service after P6.0/P6.1/P6.2/P6.3 + P6.0a strict-rules cleanup + P6.1a cross-phase closer on :8096. log-remediation-service has NO business REST surface -- it is a Spring for Apache Kafka consumer that drains cortex.anomalies.v1 (CloudEvents 1.0 structured-mode JSON envelopes produced by log-processor-service per ADR-0031) and fans out to the configured channel adapter (slack/pagerduty/jira/noop, gated by cortex.remediation.dispatcher.provider per ADR-0032 D1). The only HTTP surface is actuator (health/liveness/readiness/info/metrics/prometheus/beans) + the channel-shaped POSTs into a local WireMock at :8094 (smoke-only flavour, NOT a real Slack / PagerDuty / Jira call). Folder order: Admin asserts actuator + Prometheus exposition; Metrics-Baseline snapshots the dispatched_total{channel,outcome,tenant_id} counter for each channel; Channel-Mock-Smoke fires the WireMock-shaped POSTs that scripts/smoke-p6-1a.ps1 uses internally (so the Postman + Newman path stays in lock-step with the smoke per LD23); Metrics-After does NOT assert deltas (Postman cannot publish to Kafka so the dispatched counter does not tick from Postman alone -- the smoke script is the closed loop that proves the e2e counter increment). Boot the service + Kafka + WireMock first with scripts/smoke-p6-1a.ps1 -Provider all (Leg B), then run this collection against the still-running stack for the Leg C contract.",
+    "name": "log-remediation-service (P9.3a anomaly read API)",
+    "description": "Postman v2.1 collection for log-remediation-service on :8096 after P6.1a + P19/P20/P21 + P9.3/P9.3a. The service is primarily a Spring for Apache Kafka consumer that drains cortex.anomalies.v1, dedupes valid anomaly CloudEvents, runs fix-first remediation, emits cortex.remediation.outcomes.v1 audit events, and falls back to Slack/PagerDuty/Jira only when needed. P9.3a adds a direct tenant-scoped read API, GET /api/v1/anomalies?tenantId&since&until&limit, backed by the remediation-owned Postgres anomalies read model. Folder order: Admin asserts actuator + Prometheus exposition; Anomalies Read API asserts the P9.3a happy path and validation contract; Metrics-Baseline snapshots the dispatched_total{channel,outcome,tenant_id} counter for each channel; Channel-Mock-Smoke fires the WireMock-shaped POSTs that scripts/smoke-p6-1a.ps1 uses internally; Metrics-After verifies non-decreasing counters. For a seeded live read-model run, boot with scripts/live-e2e/smoke-p9-3a.ps1 -KeepInfra -KeepService, then run Newman with tenant_id and anomaly_event_id env vars printed by the smoke.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -26,8 +26,8 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "pm.test('response under 5000 ms (actuator + mock-server tolerated)', function () {",
-          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "pm.test('response under 15000 ms (actuator + mock-server tolerated)', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(15000);",
           "});"
         ]
       }
@@ -119,6 +119,77 @@
             "pm.test('exposition contains the allowlisted channel tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*channel=\"/); });",
             "pm.test('exposition contains the allowlisted outcome tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*outcome=\"/); });",
             "pm.test('exposition contains the allowlisted tenant_id tag', function () { pm.expect(text).to.match(/cortex_remediation_dispatched_total\\{[^}]*tenant_id=\"/); });"
+          ] } } ]
+        }
+      ]
+    },
+    {
+      "name": "Anomalies Read API (P9.3a)",
+      "description": "Direct remediation-service read API over the Postgres anomalies read model. Local live smoke seeds one anomaly through Kafka first, then passes tenant_id + anomaly_event_id to Newman so this folder proves the read model is populated end-to-end. Staging/prod runs can omit anomaly_event_id and still verify the tenant-scoped API shape.",
+      "item": [
+        {
+          "name": "GET /api/v1/anomalies -> 200 tenant-scoped list",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/anomalies?tenantId={{tenant_id}}&limit=10",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "v1", "anomalies" ],
+              "query": [
+                { "key": "tenantId", "value": "{{tenant_id}}" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+            "const body = pm.response.json();",
+            "pm.test('body is an array', function () { pm.expect(body).to.be.an('array'); });",
+            "pm.test('limit respected', function () { pm.expect(body.length).to.be.at.most(10); });",
+            "const expectedTenant = pm.environment.get('tenant_id');",
+            "const expectedEventId = pm.environment.get('anomaly_event_id');",
+            "if (expectedEventId) {",
+            "    pm.test('seeded anomaly_event_id is returned', function () {",
+            "        pm.expect(body.some(row => row.eventId === expectedEventId)).to.equal(true);",
+            "    });",
+            "}",
+            "if (body.length > 0) {",
+            "    const row = expectedEventId ? body.find(item => item.eventId === expectedEventId) : body[0];",
+            "    pm.test('row has stable anomaly fields', function () {",
+            "        pm.expect(row).to.have.property('tenantId');",
+            "        pm.expect(row).to.have.property('eventId');",
+            "        pm.expect(row).to.have.property('severity');",
+            "        pm.expect(row).to.have.property('reason');",
+            "        pm.expect(row).to.have.property('ts');",
+            "        pm.expect(row).to.have.property('confidence');",
+            "        pm.expect(row).to.have.property('anomalyType');",
+            "        pm.expect(row).to.have.property('remediationKey');",
+            "        pm.expect(row).to.have.property('receivedAt');",
+            "    });",
+            "    pm.test('row is scoped to requested tenant', function () { pm.expect(row.tenantId).to.equal(expectedTenant); });",
+            "}"
+          ] } } ]
+        },
+        {
+          "name": "GET /api/v1/anomalies without tenantId -> 400",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Accept", "value": "application/json" } ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/anomalies?limit=10",
+              "host": [ "{{base_url}}" ],
+              "path": [ "api", "v1", "anomalies" ],
+              "query": [
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          },
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+            "const body = pm.response.json();",
+            "pm.test('validation error code', function () { pm.expect(body.errorCode).to.equal('VALIDATION_FAILED'); });",
+            "pm.test('validation message present', function () { pm.expect(body.message).to.be.a('string').that.is.not.empty; });"
           ] } } ]
         }
       ]

@@ -14,54 +14,52 @@ see [Architecture Decision Records](./adr/).
 ## 1. System overview
 
 CORTEX ingests structured and unstructured logs from any source, enriches
-them with AI-derived semantics (anomaly score, intent, suggested remediation),
-stores them across a three-tier search backend, and exposes them via both
-REST and GraphQL. A self-healing loop can trigger Ansible playbooks when
-high-confidence anomalies are detected.
+them with AI-derived semantics in the processor, stores parsed events across
+the search tiers, and exposes reads through REST and GraphQL. Valid anomaly
+events flow into a deterministic remediation stage that tries policy-gated
+auto-fix first, writes a tenant-scoped anomaly read model, audits every
+decision, and escalates humans only when the auto-fix is skipped or failed.
 
-```
-                     +-------------------+
-                     |   log-agent-lib   |  (Java client SDK)
-                     +---------+---------+
-                               | HTTPS + API key
-                               v
-                     +---------+---------+
-                     |    log-gateway    |  (Edge: auth, rate limit, route)
-                     +---------+---------+
-                               |
-              +----------------+----------------+
-              |                |                |
-              v                v                v
-     +--------+------+ +-------+------+ +-------+--------+
-     | log-ingest    | | log-processor| | log-remediation|
-     | (REST/Kafka)  | | (AI enrich)  | | (Ansible run)  |
-     +--------+------+ +-------+------+ +-------+--------+
-              |                |                |
-              +----------------+----------------+
-                               |
-                               v
-                     +---------+---------+
-                     |   Message Bus     |  (RabbitMQ local / Service Bus)
-                     +---------+---------+
-                               |
-                               v
-                     +---------+---------+
-                     |   log-indexer     |  (Routes to 3-tier search)
-                     +---------+---------+
-                               |
-              +----------------+----------------+
-              |                |                |
-              v                v                v
-         +----+----+      +----+----+      +----+----+
-         | Postgres|      |  Loki   |      | Quickwit|
-         |  GIN    |      | hot+warm|      | full-txt|
-         +---------+      +---------+      +---------+
+```mermaid
+flowchart TD
+    agent[log-agent-lib agents]
+    gateway[log-gateway<br/>auth, rate limit, route]
+    ingest[log-ingest-service<br/>validate, dedupe, persist, outbox]
+    logsTopic[(Kafka<br/>cortex.logs.events.v1)]
+    processor[log-processor-service<br/>parse, sink fan-out, AI classify]
+    indexer[log-indexer-service]
+    pg[(Postgres)]
+    loki[(Loki)]
+    quickwit[(Quickwit)]
+    anomalies[(Kafka<br/>cortex.anomalies.v1)]
+    remediation[log-remediation-service<br/>read model, dedupe, policy, playbook, fallback]
+    anomalyRead[(Postgres<br/>anomalies)]
+    anomalyApi[GET /api/v1/anomalies]
+    outcomes[(Kafka<br/>cortex.remediation.outcomes.v1)]
+    anomalyDlq[(Kafka<br/>cortex.anomalies.v1.dlq)]
+    humans[Slack / PagerDuty / Jira<br/>fallback only]
+    monitoring[log-monitoring-service<br/>health, metrics, SLO]
 
-                               ^
-                               |
-                     +---------+---------+
-                     |  log-monitoring   |  (OTel, Micrometer, SLO)
-                     +-------------------+
+    agent -->|HTTPS + API key| gateway
+    gateway --> ingest
+    ingest --> logsTopic
+    logsTopic --> processor
+    processor -->|parsed logs| indexer
+    indexer --> pg
+    indexer --> loki
+    indexer --> quickwit
+    processor -->|anomaly CloudEvents| anomalies
+    anomalies --> remediation
+    remediation -->|valid anomaly copy| anomalyRead
+    anomalyRead --> anomalyApi
+    remediation -->|every valid decision| outcomes
+    remediation -->|malformed envelope| anomalyDlq
+    remediation -->|skipped or failed| humans
+    gateway -. actuator/prometheus .-> monitoring
+    ingest -. actuator/prometheus .-> monitoring
+    processor -. actuator/prometheus .-> monitoring
+    remediation -. actuator/prometheus .-> monitoring
+    indexer -. actuator/prometheus .-> monitoring
 ```
 
 ---
@@ -74,10 +72,10 @@ high-confidence anomalies are detected.
 | `log-gateway`            | Edge. Auth (JWT + API key), rate limit, multi-tenant.   | 8090         |
 | `log-ingest-service`     | Receives logs (REST), validates, publishes to bus.      | 8092         |
 | `log-echo-service`       | Throwaway downstream stub for gateway smoke tests (ADR-0016). | 8093 |
-| `log-processor-service`  | Consumes bus, AI enrichment (Spring AI), pushes onward. | 8082         |
-| `log-remediation-service`| Detects high-confidence anomalies; runs Ansible.        | 8083         |
-| `log-indexer-service`    | Persists to Postgres + Loki + Quickwit. Owns Quickwit.  | 8084         |
-| `log-monitoring-service` | SLO, alerting, OTel collection, Grafana datasource.     | 8085         |
+| `log-processor-service`  | Consumes Kafka, parses, AI-classifies anomalies, fans out. | 8095      |
+| `log-remediation-service`| Anomaly read model, fix-first remediation, audit outcomes, human fallback. | 8096 |
+| `log-indexer-service`    | Persists/searches Postgres + Loki + Quickwit. Owns Quickwit. | 8097      |
+| `log-monitoring-service` | SLO, alerting, OTel collection, Grafana datasource.     | 8098         |
 | `eureka-server`          | Local-dev service registry (ADR-0016). K8s uses Service DNS in prod. | 8761 |
 | `wiremock` (smoke only)  | Stubs the Ollama `/api/chat` upstream for P3.3 NL→LogQL tests (ADR-0018). | 8094 (host) |
 | `postgres` (smoke only)  | Local Postgres 16 for `log-ingest-service` Flyway baseline. | 5432 |
@@ -124,6 +122,9 @@ Query (REST + GraphQL parity):
 - `POST /v1/logs/nl-to-logql`        - nlToLogQL
 - `GET  /v1/anomalies?...`           - getAnomalies
 
+Implemented P9.3a direct remediation read backer:
+- `GET  /api/v1/anomalies?tenantId&since&until&limit` - remediation-owned anomaly read model
+
 ### 4.2 GraphQL (Day 1)
 
 Single endpoint: `POST /graphql`. Four query operations only:
@@ -155,18 +156,32 @@ See [ADR-0006](./adr/0006-ai-provider-abstraction.md).
 
 ---
 
-## 6. Self-healing
+## 6. Auto-remediation
 
-When `log-processor-service` produces an anomaly with
-`confidence >= 0.85` AND `severity in (HIGH, CRITICAL)`,
-`log-remediation-service` looks up a matching playbook in
-`infra/ansible/playbooks/` and runs it via `ansible-runner`.
+`log-processor-service` owns AI anomaly classification and publishes
+valid anomaly CloudEvents to `cortex.anomalies.v1`. `log-remediation-service`
+owns the deterministic response:
 
-A dry-run is always performed first; a successful dry-run plus an
-explicit `auto_apply: true` flag on the playbook is required to actually
-apply remediation. Every action emits an audit event.
+1. Parse the anomaly envelope; malformed envelopes go to
+   `cortex.anomalies.v1.dlq`.
+2. Persist a fail-open copy of the valid anomaly into the remediation-owned
+   Postgres `anomalies` read model for `GET /api/v1/anomalies`.
+3. Claim `{tenantId}:{eventId}` in Redis with SETNX so Kafka rebalances
+   and duplicate deliveries do not double-remediate.
+4. Resolve a `RemediationPolicy` and matching `RemediationPlaybook`.
+5. Dry-run first; apply only when policy allows `autoApply`.
+6. Publish every valid non-duplicate decision to
+   `cortex.remediation.outcomes.v1`.
+7. Treat `fixed` as silent success. For `skipped` or `failed`, call the
+   active Slack, PagerDuty, or Jira dispatcher through a Resilience4j guard.
 
-See [ADR-0007](./adr/0007-self-healing-playbooks.md).
+There is no generic DLQ-2 for valid remediation misses. Valid misses are
+audited as outcomes and escalated to humans; only malformed anomaly input
+uses the anomaly DLQ. The query/read side does not replay Kafka history; it
+reads the service-owned `anomalies` table. See
+[ADR-0051](./adr/0051-log-remediation-auto-remediation-pipeline.md),
+[ADR-0052](./adr/0052-log-remediation-anomaly-read-model.md), and
+[ADR-0007](./adr/0007-self-healing-playbooks.md).
 
 ---
 
@@ -177,8 +192,12 @@ See [ADR-0007](./adr/0007-self-healing-playbooks.md).
 - **Logs (self)**: Logback `loki4j` appender pushes service logs to the
   same Loki cluster CORTEX serves (dog-fooding).
 - **Dashboards + SLOs**: Grafana, provisioned via `infra/grafana/`.
+  Prometheus remains the alert-rule evaluator; Grafana is the provisioned
+  read-side operator UI. P17 ships `CORTEX Overview`, `CORTEX SLO`, and the
+  availability SLO catalog.
 
-See [ADR-0011](./adr/0011-observability.md).
+See [ADR-0011](./adr/0011-observability.md) and
+[ADR-0056](./adr/0056-p17-grafana-slo-dashboards.md).
 
 ---
 
@@ -204,11 +223,11 @@ See [ADR-0009](./adr/0009-tenant-isolation.md).
 | Framework    | Spring Boot 3.3.5, Spring Cloud 2023.0.4, Spring AI 1.0.0       |
 | Build        | Maven 3.9.9 (script-only wrapper)                               |
 | Persistence  | Postgres 16 (GIN), Loki 3.x, Quickwit 0.8                       |
-| Message bus  | RabbitMQ 3.13 (local), Azure Service Bus (prod)                 |
+| Message bus  | Kafka for the implemented local/dev + verified flows; Azure Service Bus remains the intended prod target, but the connector is not live yet |
 | AI           | Ollama (local), Azure OpenAI (prod), Spring AI abstraction      |
 | Resilience   | Resilience4j 2.2.0 on every egress                              |
 | Observability| OpenTelemetry 1.43.0, Micrometer, Grafana, Tempo, Loki          |
-| Container    | Distroless base, multi-stage Dockerfile                         |
+| Container    | Multi-stage Dockerfiles, Eclipse Temurin JRE runtime            |
 | Orchestration| Helm 3 charts, Kubernetes 1.30+                                 |
 | IaC          | Terraform (Azure), Ansible (configuration + remediation)        |
 | Tests        | JUnit 5, Testcontainers 1.20, REST Assured, Postman + Newman    |
@@ -218,7 +237,54 @@ For each choice, see the corresponding ADR in [docs/adr/](./adr/).
 
 ---
 
-## 10. Reading order
+## 10. Deployment
+
+The deployment path is layered:
+
+1. **P10 Docker** builds one image per runnable service and proves the full
+   local ring with `infra/docker/docker-compose.yml`.
+2. **P11 Helm** deploys application workloads with one umbrella chart,
+   `infra/helm/cortex`, plus one chart per service. Kubernetes resource names
+   intentionally match the P10 names: `cortex-gateway`, `cortex-ingest`,
+   `cortex-processor`, `cortex-remediation`, `cortex-indexer`,
+   `cortex-monitoring`, `cortex-echo`, and `cortex-eureka`.
+3. **P12 Terraform** provisions Azure infrastructure and feeds
+   environment-specific Helm values: Resource Group, AKS, ACR, Key Vault,
+   Blob storage, App Insights/Log Analytics, Service Bus topics, and optional
+   Postgres/Redis toggles.
+4. **P13 Ansible** runs the operator workflow on top of those layers:
+    Terraform validation/provision, Helm deploy, Helm rollback, and rollout +
+    gateway health smoke.
+5. **P17 Grafana** mounts the provisioned dashboards and datasource from
+   `infra/grafana` into the local/full Docker stacks. Grafana is an operator
+   UI layer; Prometheus alert rules remain under `infra/local/alerts`.
+6. **P18 release prep** provides the v0.1.0 release runbook and guarded
+   SBOM/cosign/GitHub Release scripts. The real tag/sign/publish step requires
+   explicit operator approval.
+
+P11 owns application Deployments/Services only. Stateful dependencies
+(`cortex-postgres`, `cortex-redis`, `cortex-kafka`, `cortex-quickwit`, and
+`cortex-wiremock`/AI endpoint) are external inputs supplied by local P10
+infrastructure or by P12-managed Azure resources. See
+[ADR-0053](./adr/0053-p11-helm-kubernetes-charts.md) and
+[ADR-0054](./adr/0054-p12-terraform-azure-infrastructure.md).
+
+Azure Service Bus is provisioned in P12 as the intended production broker,
+but the currently implemented service runtime remains Kafka-wired. The
+Service Bus cutover is an application/binder migration, not something
+Terraform can truthfully imply by itself.
+
+P13 playbooks are orchestration only. They call Terraform, Helm, and kubectl;
+they do not define a second infrastructure or manifest model. See
+[ADR-0055](./adr/0055-p13-ansible-operational-orchestration.md).
+
+P18 does not imply that a release has been published. The repository contains
+the release-prep lane; the actual `v0.1.0` publication is a separate guarded
+operation. See [ADR-0057](./adr/0057-p18-release-prep-and-publish-gate.md).
+
+---
+
+## 11. Reading order
 
 If you're new to CORTEX:
 
