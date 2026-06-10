@@ -40,27 +40,46 @@ class ArchitectureTest {
         final ArchRule layered = layeredArchitecture()
                 .consideringAllDependencies()
                 .layer("App").definedBy("io.cortex.remediation")
+                .layer("Anomaly").definedBy("io.cortex.remediation.anomaly..")
                 .layer("Consume").definedBy("io.cortex.remediation.consume..")
                 .layer("Parse").definedBy("io.cortex.remediation.parse..")
                 .layer("Dispatch").definedBy("io.cortex.remediation.dispatch..")
                 .layer("Metrics").definedBy("io.cortex.remediation.metrics..")
                 .layer("Constants").definedBy("io.cortex.remediation.constants..")
+                .layer("Dedupe").definedBy("io.cortex.remediation.dedupe..")
+                .layer("Dlq").definedBy("io.cortex.remediation.dlq..")
+                .layer("Engine").definedBy("io.cortex.remediation.engine..")
+                .layer("Outcome").definedBy("io.cortex.remediation.outcome..")
+                .layer("Playbook").definedBy("io.cortex.remediation.playbook..")
+                .layer("Policy").definedBy("io.cortex.remediation.policy..")
+                .layer("Resilience").definedBy("io.cortex.remediation.resilience..")
 
                 // Consume orchestrates the parse + dispatch pipeline;
                 // only App scans the @KafkaListener.
                 .whereLayer("Consume").mayOnlyBeAccessedByLayers("App")
+                .whereLayer("Anomaly").mayOnlyBeAccessedByLayers("App", "Consume")
                 // Parse carries the typed AnomalyEvent referenced by
                 // the Dispatch SPI signature, so both Consume + Dispatch
                 // reach in.
                 .whereLayer("Parse")
-                .mayOnlyBeAccessedByLayers("App", "Consume", "Dispatch")
+                .mayOnlyBeAccessedByLayers("App", "Consume", "Dispatch",
+                        "Anomaly", "Dedupe", "Dlq", "Engine", "Outcome",
+                        "Playbook", "Policy", "Resilience")
                 // Dispatch is the SPI - accessed by Consume + Metrics + tests.
-                .whereLayer("Dispatch").mayOnlyBeAccessedByLayers("App", "Consume", "Metrics")
+                .whereLayer("Dispatch").mayOnlyBeAccessedByLayers("App",
+                        "Engine", "Metrics", "Resilience")
                 // Metrics is accessed by Consume.
-                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Consume")
+                .whereLayer("Metrics").mayOnlyBeAccessedByLayers("App", "Engine")
                 // Constants are accessed by Dispatch (RestDispatchTemplate
                 // imports RemediationHttp.TOO_MANY_REQUESTS).
-                .whereLayer("Constants").mayOnlyBeAccessedByLayers("Dispatch");
+                .whereLayer("Constants").mayOnlyBeAccessedByLayers("Dispatch")
+                .whereLayer("Dedupe").mayOnlyBeAccessedByLayers("App", "Engine")
+                .whereLayer("Dlq").mayOnlyBeAccessedByLayers("App", "Consume")
+                .whereLayer("Engine").mayOnlyBeAccessedByLayers("App", "Consume")
+                .whereLayer("Outcome").mayOnlyBeAccessedByLayers("App", "Engine")
+                .whereLayer("Playbook").mayOnlyBeAccessedByLayers("App", "Engine")
+                .whereLayer("Policy").mayOnlyBeAccessedByLayers("App", "Engine")
+                .whereLayer("Resilience").mayOnlyBeAccessedByLayers("App", "Engine");
 
         layered.check(classes);
     }

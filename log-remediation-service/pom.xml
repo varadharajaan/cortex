@@ -98,6 +98,44 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
 
+        <!-- P19: Redis-backed idempotency guard for remediation actions. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- P9.3: Postgres-backed anomaly read model for
+             GET /api/v1/anomalies. Spring Data JDBC gives us the
+             repository/JdbcClient/transaction stack without pulling
+             in JPA. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+
+        <!-- P20: programmatic circuit breaker + retry guard around dispatchers. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-retry</artifactId>
+        </dependency>
+
         <!-- P6.0 / ADR-0032: CloudEvents 1.0 structured-mode JSON
              decoder for the cortex.anomalies.v1 envelope. Matches
              the upstream producer (P5.4 / ADR-0031); same dependency
@@ -162,6 +200,15 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- P9.3: Testcontainers Postgres for read-model repository,
+             full-context boot, and Kafka-consumer persistence ITs.
+             Mirrors log-ingest-service's no-H2 rule (LD61). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- P6.0: Testcontainers Kafka 3.8.0 + JUnit 5 + Awaitility
              for AnomalyConsumerKafkaIT (real broker round-trip of a
              CloudEvent through the parse + dispatch pipeline). Same
@@ -174,6 +221,11 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

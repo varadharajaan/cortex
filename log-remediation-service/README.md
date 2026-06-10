@@ -1,47 +1,36 @@
 # log-remediation-service
 
-**Status: P6.0 .. P6.3 + P6.0a + P6.1a SHIPPED** -- P6.0 scaffold + Kafka
-consumer of `cortex.anomalies.v1` (the P5.4 / ADR-0031 handoff
-topic) + `RemediationDispatcher` SPI (PR for #84, ADR-0032);
-P6.1 first real adapter `SlackRemediationDispatcher` against
-Slack Incoming Webhook (PR for #87, ADR-0033); P6.2 second
-real adapter `PagerDutyRemediationDispatcher` against the
-PagerDuty Events API v2 enqueue endpoint (PR for #89,
-ADR-0034); P6.3 third real adapter
-`JiraRemediationDispatcher` against the Jira Cloud REST API v3
-create-issue endpoint (PR for #91, ADR-0035); P6.0a strict-rules
-cleanup -- composition-based `RestDispatchTemplate` helper +
-OCP-flipped `RemediationMetrics` (loops over
-`List<RemediationDispatcher>` via `channelId()`) + `@Validated`
-on every `@ConfigurationProperties` + Lombok
-`@RequiredArgsConstructor` + `@Slf4j` adoption + constants
-package + A2.3 private-method-Javadoc supersede of LD5 (PR for
-#95, ADR-0036; no behavioural change); **P6.1a cross-phase
-closer** -- singleton Testcontainers Kafka + in-process WireMock
-base + 3 `@SpringBootTest` subclasses (`Slack/PagerDuty/Jira
-CrossPhaseIT`) each on its own per-channel topic
-`cortex.anomalies.v1.cross-phase.<channel>` per LD125 + full-
-stack PowerShell boot smoke `scripts/smoke-p6-1a.ps1` (all 3
-channels GREEN) + Postman collection (4 folders / 10 requests
-/ 25 assertions mirroring the smoke 1:1) + ADR-0037 (PR for
-#93). P6.4 DLQ + retry budgets follow.
+**Status: P6.0 .. P6.3 + P6.0a + P6.1a + P19/P20/P21 + P9.3/P9.3a
+implemented and verified** -- the service consumes
+`cortex.anomalies.v1`, parses anomaly CloudEvents, routes malformed
+envelopes to `cortex.anomalies.v1.dlq`, dedupes valid anomalies with
+Redis SETNX, runs policy-gated auto-remediation through the
+`RemediationPlaybook` SPI, publishes every valid decision to
+`cortex.remediation.outcomes.v1`, persists valid anomaly rows into the
+remediation-owned Postgres read model, exposes
+`GET /api/v1/anomalies`, and falls back to exactly one active Slack,
+PagerDuty, Jira, or noop `RemediationDispatcher` only when the
+auto-remediation outcome is `skipped` or `failed`.
 
-CORTEX log remediation. **Consume anomaly CloudEvents from
-Kafka -> decode the 8-field `data` block into a typed
-`AnomalyEvent` -> hand to the active `RemediationDispatcher`
-adapter -> tick the dispatched counter -> commit offset.** The
-P6.0 scaffold ships with a default `NoopRemediationDispatcher`
-(gated `cortex.remediation.dispatcher.provider=noop`,
-`matchIfMissing=true`) so the service boots green with no
-downstream HTTP dependency.
+The P19/P20/P21 + P9.3/P9.3a lane was verified on 2026-06-09 with
+`.\mvnw.cmd -pl log-remediation-service clean verify -B`, live JVM boot
+smoke via `scripts\live-e2e\smoke-p6-1a.ps1 -SkipInfra -KeepInfra
+-Provider all`, P9.3a read-model smoke via
+`scripts\live-e2e\smoke-p9-3a.ps1 -KeepInfra -KeepService`, and Newman
+against the live process using
+`postman\log-remediation.postman_collection.json`.
+
+CORTEX log remediation is now a **fix-first anomaly response service**.
+`log-processor-service` owns AI classification; this module owns
+deterministic policy, playbook execution, outcome audit, and guarded
+human escalation. Auto-fix success is silent except for the audit topic.
 
 ## 1. Overview
 
-`log-remediation-service` is the **operator-facing leg of the
-CORTEX pipeline**. There is no inbound REST contract for the data
-path; the service has only the actuator surface (`:8096`). All
-real work happens on the Kafka consumer thread bound to
-`cortex.anomalies.v1`:
+`log-remediation-service` is the **operator-facing remediation leg of the
+CORTEX pipeline**. It has actuator endpoints and one direct, tenant-scoped
+read API (`GET /api/v1/anomalies`) on `:8096`; the write/action path still
+happens on the Kafka consumer thread bound to `cortex.anomalies.v1`:
 
 1. Receive a CloudEvents 1.0 structured-mode JSON envelope via
    `@KafkaListener` with manual offset commit (ADR-0028 stance
@@ -49,80 +38,53 @@ real work happens on the Kafka consumer thread bound to
 2. Decode the envelope through `AnomalyEnvelopeParser`; enforce
    `specversion == "1.0"` and `type == "io.cortex.anomaly.v1"`;
    reshape the `data` block into a typed `AnomalyEvent` record.
-3. Dispatch the typed event through the `RemediationDispatcher`
-   SPI. Exactly one adapter bean is active per profile, selected
-   by `cortex.remediation.dispatcher.provider` +
-   `@ConditionalOnProperty` (ADR-0032 D4).
-4. Tick `cortex.remediation.dispatched_total{channel, outcome,
-   tenant_id}` using the verdict the dispatcher returned + the
-   parsed event's tenant.
-5. Commit the Kafka offset.
-
-P6.1 (next) lands `SlackRemediationDispatcher`; P6.2
-`PagerDutyRemediationDispatcher`; P6.3
-`JiraRemediationDispatcher`; P6.4 the DLQ writer +
-Resilience4j retry budgets.
+3. On parse failure, publish the original bytes to
+   `cortex.anomalies.v1.dlq` with failure metadata and acknowledge the
+   Kafka offset.
+4. On parse success, persist a fail-open query copy into the Postgres
+   `anomalies` read model.
+5. Claim `{tenantId}:{eventId}` in Redis so duplicate
+   deliveries do not double-remediate.
+6. Resolve `RemediationPolicy`, find a `RemediationPlaybook`, dry-run,
+   and apply only when policy allows.
+7. Publish every valid non-duplicate decision to
+   `cortex.remediation.outcomes.v1`.
+8. If the outcome is `fixed`, stop without notifying humans. If the
+   outcome is `skipped` or `failed`, call the active dispatcher through
+   a Resilience4j guard and tick
+   `cortex.remediation.dispatched_total{channel,outcome,tenant_id}`.
+9. Commit the Kafka offset.
 
 ## 2. Architecture (one screen)
 
-```
-                     +-----------------------------+
-   cortex.            |  @KafkaListener             |
-   anomalies.v1 ----->|  (manual offset commit,     |---+
-   (CloudEvents 1.0   |   AckMode.MANUAL_IMMEDIATE) |   |
-    JSON envelope)    +-----------------------------+   |
-                                                        v
-                                  +---------------------------------+
-                                  |  AnomalyEnvelopeParser          |
-                                  |  (decodes CloudEvents 1.0 via   |
-                                  |   cloudevents-json-jackson;     |
-                                  |   guards specversion="1.0" +    |
-                                  |   type="io.cortex.anomaly.v1";  |
-                                  |   reshapes data -> AnomalyEvent)|
-                                  +---------------------------------+
-                                              |
-                              parse OK         \  parse FAIL
-                                              |   `-> log WARN + ack
-                                              v        (P6.4 will route to
-                                              |         cortex.anomalies.v1.dlq
-                                              |         with x-failure-reason header)
-                                              |
-                                  +---------------------------------+
-                                  |  RemediationDispatcher (SPI)    |
-                                  |   - default: NoopRemediation... |
-                                  |     (returns skipped verdict;   |
-                                  |      zero outbound HTTP)        |
-                                  |   - P6.1: SlackRemediation...   |
-                                  |   - P6.2: PagerDutyRemediation. |
-                                  |   - P6.3: JiraRemediation...    |
-                                  |   gated by                      |
-                                  |   cortex.remediation.dispatcher |
-                                  |     .provider=<one of above>    |
-                                  +---------------------------------+
-                                              |
-                                              v
-                                  +---------------------------------+
-                                  |  RemediationMetrics.            |
-                                  |    incDispatched(channel,       |
-                                  |                  outcome,       |
-                                  |                  tenantId)      |
-                                  |  -> cortex.remediation.         |
-                                  |       dispatched_total          |
-                                  |       {channel, outcome,        |
-                                  |        tenant_id}               |
-                                  +---------------------------------+
-                                              |
-                                              v
-                                  +---------------------------------+
-                                  |  ack.acknowledge() -- offset    |
-                                  |  commits AFTER dispatch so a    |
-                                  |  dispatcher RuntimeException    |
-                                  |  is caught + logged + acked     |
-                                  |  (D6 -- prevents poison loop;   |
-                                  |   transient downstream failures |
-                                  |   surface as outcome verdict,   |
-                                  |   not as throws)                |
-                                  +---------------------------------+
+```mermaid
+flowchart TD
+    anomalies[(Kafka<br/>cortex.anomalies.v1)]
+    consumer[@KafkaListener<br/>manual offset commit]
+    parser[AnomalyEnvelopeParser]
+    dlq[(Kafka<br/>cortex.anomalies.v1.dlq)]
+    readmodel[(Postgres<br/>anomalies read model)]
+    api[GET /api/v1/anomalies]
+    dedupe[RemediationDedupeService<br/>Redis SETNX tenantId:eventId]
+    engine[RemediationEngine]
+    policy[RemediationPolicyService]
+    playbooks[RemediationPlaybookRegistry]
+    outcomes[(Kafka<br/>cortex.remediation.outcomes.v1)]
+    guard[RemediationDispatcherGuard<br/>Resilience4j retry + circuit breaker]
+    dispatcher[RemediationDispatcher<br/>noop / Slack / PagerDuty / Jira]
+    metrics[RemediationMetrics<br/>dispatched_total]
+    ack[ack.acknowledge]
+
+    anomalies --> consumer --> parser
+    parser -->|parse fail| dlq --> ack
+    parser -->|parse ok| readmodel
+    readmodel --> api
+    readmodel --> dedupe --> engine
+    engine --> policy
+    engine --> playbooks
+    engine -->|fixed / skipped / failed| outcomes
+    engine -->|fixed| ack
+    engine -->|skipped or failed| guard --> dispatcher --> metrics --> ack
 ```
 
 ## 3. Tech stack
@@ -134,12 +96,17 @@ Resilience4j retry budgets.
 | Service registry           | Spring Cloud Netflix Eureka client (`lb://`)                         |
 | Kafka client               | spring-kafka (direct `@KafkaListener`, manual offset commit; mirror of ADR-0028) |
 | Envelope format            | CloudEvents 1.0 structured-mode JSON (cloudevents-json-jackson 4.0.1) |
+| Auto-remediation engine    | `RemediationEngine` + `RemediationPolicyService` + `RemediationPlaybook` SPI |
 | Dispatcher SPI             | `RemediationDispatcher` + `DispatchResult` (ADR-0032)                |
+| Dedupe                     | Redis SETNX through `StringRedisTemplate`, fail-open on Redis outage |
+| Read model                 | Postgres `anomalies` table, Flyway migration, Spring JDBC `JdbcClient` |
+| Resilience                 | Resilience4j retry + circuit breaker per dispatcher channel         |
+| Audit topics               | `cortex.remediation.outcomes.v1` for valid decisions; `cortex.anomalies.v1.dlq` for malformed anomaly envelopes |
 | Metrics                    | Micrometer Prometheus with Part 17 allowlist (`channel`, `outcome`, `tenant_id`) |
 | Health / probes            | Spring Boot Actuator (`health,info,metrics,prometheus,beans`)        |
-| Persistence                | None (Kafka offset IS durability per LD117)                          |
+| Persistence                | Postgres read model for anomaly queries; Kafka offset remains the action-path durability boundary; Redis is a bounded dedupe cache |
 | Build                      | Maven 3.9.9 wrapper, JaCoCo BUNDLE 0.80 line + 0.80 branch           |
-| Integration tests          | Testcontainers Kafka 3.8.0 (`apache/kafka:3.8.0` image) + Awaitility |
+| Integration tests          | Testcontainers Kafka/Postgres + Awaitility                           |
 
 ## 4. Design decisions (ADR pointers)
 
@@ -149,6 +116,19 @@ Resilience4j retry budgets.
   by `cortex.remediation.dispatcher.provider` +
   `@ConditionalOnProperty`; default `NoopRemediationDispatcher`
   gated `matchIfMissing=true` so the scaffold boots green.
+- **ADR-0051** -- P19/P20/P21 auto-remediation pipeline.
+  Processor keeps AI classification; remediation owns deterministic
+  dedupe, policy, playbook execution, outcome audit, and guarded human
+  fallback. Malformed anomaly envelopes route to
+  `cortex.anomalies.v1.dlq`; valid decisions publish to
+  `cortex.remediation.outcomes.v1`; `fixed` is silent success;
+  `skipped` and `failed` fall back through dispatchers. No generic
+  DLQ-2 exists for valid remediation misses.
+- **ADR-0052** -- P9.3/P9.3a anomaly read model and direct
+  remediation API. Valid parsed anomalies are copied into the
+  remediation-owned Postgres `anomalies` table through a fail-open
+  writer, then exposed by `GET /api/v1/anomalies?tenantId&since&until&limit`.
+  There is no FK to ingest-owned tenant tables and no Kafka replay query.
 - **ADR-0031** -- producer side of the handoff topic: the
   P5.4 `AnomaliesPublisher` synchronously publishes
   CloudEvents 1.0 envelopes to `cortex.anomalies.v1` with
@@ -162,11 +142,10 @@ Resilience4j retry budgets.
   sends).
 - **LD117** -- for Kafka consumer -> Kafka producer relay
   services, the Kafka offset itself IS the durability
-  mechanism; no outbox table is needed. This service is a
-  Kafka consumer -> outbound HTTP relay (in P6.1+); the
-  inbound durability mechanism is still the Kafka offset.
-  P6.4 will add a DLQ writer for envelopes that fail parsing
-  + retry budgets for dispatcher transient failures.
+  mechanism; no outbox table is needed. This service is now a
+  Kafka consumer -> Kafka producer / outbound HTTP relay: outcome
+  audit events and malformed-envelope DLQ records are produced to
+  Kafka, while dispatcher calls remain guarded HTTP side effects.
 - **LD79** -- SCSt outbound `StreamBridge` silently dropped
   sends in P4.4b; direct `@KafkaListener` is the contract on
   the consumer side.
@@ -260,7 +239,8 @@ Per ADR-0032 D6 + ADR-0033 D4 the adapter NEVER throws on a
 transient downstream failure -- it returns a typed verdict so
 the consumer can ack the offset and the operator alerts on the
 failed-outcome metric. No in-adapter retry: ADR-0033 D4 defers
-the retry-budget axis to P6.4.
+the retry-budget axis to the outer `RemediationDispatcherGuard`
+documented in ADR-0051.
 
 ### Counter bootstrap
 
@@ -386,7 +366,8 @@ Per ADR-0032 D6 + ADR-0034 D5 the adapter NEVER throws on a
 transient downstream failure -- it returns a typed verdict so
 the consumer can ack the offset and the operator alerts on the
 failed-outcome metric. No in-adapter retry: ADR-0034 D5 defers
-the retry-budget axis to P6.4.
+the retry-budget axis to the outer `RemediationDispatcherGuard`
+documented in ADR-0051.
 
 ### Counter bootstrap
 
@@ -516,7 +497,8 @@ Per ADR-0032 D6 + ADR-0035 D6 the adapter NEVER throws on a
 transient downstream failure -- it returns a typed verdict so
 the consumer can ack the offset and the operator alerts on the
 failed-outcome metric. No in-adapter retry: ADR-0035 D6 defers
-the retry-budget axis to P6.4.
+the retry-budget axis to the outer `RemediationDispatcherGuard`
+documented in ADR-0051.
 
 ### Counter bootstrap
 
@@ -557,12 +539,13 @@ times in three separate PRs.
   `scripts/logs/p6-1a/smoke-all-20260606-220655.log`.
 - **Leg C** -- `npx newman run postman/log-remediation.postman_
   collection.json -e postman/log-remediation.postman_
-  environment_local.json --reporters cli --bail`: 4 folders
-  / 10 requests / 25 assertions mirror the smoke 1:1 (Admin
+  environment_local.json --reporters cli --bail`: at P6.1a close time,
+  4 folders / 10 requests / 25 assertions mirrored the smoke 1:1 (Admin
   actuator + Metrics-Baseline + Channel-Mock-Smoke + Metrics-
   After). `pm.execution.skipRequest()` gates the WireMock
   folder on `wiremock_base_url` so staging + prod env runs
-  exercise admin-only surfaces.
+  exercise admin-only surfaces. The current collection adds the P9.3a
+  Anomalies Read API folder.
 - **Leg D** -- the new `closer/*CrossPhaseIT.java` suite under
   `src/test/java/io/cortex/remediation/closer/`. Singleton
   Testcontainers Kafka + in-process WireMock server owned by
@@ -574,8 +557,8 @@ times in three separate PRs.
   that assert (a) the `cortex_remediation_dispatched_total
   {channel,outcome,tenant_id}` counter ticks for a unique
   `tenant_id` per test, (b) the WireMock POST was recorded
-  at the expected path, and (c) the DLT topic stayed empty
-  (P6.4 hasn't shipped, any DLT growth is a regression).
+  at the expected path, and (c) the malformed-envelope DLQ
+  stayed empty on valid cross-phase events.
 - **Leg E** -- this section + ADR-0037 + INDEX bump 36 -> 37
   + CHANGELOG `[Unreleased] > Added` entry + atomic 4-file
   tracking flip (plan.md + checkpoint.md + memory.md +
@@ -621,19 +604,14 @@ booted its own Kafka container. Singleton Kafka + in-process
 WireMock are the only design that fits inside the existing
 budget.
 
-**Postman collection contract**: `postman/log-remediation.
-postman_collection.json` mirrors the smoke 1:1. The Admin
-folder hits `/actuator/health/{liveness,readiness}`, `/info`,
-`/metrics`, `/prometheus` (6 requests). Metrics-Baseline
-snapshots the per-channel `dispatched_total` sum into env
-vars `dispatched_baseline_{slack,pagerduty,jira}`. The
-Channel-Mock-Smoke folder POSTs to WireMock (Slack 200|404;
-PagerDuty 202|404; Jira 201|404) with
-`pm.execution.skipRequest()` when `wiremock_base_url` is
-empty. Metrics-After asserts non-decreasing counters vs the
-baseline. The top-level test asserts `responseTime < 5000ms`.
-Three env files: `local` (`wiremock_base_url=http://localhost:
-8094`), `staging` (blank), `prod` (blank).
+**Postman collection contract at P6.1a**: `postman/log-remediation.
+postman_collection.json` mirrored the channel smoke 1:1. The current
+collection extends that contract with the P9.3a `Anomalies Read API`
+folder while preserving the Admin, Metrics-Baseline, Channel-Mock-Smoke,
+and Metrics-After folders. The top-level test still asserts
+`responseTime < 15000ms`. Three env files remain: `local`
+(`wiremock_base_url=http://localhost:8094`), `staging` (blank), `prod`
+(blank).
 
 ## 5. SOLID + Clean Code notes
 
@@ -650,9 +628,10 @@ Three env files: `local` (`wiremock_base_url=http://localhost:
   (`outcome="transient_failure"` / `"permanent_failure"`) or
   is logged at ERROR with full context (`partition`,
   `offset`, `eventId`, stack trace) before ack.
-- No persistence layer, no `@Transactional` outside the Kafka
-  consumer container's offset commit; the service is
-  intentionally stateless (LSP-friendly horizontal scaling).
+- Persistence is isolated to the fail-open anomaly read model. The
+  remediation action path still treats the Kafka offset as its durability
+  boundary; a query-store outage logs an error but does not suppress
+  remediation or acknowledgments.
 - Lombok is used only in the production sources of this
   module (the `log-agent-lib` contract is Lombok-free per
   ADR-0013); the test sources stay Lombok-free.
@@ -671,16 +650,16 @@ Three env files: `local` (`wiremock_base_url=http://localhost:
 - Parse failures log at WARN with the categorical
   `FailureReason` enum value
   (`INVALID_ENVELOPE` / `WRONG_TYPE` / `MISSING_DATA`); the
-  actual rejected envelope is NOT logged (P6.4 will land the
-  DLQ writer that publishes it to
-  `cortex.anomalies.v1.dlq` with header
-  `x-failure-reason=<reason>`).
+  actual rejected envelope is NOT logged. The original bytes are
+  published to `cortex.anomalies.v1.dlq` with failure metadata so
+  operators can inspect poison input without leaking it into app logs.
 
 ## 7. Run locally
 
 ```powershell
 # 0. Prereqs: infra-up (Kafka) so the upstream log-processor-service
-#    can publish to cortex.anomalies.v1.
+#    can publish to cortex.anomalies.v1, plus Postgres for the P9.3
+#    anomalies read model.
 docker compose -f infra\local\docker-compose.smoke.yml up -d `
     postgres redis kafka wiremock
 
@@ -701,6 +680,10 @@ Invoke-WebRequest http://localhost:8096/actuator/health
 Invoke-WebRequest http://localhost:8096/actuator/prometheus `
     | Select-Object -ExpandProperty Content `
     | Select-String 'cortex_remediation_dispatched_total'
+
+# 5. P9.3a live read-model smoke + Newman precondition.
+powershell -NoProfile -ExecutionPolicy Bypass `
+    -File scripts\live-e2e\smoke-p9-3a.ps1 -KeepInfra -KeepService
 ```
 
 The P6.0 scaffold runs the default `NoopRemediationDispatcher`
@@ -712,6 +695,18 @@ $env:CORTEX_REMEDIATION_DISPATCHER = 'slack'        # P6.1
 $env:CORTEX_REMEDIATION_DISPATCHER = 'pagerduty'    # P6.2
 $env:CORTEX_REMEDIATION_DISPATCHER = 'jira'         # P6.3
 ```
+
+P9.3a database settings are:
+
+```powershell
+$env:CORTEX_REMEDIATION_DB_URL      = 'jdbc:postgresql://localhost:5432/cortex_ingest'
+$env:CORTEX_REMEDIATION_DB_USERNAME = 'cortex_ingest'
+$env:CORTEX_REMEDIATION_DB_PASSWORD = 'cortex_ingest'
+```
+
+Local dev reuses the smoke database but writes Flyway history to
+`remediation_flyway_schema_history`. Production should override these
+values to a remediation-owned database or schema.
 
 ## 8. Docker
 
@@ -733,12 +728,55 @@ other service.
 
 ## 9. API documentation
 
-The service has **no public REST surface in P6.0**; only the
-actuator endpoints are exposed. The Postman v2.1 contract in
-`postman/log-remediation.postman_collection.json` documents the
-actuator surface and the end-to-end pipeline assertion (publish
-a CloudEvent to `cortex.anomalies.v1`, observe the
-`cortex.remediation.dispatched_total` counter delta).
+The service exposes actuator endpoints plus one direct read endpoint for
+P9.3a:
+
+`GET /api/v1/anomalies?tenantId=<tenant>&since=<iso>&until=<iso>&limit=<n>`
+
+| Query parameter | Required | Meaning                                                  |
+|-----------------|----------|----------------------------------------------------------|
+| `tenantId`      | yes      | Tenant scope for the read model query                    |
+| `since`         | no       | Inclusive lower `ts` bound, ISO-8601 instant             |
+| `until`         | no       | Inclusive upper `ts` bound, ISO-8601 instant             |
+| `limit`         | no       | Row limit; defaults to 100 and clamps at 500             |
+
+The response is a JSON array ordered newest first by `ts DESC, id DESC`:
+
+```json
+[
+  {
+    "tenantId": "tenant-abc",
+    "eventId": "evt-1",
+    "severity": "HIGH",
+    "reason": "checkout 5xx burst",
+    "ts": "2026-06-09T10:00:00Z",
+    "level": "ERROR",
+    "service": "checkout",
+    "message": "503 from /pay endpoint",
+    "confidence": 0.97,
+    "anomalyType": "availability",
+    "remediationKey": "checkout-restart",
+    "receivedAt": "2026-06-09T10:00:03Z"
+  }
+]
+```
+
+Validation errors return HTTP 400 with:
+
+```json
+{
+  "errorCode": "VALIDATION_FAILED",
+  "message": "tenantId is required"
+}
+```
+
+The Postman v2.1 contract in
+`postman/log-remediation.postman_collection.json` documents actuator,
+dispatcher scrape, WireMock payload, and the P9.3a anomaly read API.
+For a live end-to-end read-model proof, run
+`scripts\live-e2e\smoke-p9-3a.ps1 -KeepInfra -KeepService` first, then
+run Newman with the `tenant_id` and `anomaly_event_id` printed by the
+smoke script.
 
 The Kafka consumer contract is the `AnomalyEvent` shape this
 service decodes from the CloudEvent `data` field (matches the
@@ -754,6 +792,9 @@ producer-side ADR-0031 contract exactly):
 | `level`    | `String`       | Original log level (`TRACE`..`ERROR`)                         |
 | `service`  | `String`       | Logical service / app name that produced the log line          |
 | `message`  | `String`       | Human-readable message verbatim from the source               |
+| `confidence` | `double`     | Optional classifier confidence; defaults to `0.0` for older envelopes |
+| `anomalyType` | `String`    | Optional classifier anomaly type; defaults to `UNKNOWN`       |
+| `remediationKey` | `String` | Optional playbook lookup key; defaults to `none`              |
 
 The CloudEvent envelope MUST carry:
 
@@ -766,7 +807,7 @@ The CloudEvent envelope MUST carry:
 | `id`               | `event_id` (matches `data.eventId` for end-to-end dedupe)          |
 | `time`             | ISO-8601 UTC                                                       |
 | `datacontenttype`  | `application/json`                                                 |
-| `data`             | `AnomalyEvent` JSON (8-field record above)                         |
+| `data`             | `AnomalyEvent` JSON (11-field record above)                        |
 
 Plus two Kafka headers (ADR-0027 mirror):
 
@@ -775,30 +816,34 @@ Plus two Kafka headers (ADR-0027 mirror):
 | `content-type`   | `application/cloudevents+json`         |
 | `x-source-topic` | `cortex.logs.events.v1`                |
 
+The remediation decision audit topic is
+`cortex.remediation.outcomes.v1`. Each record is a CloudEvents 1.0
+structured-mode JSON envelope with:
+
+| Envelope attribute | Value                                      |
+|--------------------|--------------------------------------------|
+| `type`             | `io.cortex.remediation.outcome.v1`         |
+| `source`           | `/cortex/log-remediation-service`          |
+| `subject`          | `tenant_id`                                |
+| `id`               | `<eventId>:remediation:<outcome>`          |
+| `datacontenttype`  | `application/json`                         |
+| `data`             | `RemediationOutcome` JSON                  |
+
+`RemediationOutcome` carries `eventId`, `tenantId`, `severity`,
+`anomalyType`, `remediationKey`, `outcome`, `reason`, `playbookKey`,
+`dryRun`, and `ts`. `outcome` is one of `fixed`, `skipped`, or `failed`.
+
 ## 10. Future improvements
 
-- **P6.1a closer (LD104)** -- ship the deferred Legs B-E
-  ONCE for Slack + PagerDuty + Jira together: end-to-end boot
-  smoke against the local-stack
-  (`scripts/p6-1a/smoke.ps1`), Postman v2.1 contract
-  refresh covering all three adapter happy + failure
-  outcomes, and cross-phase regression sweep
-  (`scripts/p6-1a/regression.ps1`). Currently scheduled
-  immediately after P6.3 ships.
-- **P6.2** -- `PagerDutyRemediationDispatcher` (PagerDuty
-  Events API v2 envelope with `routing_key` + `dedup_key
-  = event.eventId()` for end-to-end dedupe; gated
-  `cortex.remediation.dispatcher.provider=pagerduty`).
-- **P6.3** -- `JiraRemediationDispatcher` (Jira REST issue
-  create with per-tenant project + issuetype; gated
-  `cortex.remediation.dispatcher.provider=jira`).
-- **P6.4** -- DLQ writer for parse failures
-  (`cortex.anomalies.v1.dlq` with `x-failure-reason` header) +
-  Resilience4j retry budgets for dispatcher transient failures
-  + `cortex.remediation.dispatcher.errors_total{channel}`
-  counter for the consumer catch-all. Will compose with (not
-  replace) the per-adapter `transient_failure` verdicts the
-  P6.1 Slack adapter already returns per ADR-0033 D4.
+- **P9.3b gateway parity** -- add gateway REST + GraphQL
+  `getAnomalies` parity over this service via `lb://log-remediation-service`
+  and a shared `get-anomalies` rate-limit bucket.
+- **Tenant-backed remediation policies** -- replace the current
+  property-backed default `RemediationPolicyService` implementation with
+  a tenant-scoped store while keeping the same service seam.
+- **Runnable playbook catalog** -- add real deterministic playbook beans
+  behind the `RemediationPlaybook` SPI. Keep LLM calls out of this stage;
+  processor classification remains the AI boundary.
 - **P6.x Slack richer body** -- promote the plain-text Slack
   message to Block Kit with action buttons (acknowledge /
   escalate) once operator feedback warrants. ADR-0033 D2
