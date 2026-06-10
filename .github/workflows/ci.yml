@@ -287,6 +287,40 @@ jobs:
           echo "gateway did not become healthy in time" >&2
           docker compose -f infra/docker/docker-compose.yml ps
           exit 1
+      - name: Wait for gateway discovery convergence (downstreams routable)
+        run: |
+          # The gateway's own health flips UP before its Eureka-discovered
+          # downstreams (echo/ingest/indexer) have registered and entered the
+          # gateway route cache, so a suite that fires the instant the gateway
+          # is healthy races discovery and sees 5xx "no instance available".
+          # Gate on the real authenticated routes -- one token, reused -- until
+          # the gateway can actually reach each downstream, then flush the
+          # rate-limit buckets the probe drained so the suite starts clean.
+          token=$(curl -fsS -X POST http://localhost:8090/api/v1/auth/login \
+            -H 'Content-Type: application/json' -H 'X-Tenant-Id: cortex-dev' \
+            -d '{"username":"admin","password":"dev-admin-pass"}' | jq -r .accessToken)
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "could not mint a bootstrap token for the convergence probe" >&2
+            exit 1
+          fi
+          batch='{"entries":[{"timestamp":"2026-01-01T00:00:00Z","level":"INFO","service":"ci-readiness","message":"discovery probe"}]}'
+          for i in $(seq 1 60); do
+            b=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/v1/logs/batch \
+              -H 'Content-Type: application/json' -H 'X-Tenant-Id: cortex-dev' -H "Authorization: Bearer $token" -d "$batch" || echo 000)
+            s=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8090/api/v1/logs/search?index=cortex-cortex-dev-app&q=level:ERROR&maxHits=1" \
+              -H 'X-Tenant-Id: cortex-dev' -H "Authorization: Bearer $token" || echo 000)
+            e=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/echo/ping -H "Authorization: Bearer $token" || echo 000)
+            echo "convergence probe #$i: logs/batch=$b logs/search=$s echo/ping=$e"
+            if [ "$b" = "202" ] && { [ "$s" = "200" ] || [ "$s" = "404" ]; } && [ "$e" = "200" ]; then
+              echo "all gateway downstreams routable"
+              docker exec cortex-redis redis-cli FLUSHALL >/dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "gateway downstreams did not become routable in time" >&2
+          docker compose -f infra/docker/docker-compose.yml ps
+          exit 1
       - name: Run Newman against the in-network services
         run: |
           set -e
