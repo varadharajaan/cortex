@@ -190,7 +190,8 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 | `log-monitoring-service`     | Health, metrics, dashboards, SLO tracking              | P8 |
 | `infra/local/`               | docker compose smoke stack (postgres, redis, kafka, wiremock) | P3+ |
 
-Detailed component map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (P1).
+Presentation-ready architecture diagram and detailed component map:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (P1).
 ADRs: [docs/adr/](docs/adr/) (P1).
 
 ---

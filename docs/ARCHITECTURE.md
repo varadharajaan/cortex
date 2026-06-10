@@ -20,46 +20,119 @@ events flow into a deterministic remediation stage that tries policy-gated
 auto-fix first, writes a tenant-scoped anomaly read model, audits every
 decision, and escalates humans only when the auto-fix is skipped or failed.
 
-```mermaid
-flowchart TD
-    agent[log-agent-lib agents]
-    gateway[log-gateway<br/>auth, rate limit, route]
-    ingest[log-ingest-service<br/>validate, dedupe, persist, outbox]
-    logsTopic[(Kafka<br/>cortex.logs.events.v1)]
-    processor[log-processor-service<br/>parse, sink fan-out, AI classify]
-    indexer[log-indexer-service]
-    pg[(Postgres)]
-    loki[(Loki)]
-    quickwit[(Quickwit)]
-    anomalies[(Kafka<br/>cortex.anomalies.v1)]
-    remediation[log-remediation-service<br/>read model, dedupe, policy, playbook, fallback]
-    anomalyRead[(Postgres<br/>anomalies)]
-    anomalyApi[GET /api/v1/anomalies]
-    outcomes[(Kafka<br/>cortex.remediation.outcomes.v1)]
-    anomalyDlq[(Kafka<br/>cortex.anomalies.v1.dlq)]
-    humans[Slack / PagerDuty / Jira<br/>fallback only]
-    monitoring[log-monitoring-service<br/>health, metrics, SLO]
+Solid arrows are runtime data flow. Dotted arrows are control-plane,
+observability, or operator paths.
 
-    agent -->|HTTPS + API key| gateway
-    gateway --> ingest
-    ingest --> logsTopic
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#ffffff", "fontFamily": "Inter, Segoe UI, Arial, sans-serif", "primaryTextColor": "#0f172a", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1"}, "flowchart": {"curve": "basis", "htmlLabels": true, "nodeSpacing": 42, "rankSpacing": 58}}}%%
+flowchart LR
+    classDef actor fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px
+    classDef service fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e,stroke-width:1.4px
+    classDef pipeline fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1.4px
+    classDef intelligence fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:1.4px
+    classDef storage fill:#ede9fe,stroke:#6d28d9,color:#3b0764,stroke-width:1.4px
+    classDef event fill:#fae8ff,stroke:#a21caf,color:#701a75,stroke-width:1.4px
+    classDef ops fill:#f1f5f9,stroke:#334155,color:#0f172a,stroke-width:1.2px
+    classDef external fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d,stroke-width:1.2px
+
+    subgraph Edge["Client and Edge Plane"]
+        tenantApps["Tenant apps<br/>JVM services, jobs, APIs"]
+        agent["log-agent-lib<br/>Logback appender<br/>PII mask, batching, event_id"]
+        users["Users and operators<br/>REST + GraphQL"]
+        gateway["log-gateway :8090<br/>JWT/API key, Bucket4j + Redis<br/>REST, GraphQL, NL query"]
+        echo["log-echo-service :8093<br/>gateway smoke backstop"]
+    end
+
+    subgraph Ingest["Ingest and Event Backbone"]
+        ingest["log-ingest-service :8092<br/>validate, enrich, dedupe<br/>raw_logs + tx outbox"]
+        rawStore[(Postgres<br/>raw_logs<br/>outbox_events)]
+        logsTopic[(Kafka topic<br/>cortex.logs.events.v1)]
+        logsDlq[(Kafka topic<br/>cortex.logs.events.v1.dlq)]
+    end
+
+    subgraph Intelligence["AI Processing and Search"]
+        processor["log-processor-service :8095<br/>CloudEvent parse, schema validate<br/>sink fan-out, anomaly classify"]
+        ai["Spring AI provider<br/>Ollama local / Azure OpenAI prod<br/>WireMock smoke"]
+        loki[(Loki<br/>hot/warm label search)]
+        quickwit[(Quickwit<br/>full-text search)]
+        indexer["log-indexer-service :8097<br/>Quickwit admin, retention<br/>tenant search proxy"]
+    end
+
+    subgraph Remediation["Fix-First Remediation"]
+        anomalyTopic[(Kafka topic<br/>cortex.anomalies.v1)]
+        remediation["log-remediation-service :8096<br/>read model, Redis SETNX<br/>policy, playbook, fallback"]
+        anomalyStore[(Postgres<br/>anomalies read model)]
+        outcomeTopic[(Kafka topic<br/>cortex.remediation.outcomes.v1)]
+        anomalyDlq[(Kafka topic<br/>cortex.anomalies.v1.dlq)]
+        responders["Slack / PagerDuty / Jira<br/>only skipped or failed"]
+    end
+
+    subgraph Platform["Platform, Delivery, and Observability"]
+        redis[(Redis<br/>rate limit + dedupe)]
+        eureka["Eureka :8761<br/>local service registry<br/>lb:// discovery"]
+        monitoring["log-monitoring-service :8098<br/>health probes + SLO engines"]
+        prometheus["Prometheus<br/>scrape /actuator/prometheus"]
+        grafana["Grafana :3000<br/>operator dashboards + SLO views"]
+        delivery["GitHub Actions + GHCR<br/>verify, build, Trivy scan, cosign"]
+        runtime["Docker Compose / Helm / AKS<br/>Terraform Azure + Ansible ops"]
+    end
+
+    tenantApps --> agent
+    agent -- "HTTPS batch ingest<br/>X-Tenant-Id + credentials" --> gateway
+    users -- "query, auth, anomaly reads" --> gateway
+    gateway -- "POST /ingest/batch" --> ingest
+    gateway -- "getLogById" --> ingest
+    gateway -- "searchLogs" --> indexer
+    gateway -- "getAnomalies" --> remediation
+    gateway -. "smoke route" .-> echo
+
+    ingest -- "write raw log + outbox row" --> rawStore
+    rawStore -- "OutboxPoller<br/>CloudEvents 1.0" --> logsTopic
+    rawStore -- "retry exhausted" --> logsDlq
     logsTopic --> processor
-    processor -->|parsed logs| indexer
-    indexer --> pg
-    indexer --> loki
-    indexer --> quickwit
-    processor -->|anomaly CloudEvents| anomalies
-    anomalies --> remediation
-    remediation -->|valid anomaly copy| anomalyRead
-    anomalyRead --> anomalyApi
-    remediation -->|every valid decision| outcomes
-    remediation -->|malformed envelope| anomalyDlq
-    remediation -->|skipped or failed| humans
-    gateway -. actuator/prometheus .-> monitoring
-    ingest -. actuator/prometheus .-> monitoring
-    processor -. actuator/prometheus .-> monitoring
-    remediation -. actuator/prometheus .-> monitoring
-    indexer -. actuator/prometheus .-> monitoring
+    processor -- "parse or schema failure" --> logsDlq
+    processor -. "classify anomaly" .-> ai
+    gateway -. "NL to query" .-> ai
+    processor -- "LokiSink" --> loki
+    processor -- "QuickwitSink" --> quickwit
+    indexer -- "admin, retention, search" --> quickwit
+
+    processor -- "anomaly CloudEvents" --> anomalyTopic
+    anomalyTopic --> remediation
+    remediation -- "valid anomaly copy" --> anomalyStore
+    remediation -- "every valid decision" --> outcomeTopic
+    remediation -- "malformed envelope" --> anomalyDlq
+    remediation -- "skipped or failed" --> responders
+
+    gateway -. "Bucket4j buckets" .-> redis
+    ingest -. "idempotency SETNX" .-> redis
+    remediation -. "anomaly SETNX" .-> redis
+    gateway -. "fetch registry" .-> eureka
+    ingest -. "register" .-> eureka
+    processor -. "register" .-> eureka
+    remediation -. "register" .-> eureka
+    indexer -. "register" .-> eureka
+    echo -. "register" .-> eureka
+    monitoring -. "discover + probe services" .-> eureka
+    monitoring -. "scrape service health + metrics" .-> gateway
+    monitoring -. "scrape service health + metrics" .-> ingest
+    monitoring -. "scrape service health + metrics" .-> processor
+    monitoring -. "scrape service health + metrics" .-> remediation
+    monitoring -. "scrape service health + metrics" .-> indexer
+    monitoring -. "scrape service health + metrics" .-> echo
+    prometheus -. "scrape" .-> monitoring
+    prometheus --> grafana
+    delivery -. "publishes signed images" .-> runtime
+    runtime -. "runs application ring" .-> gateway
+
+    class tenantApps,users actor
+    class gateway,ingest,processor,indexer,remediation,echo service
+    class rawStore,anomalyStore,redis,loki,quickwit storage
+    class logsTopic,logsDlq,anomalyTopic,outcomeTopic,anomalyDlq event
+    class agent pipeline
+    class ai intelligence
+    class eureka,monitoring,prometheus,grafana,delivery,runtime ops
+    class responders external
 ```
 
 ---
