@@ -231,6 +231,7 @@ See [ADR-0009](./adr/0009-tenant-isolation.md).
 | Resilience   | Resilience4j 2.2.0 on every egress                              |
 | Observability| OpenTelemetry 1.43.0, Micrometer, Grafana, Tempo, Loki          |
 | Container    | Multi-stage Dockerfiles, Eclipse Temurin JRE runtime            |
+| CI/CD        | GitHub Actions, GHCR, Trivy image scan, keyless cosign          |
 | Orchestration| Helm 3 charts, Kubernetes 1.30+                                 |
 | IaC          | Terraform (Azure), Ansible (configuration + remediation)        |
 | Tests        | JUnit 5, Testcontainers 1.20, REST Assured, Postman + Newman    |
@@ -258,10 +259,15 @@ The deployment path is layered:
 4. **P13 Ansible** runs the operator workflow on top of those layers:
     Terraform validation/provision, Helm deploy, Helm rollback, and rollout +
     gateway health smoke.
-5. **P17 Grafana** mounts the provisioned dashboards and datasource from
+5. **P14 CI/CD** runs root `mvn verify` with Docker-backed Testcontainers,
+   retains verification artifacts, builds all eight P10 images, scans each
+   image with Trivy (blocking on fixable HIGH/CRITICAL, framework-locked
+   residuals allowlisted), publishes GHCR images only on trusted push/tag
+   events, and signs pushed digests with keyless cosign.
+6. **P17 Grafana** mounts the provisioned dashboards and datasource from
    `infra/grafana` into the local/full Docker stacks. Grafana is an operator
    UI layer; Prometheus alert rules remain under `infra/local/alerts`.
-6. **P18 release prep** provides the v0.1.0 release runbook and guarded
+7. **P18 release prep** provides the v0.1.0 release runbook and guarded
    SBOM/cosign/GitHub Release scripts. The real tag/sign/publish step requires
    explicit operator approval.
 
@@ -280,6 +286,11 @@ Terraform can truthfully imply by itself.
 P13 playbooks are orchestration only. They call Terraform, Helm, and kubectl;
 they do not define a second infrastructure or manifest model. See
 [ADR-0055](./adr/0055-p13-ansible-operational-orchestration.md).
+
+P14 is the CI/CD boundary. Pull requests verify, build, and Trivy-scan images
+without publishing; trusted `main` and `v*.*.*` events publish SHA/tagged
+images to GHCR and sign pushed digests via keyless cosign. See
+[ADR-0058](./adr/0058-p14-ci-cd-pipeline.md).
 
 P18 does not imply that a release has been published. The repository contains
 the release-prep lane; the actual `v0.1.0` publication is a separate guarded

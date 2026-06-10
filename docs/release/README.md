@@ -18,3 +18,5 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 The smoke is intentionally dry-run only. It does not create tags, sign images,
 publish artifacts, or create a GitHub Release.
 
+The P14 CI/CD workflow now builds and signs pushed images for trusted
+`main`/`v*.*.*` events; these scripts remain the manual operator release lane.

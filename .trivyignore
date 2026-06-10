@@ -1,0 +1,51 @@
+# =============================================================================
+# CORTEX :: Trivy image-scan allowlist (P14 / ADR-0058 D8 / issue #156)
+# =============================================================================
+# These HIGH/CRITICAL CVEs cannot be fixed inside the LOCKED Spring Boot 3.3.x
+# stack (plan.md section 2: "Tech stack (LOCKED)"). Their only fixes ship in
+# Spring Framework 6.2+ / Spring Security 6.5+ / Spring Boot 3.5+, which forces
+# a Spring Boot 3.4+/3.5+ AND Spring Cloud 2023.0.4 -> 2024.0.x migration -- a
+# separate, approval-gated architectural epic tracked in issue #156.
+#
+# Everything fixable WITHIN 3.3.x was burned down in P14 (PR #155): Spring Boot
+# 3.3.6 -> 3.3.13, Spring AI 1.0.0 -> 1.0.8, Netty 4.1.135.Final, Tomcat
+# 10.1.55, XStream 1.4.21, BouncyCastle 1.84, Jersey 3.1.10, plus apt-get
+# upgrade on every runtime image. The Trivy gate is BLOCKING for every NEW
+# fixable HIGH/CRITICAL; only the three framework-locked residuals below are
+# allowlisted, each with its fix-version and the migration it requires.
+#
+# Review trigger: revisit on the #156 Spring Boot 3.5+ migration, or if any CVE
+# below gains a 3.3.x-compatible backport.
+# -----------------------------------------------------------------------------
+
+# spring-core: Spring Framework annotation-based access-control bypass.
+# Installed 6.1.x (Boot 3.3.13) -> fix 6.2.11 (Spring Framework 6.2 = Boot 3.4+).
+CVE-2025-41249
+
+# spring-security-web (CRITICAL): security-policy bypass / authorization issue.
+# Installed 6.3.x (Boot 3.3.13) -> fix 6.5.9 / 7.0.4 (Spring Security 6.5 = Boot 3.5+).
+CVE-2026-22732
+
+# spring-boot: framework-level hardening.
+# Installed 3.3.13 -> fix 3.5.14 / 4.0.6 (Boot 3.5+).
+CVE-2026-40973
+
+# kafka-clients: information disclosure. Installed 3.7.2 (Boot 3.3.x-managed) ->
+# fix 3.9.2. CANNOT bump within the locked stack: the embedded
+# `spring-kafka-test` ZK broker (Spring Kafka 3.2.x, locked by Boot 3.3.x) hard-
+# requires kafka-clients 3.7.x -- Kafka 3.8/3.9 removed `KafkaConfig.LogDirProp()`
+# and `Utils.join(Collection, String)` that the 3.2.x broker still calls, so any
+# bump breaks every `@EmbeddedKafka` test at context load. Fix requires the Boot
+# 3.4+/Spring Kafka 3.3+ migration tracked in #156.
+CVE-2026-35554
+
+# lz4-java: transitive of kafka-clients 3.7.2 (above). org.lz4:lz4-java 1.8.0 is
+# what kafka-clients 3.7.2 pulls; the patched releases (1.8.1 for CVE-2025-12183,
+# 1.10.1 for CVE-2025-66566) only ship under the `at.yawk.lz4` fork, so clearing
+# them means an exclude-and-swap of a transitive of the locked kafka-clients.
+# Part of the same kafka-clients 3.7.2 locked subtree; cleared by the Spring
+# Kafka 3.3+ migration (#156), which ships a newer kafka-clients + lz4-java.
+CVE-2025-12183
+CVE-2025-66566
+
+

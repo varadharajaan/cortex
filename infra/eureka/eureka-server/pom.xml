@@ -27,8 +27,9 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <!-- Aligned with the main cortex-parent (see top-level pom.xml). -->
-        <version>3.3.6</version>
+        <!-- Aligned with the main cortex-parent (see top-level pom.xml).
+             3.3.13 (was 3.3.6) for the P14 Trivy image-CVE burndown (#156). -->
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -47,6 +48,15 @@
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <spring-cloud.version>2023.0.4</spring-cloud.version>
+        <!-- P14 Trivy image-CVE burndown (#156): mirror the cortex-parent
+             transitive pins so the eureka-server image is clean too. eureka
+             pulls Tomcat, Netty, XStream and BouncyCastle transitively via the
+             Spring Cloud Netflix stack. See top-level pom.xml for rationale. -->
+        <tomcat.version>10.1.55</tomcat.version>
+        <netty.version>4.1.135.Final</netty.version>
+        <xstream.version>1.4.21</xstream.version>
+        <bouncycastle.version>1.84</bouncycastle.version>
+        <jersey.version>3.1.10</jersey.version>
     </properties>
 
     <dependencyManagement>
@@ -57,6 +67,27 @@
                 <version>${spring-cloud.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <!-- P14 Trivy image-CVE burndown (#156). xstream, bcprov and
+                 jersey-client are transitive via the Netflix Eureka stack and
+                 are NOT managed by a Spring Boot property here, so they need
+                 explicit pins (a bare property override does nothing without a
+                 dependencyManagement entry). Mirrors the cortex-parent pins. -->
+            <dependency>
+                <groupId>com.thoughtworks.xstream</groupId>
+                <artifactId>xstream</artifactId>
+                <version>${xstream.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.glassfish.jersey.core</groupId>
+                <artifactId>jersey-client</artifactId>
+                <version>${jersey.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
