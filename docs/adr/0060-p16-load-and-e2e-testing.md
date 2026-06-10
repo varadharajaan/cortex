@@ -33,23 +33,31 @@ not inherit the parent Checkstyle/SpotBugs/JaCoCo gates (those target production
 code, not throughput probes). This keeps `mvn verify` on the reactor fast and
 unaffected.
 
-**D3 -- SLO assertions are the gate.** `GatewayLoadSimulation` authenticates
-against the gateway, then exercises the NL-to-LogQL translate and searchLogs
-read paths, and asserts `global().responseTime().percentile(95).lt(p95)` plus
-`global().successfulRequests().percent().gte(successPercent)`. A latency or
+**D3 -- One bootstrap login, then SLO assertions on the read paths.** A single
+login runs once in the simulation constructor (before injection) and mints an
+access token every virtual user replays, so the measured load stays on the two
+read surfaces -- `POST /api/v1/query/nl` (NL-to-LogQL) and
+`GET /api/v1/logs/search?index=&q=&maxHits=` (searchLogs). Authenticating once
+mirrors a real client session and keeps the login throttle (a security control,
+covered functionally by the Newman suite) out of the read-path SLO measurement.
+`GatewayLoadSimulation` asserts `global().responseTime().percentile(95).lt(p95)`
+plus `global().successfulRequests().percent().gte(successPercent)`; a latency or
 error-rate regression fails `gatling:test` (non-zero exit), which fails CI.
 
 **D4 -- Everything is a `-D` tunable.** `baseUrl`, `users`, `rampSeconds`,
-`username`, `password`, `tenant`, `p95Millis`, `successPercent` are all system
-properties with safe defaults, so the same simulation runs as a fast CI smoke
-(default 20 users / p95 1 s) or a heavier local soak without code changes.
+`username`, `password`, `tenant`, `nlPrompt`, `searchIndex`, `searchQuery`,
+`searchMaxHits`, `p95Millis`, `successPercent` are all system properties with
+safe defaults, so the same simulation runs as a fast CI smoke (default 20 users
+/ p95 1 s) or a heavier local soak without code changes.
 
 **D5 -- CI runs load against the live compose stack, gated.** A `load-test` job
 in `.github/workflows/ci.yml` boots the P10 compose stack, waits for gateway
 health, runs `gatling:test` against it, and uploads the Gatling HTML report as
-an artifact. The endpoints under test tolerate a feature-gated `404` (never a
-`5xx`), so the gate measures the gateway round-trip budget regardless of which
-optional read features a given deploy enables.
+an artifact. The read paths accept `200`, a feature-gated or empty-index `404`,
+and -- under concurrent load -- a per-user sub-bucket `429` (the rate limiter
+working as designed); only a `5xx`, a timeout, or a p95 regression fails the
+gate. So the job measures the gateway round-trip budget regardless of which
+optional read features a deploy enables or whether load trips the limiter.
 
 ## Consequences
 
@@ -57,6 +65,9 @@ optional read features a given deploy enables.
   error-rate regression on the gateway read path fails CI (Part 12.7 satisfied).
 - The standalone module keeps the reactor build fast and the production quality
   gates unpolluted by load-probe code.
+- The read-path simulation is rate-limiter-aware: a fast `429` under load counts
+  as a healthy, well-formed gateway response (not a failure), so the SLO gate
+  measures latency + availability rather than raw throughput past the limiter.
 - Gatling HTML reports are retained per run for trend inspection.
 - The load tool is JVM-native, so no second language/runtime is introduced.
 
@@ -72,3 +83,8 @@ optional read features a given deploy enables.
 - **Run load only locally, no CI job.** Rejected. Part 12.7 requires the
   baseline to be CI-enforced so regressions block merges, not just be runnable
   on a developer box.
+- **Log in per virtual user.** Rejected. With a single seeded account every VU
+  drains the same login throttle (anon bucket) plus the same per-user NL/search
+  sub-buckets, so per-VU login floods the throttle with `429`s and measures the
+  limiter, not the read path. One bootstrap login reused by all VUs models a
+  real client session and isolates the read-path SLO.
