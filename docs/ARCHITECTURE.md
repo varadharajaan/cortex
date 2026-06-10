@@ -194,7 +194,10 @@ reads the service-owned `anomalies` table. See
 - **Dashboards + SLOs**: Grafana, provisioned via `infra/grafana/`.
   Prometheus remains the alert-rule evaluator; Grafana is the provisioned
   read-side operator UI. P17 ships `CORTEX Overview`, `CORTEX SLO`, and the
-  availability SLO catalog.
+  availability SLO catalog. `log-monitoring-service` owns the runtime SLO
+  engines, including micrometer-derived availability plus counter-family,
+  timer-percentile, PromQL, composite, OTel, and `mixed` advanced backends
+  (ADR-0046 Amendments 4-5).
 
 See [ADR-0011](./adr/0011-observability.md) and
 [ADR-0056](./adr/0056-p17-grafana-slo-dashboards.md).

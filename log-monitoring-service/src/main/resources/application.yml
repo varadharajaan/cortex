@@ -147,6 +147,33 @@ cortex:
     #                              (reads cortex.monitoring.probe_total
     #                              counters from the in-process
     #                              MeterRegistry, derives ratios)
+    #     counter-family        -> CounterFamilySloBudgetEngine
+    #                              (P8.3; discovers each target
+    #                              service by service-id, scrapes
+    #                              /actuator/prometheus, and derives
+    #                              ratios from a configured counter
+    #                              family + success/failure tag
+    #                              predicates)
+    #     timer-percentile      -> TimerPercentileSloBudgetEngine
+    #                              (P8.4; scrapes Micrometer
+    #                              histogram buckets and treats the
+    #                              bucket at/below the configured
+    #                              latency threshold as success)
+    #     promql                -> PromQlSloBudgetEngine
+    #                              (P8.5; calls Prometheus
+    #                              /api/v1/query for explicit success
+    #                              and failure instant-query counts)
+    #     composite             -> CompositeSloBudgetEngine
+    #                              (P8.6; composes latest child
+    #                              snapshots via worst-of or
+    #                              weighted-average)
+    #     otel                  -> OtelSloBudgetEngine
+    #                              (P8.7+; scrapes span-derived
+    #                              counter families exposed in
+    #                              Prometheus text format)
+    #     mixed                 -> activates all source-aware
+    #                              engines and routes each
+    #                              definition by its nested source
     #
     # `evaluation-interval` controls the @Scheduled firing cadence
     # on the SloEvaluator. Operator-friendly Spring Duration
@@ -173,10 +200,54 @@ cortex:
     # gives the entire P3..P7 ring availability SLOs for free.
     # Operators override the list per profile via the standard
     # @ConfigurationProperties precedence.
+    #
+    # For `backend=counter-family`, each definition also declares
+    # a nested `counter-family` source:
+    #   metric-name: cortex.remediation.dispatched_total
+    #   required-tags: { channel: slack }
+    #   success-tag-predicate: { tag-name: outcome, tag-values: [dispatched] }
+    #   failure-tag-predicate:
+    #     tag-name: outcome
+    #     tag-values: [transient_failure, permanent_failure]
+    #
+    # For `backend=timer-percentile` or `mixed`, latency definitions
+    # declare a nested `timer` source:
+    #   metric-name: http_server_requests_seconds
+    #   threshold: 500ms
+    #   required-tags: { uri: /api/v1/logs/batch }
+    #
+    # For `backend=promql` or `mixed`, external-source definitions
+    # declare a nested `prom-ql` source:
+    #   success-query: sum(rate(cortex_indexer_search_total{outcome="ok"}[5m]))
+    #   failure-query: sum(rate(cortex_indexer_search_total{outcome!="ok"}[5m]))
+    #
+    # For `backend=composite` or `mixed`, aggregate definitions
+    # declare a nested `composite` source:
+    #   mode: worst-of
+    #   components:
+    #     - service-id: log-gateway
+    #       slo-name: availability
+    #       weight: 1.0
+    #
+    # For `backend=otel` or `mixed`, span-metric ratio definitions
+    # declare a nested `otel` source with the same metric/predicate
+    # shape as `counter-family`.
     slo:
       enabled: ${CORTEX_MONITORING_SLO_ENABLED:false}
       backend: ${CORTEX_MONITORING_SLO_BACKEND:noop}
       evaluation-interval: ${CORTEX_MONITORING_SLO_EVALUATION_INTERVAL:30s}
+      counter-family:
+        request-timeout: ${CORTEX_MONITORING_SLO_COUNTER_FAMILY_REQUEST_TIMEOUT:5s}
+        actuator-path: ${CORTEX_MONITORING_SLO_COUNTER_FAMILY_ACTUATOR_PATH:/actuator/prometheus}
+      timer-percentile:
+        request-timeout: ${CORTEX_MONITORING_SLO_TIMER_PERCENTILE_REQUEST_TIMEOUT:5s}
+        actuator-path: ${CORTEX_MONITORING_SLO_TIMER_PERCENTILE_ACTUATOR_PATH:/actuator/prometheus}
+      promql:
+        request-timeout: ${CORTEX_MONITORING_SLO_PROMQL_REQUEST_TIMEOUT:5s}
+        base-url: ${CORTEX_MONITORING_SLO_PROMQL_BASE_URL:http://localhost:9090}
+      otel:
+        request-timeout: ${CORTEX_MONITORING_SLO_OTEL_REQUEST_TIMEOUT:5s}
+        actuator-path: ${CORTEX_MONITORING_SLO_OTEL_ACTUATOR_PATH:/actuator/prometheus}
       definitions:
         - service-id: log-gateway
           slo-name: availability

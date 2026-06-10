@@ -36,7 +36,8 @@ class SloEvaluatorTest {
                 new SloProperties(true, "noop", Duration.ofSeconds(30),
                         List.of()),
                 List.<SloBudgetEngine>of(new NoopSloBudgetEngine()),
-                metrics);
+                metrics,
+                new SloSnapshotStore());
 
         evaluator.evaluateOnce();
 
@@ -51,14 +52,15 @@ class SloEvaluatorTest {
         final MonitoringMetrics metrics = new MonitoringMetrics(registry,
                 List.of(new NoopServiceHealthProbe()));
         final SloDefinition def1 = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         final SloDefinition def2 = new SloDefinition(
-                "svc-b", "availability", 0.99d, Duration.ofHours(1));
+                "svc-b", "availability", 0.99d, Duration.ofHours(1), null);
         final SloEvaluator evaluator = new SloEvaluator(
                 new SloProperties(true, "noop", Duration.ofSeconds(30),
                         List.of(def1, def2)),
                 List.<SloBudgetEngine>of(new NoopSloBudgetEngine()),
-                metrics);
+                metrics,
+                new SloSnapshotStore());
 
         evaluator.evaluateOnce();
 
@@ -76,9 +78,9 @@ class SloEvaluatorTest {
         final MonitoringMetrics metrics = new MonitoringMetrics(registry,
                 List.of(new NoopServiceHealthProbe()));
         final SloDefinition defGood = new SloDefinition(
-                "svc-good", "availability", 0.99d, Duration.ofHours(1));
+                "svc-good", "availability", 0.99d, Duration.ofHours(1), null);
         final SloDefinition defBad = new SloDefinition(
-                "svc-bad", "availability", 0.99d, Duration.ofHours(1));
+                "svc-bad", "availability", 0.99d, Duration.ofHours(1), null);
         final SloBudgetEngine throwing = new SloBudgetEngine() {
             @Override
             public String backendId() {
@@ -97,7 +99,8 @@ class SloEvaluatorTest {
                 new SloProperties(true, "noop", Duration.ofSeconds(30),
                         List.of(defGood, defBad)),
                 List.<SloBudgetEngine>of(throwing),
-                metrics);
+                metrics,
+                new SloSnapshotStore());
 
         // Must not throw -- and svc-good must still have its gauge.
         evaluator.evaluateOnce();
@@ -116,7 +119,7 @@ class SloEvaluatorTest {
         final MonitoringMetrics metrics = new MonitoringMetrics(registry,
                 List.of(new NoopServiceHealthProbe()));
         final SloDefinition def = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         final SloBudgetEngine returningNull = new SloBudgetEngine() {
             @Override
             public String backendId() {
@@ -132,7 +135,8 @@ class SloEvaluatorTest {
                 new SloProperties(true, "noop", Duration.ofSeconds(30),
                         List.of(def)),
                 List.<SloBudgetEngine>of(returningNull),
-                metrics);
+                metrics,
+                new SloSnapshotStore());
 
         // Must not throw and must not register the gauge for this key.
         evaluator.evaluateOnce();
@@ -147,7 +151,7 @@ class SloEvaluatorTest {
         final MonitoringMetrics metrics = new MonitoringMetrics(registry,
                 List.of(new NoopServiceHealthProbe()));
         final SloDefinition def = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         final SloBudgetEngine engine = new SloBudgetEngine() {
             @Override
             public String backendId() {
@@ -163,7 +167,8 @@ class SloEvaluatorTest {
                 new SloProperties(true, "noop", Duration.ofSeconds(30),
                         List.of(def)),
                 List.<SloBudgetEngine>of(engine),
-                metrics);
+                metrics,
+                new SloSnapshotStore());
 
         evaluator.evaluateOnce();
 

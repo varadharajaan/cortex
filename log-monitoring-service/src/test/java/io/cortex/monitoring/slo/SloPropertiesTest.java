@@ -2,6 +2,7 @@ package io.cortex.monitoring.slo;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,7 +21,7 @@ class SloPropertiesTest {
     @Test
     void canonicalPropertiesWire() {
         final SloDefinition def = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         final SloProperties props = new SloProperties(
                 true, "micrometer-derivation",
                 Duration.ofSeconds(15), List.of(def));
@@ -29,6 +30,29 @@ class SloPropertiesTest {
         assertThat(props.evaluationInterval())
                 .isEqualTo(Duration.ofSeconds(15));
         assertThat(props.definitions()).containsExactly(def);
+    }
+
+    @Test
+    void counterFamilyDefinitionCanBeCarriedInProperties() {
+        final SloDefinition def = new SloDefinition(
+                "log-remediation-service", "slack-dispatch-success",
+                0.99d, Duration.ofHours(1),
+                new SloDefinition.CounterFamilySource(
+                        "cortex.remediation.dispatched_total",
+                        new SloDefinition.TagPredicate("outcome",
+                                List.of("dispatched")),
+                        new SloDefinition.TagPredicate("outcome",
+                                List.of("transient_failure",
+                                        "permanent_failure")),
+                        Map.of("channel", "slack")));
+
+        final SloProperties props = new SloProperties(
+                true, SloSnapshot.BACKEND_COUNTER_FAMILY,
+                Duration.ofSeconds(30), List.of(def));
+
+        assertThat(props.definitions()).singleElement()
+                .satisfies(loaded -> assertThat(loaded.counterFamily())
+                        .isEqualTo(def.counterFamily()));
     }
 
     @Test
@@ -79,7 +103,7 @@ class SloPropertiesTest {
     @Test
     void definitionsAreDefensivelyCopied() {
         final SloDefinition def = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         final java.util.ArrayList<SloDefinition> mutable =
                 new java.util.ArrayList<>();
         mutable.add(def);

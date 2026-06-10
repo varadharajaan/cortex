@@ -6,7 +6,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.search.Search;
 import java.util.Set;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 /**
@@ -49,10 +49,9 @@ import org.springframework.stereotype.Component;
  * or {@link SloSnapshot#permanentFailure(String, SloDefinition, String)}.</p>
  */
 @Component
-@ConditionalOnProperty(
-        prefix = "cortex.monitoring.slo",
-        name = "backend",
-        havingValue = "micrometer-derivation")
+@ConditionalOnExpression(
+        "'${cortex.monitoring.slo.backend:noop}' == 'micrometer-derivation'"
+                + " || '${cortex.monitoring.slo.backend:noop}' == 'mixed'")
 public final class MicrometerSloBudgetEngine implements SloBudgetEngine {
 
     /** Tag key used by {@link MonitoringMetrics} on the probe counter. */
@@ -81,12 +80,6 @@ public final class MicrometerSloBudgetEngine implements SloBudgetEngine {
             HealthSnapshot.OUTCOME_TRANSIENT_FAILURE,
             HealthSnapshot.OUTCOME_PERMANENT_FAILURE);
 
-    /** Lower clamp for {@code budgetRemainingRatio}. */
-    private static final double BUDGET_FLOOR = -1.0d;
-
-    /** Upper clamp for {@code budgetRemainingRatio}. */
-    private static final double BUDGET_CEILING = 1.0d;
-
     private final MeterRegistry registry;
 
     /**
@@ -104,6 +97,16 @@ public final class MicrometerSloBudgetEngine implements SloBudgetEngine {
     @Override
     public String backendId() {
         return SloSnapshot.BACKEND_MICROMETER_DERIVATION;
+    }
+
+    @Override
+    public boolean supports(final SloDefinition def) {
+        return def != null
+                && def.counterFamily() == null
+                && def.timer() == null
+                && def.promQl() == null
+                && def.composite() == null
+                && def.otel() == null;
     }
 
     @Override
@@ -136,9 +139,9 @@ public final class MicrometerSloBudgetEngine implements SloBudgetEngine {
             // so errorBudget is in (0,1) -- no divide-by-zero possible.
             final double errorRate = failures / total;
             final double burnRate = errorRate / errorBudget;
-            final double budgetRemainingRaw =
-                    (errorBudget - errorRate) / errorBudget;
-            final double budgetRemaining = clamp(budgetRemainingRaw);
+            final double budgetRemaining =
+                    SloBudgetMath.clamp((errorBudget - errorRate)
+                            / errorBudget);
             return SloSnapshot.banded(backendId(), def,
                     budgetRemaining, burnRate);
         } catch (final RuntimeException ex) {
@@ -147,17 +150,4 @@ public final class MicrometerSloBudgetEngine implements SloBudgetEngine {
         }
     }
 
-    /**
-     * Clamp {@code value} to {@code [BUDGET_FLOOR, BUDGET_CEILING]}
-     * so the gauge never emits an unbounded sample.
-     */
-    private static double clamp(final double value) {
-        if (value < BUDGET_FLOOR) {
-            return BUDGET_FLOOR;
-        }
-        if (value > BUDGET_CEILING) {
-            return BUDGET_CEILING;
-        }
-        return value;
-    }
 }

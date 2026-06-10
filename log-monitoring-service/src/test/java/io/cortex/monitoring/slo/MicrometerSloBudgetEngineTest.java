@@ -183,7 +183,7 @@ class MicrometerSloBudgetEngineTest {
 
     private SloDefinition def(final double target) {
         return new SloDefinition(SERVICE_ID, "availability", target,
-                Duration.ofHours(1));
+                Duration.ofHours(1), null);
     }
 
     private void seed(final String outcome, final double count) {

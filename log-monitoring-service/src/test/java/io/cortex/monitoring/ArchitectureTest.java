@@ -52,9 +52,10 @@ class ArchitectureTest {
                 // gauges via recordSlo per ADR-0046 D3).
                 .whereLayer("Metrics").mayOnlyBeAccessedByLayers(
                         "App", "Probe", "Slo")
-                // Constants is reached by Probe (RestProbeTemplate uses
-                // the HTTP status floors).
-                .whereLayer("Constants").mayOnlyBeAccessedByLayers("Probe")
+                // Constants is reached by Probe and Slo. The remote
+                // SLO backends reuse the bounded HTTP status floors.
+                .whereLayer("Constants").mayOnlyBeAccessedByLayers(
+                        "Probe", "Slo")
                 // Health is reached by App only.
                 .whereLayer("Health").mayOnlyBeAccessedByLayers("App")
                 // Slo is the P8.2 engine surface - reached by App only

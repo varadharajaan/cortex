@@ -574,10 +574,10 @@ original P8.2a closer.
 | **P8.2a** | Mechanical closer for the CURRENT surface: Legs B (`scripts/smoke-p8-2.ps1` + real Prometheus container) + C (Postman + Newman covers `/actuator/prometheus` evidence) + D (cross-phase SpringBootTest IT flipping `probe.backend=eureka-actuator` + `slo.{enabled=true, backend=micrometer-derivation}` end-to-end) + E (README runbook). | Validates ONLY what P8.2 actually shipped -- no new backends, no new SLI types. Already queued in `checkpoint.md` Next Action. | Smoke + Postman + IT + README runbook all green; closes the P8 epic #9 only IF P8.1a also ships. |
 | **P8.2b** | Extend `EurekaActuatorHealthProbe` to multi-target (one probe instance per cortex service-id, or a fan-out variant) + ship default `cortex.monitoring.slo.definitions:` block in `application-local.yml` with `availability` SLOs for every P3..P7 service. | No new backend needed -- re-uses P8.1 + P8.2 verbatim. Cheapest path to "every cortex service has at least one SLO". | All 5 of `log-gateway`/`log-ingest`/`log-processor`/`log-remediation`/`log-indexer` have an `availability` SLO snapshot visible in `/actuator/prometheus` under the local profile. |
 | **P8.3** | New backend `CounterFamilySloBudgetEngine` + `SloDefinition` schema extension carrying `(metricName, successTagPredicate, failureTagPredicate)`. | Schema bump is breaking-change-shaped (yml binding) -- needs its own deliberate ship + ADR for the schema migration. Unlocks parse-success / dispatch-success / fan-out-success / publish-success SLIs per P5/P6. | At least one P5 SLO (`anomaly-publish-success` against `cortex.processor.anomalies_total`) and one P6 SLO (`slack-dispatch-success` against `cortex.remediation.dispatch_total`) demonstrate the backend end-to-end. |
-| **P8.4** | New backend `TimerPercentileSloBudgetEngine` reading Micrometer `Timer` series for latency SLOs ("p95 <= threshold for X% of requests"). | Latency-target math differs from ratio-target -- needs its own SPI extension or contract clarification (`SloDefinition` may carry a `targetType` enum). | At least one P3 SLO (`gateway-route-latency-p95`) demonstrates the backend end-to-end. |
-| **P8.5** | New backend `PromQlSloBudgetEngine` calling Prometheus `/api/v1/query` for SLIs whose source is NOT an in-process Micrometer series (Loki / Quickwit query counts, blackbox-exporter probes, etc.). | Adds outbound HTTP dependency to the monitoring service itself -- needs LD42 + LD121 dual-timeout pin + its own ADR for the auth / TLS / failover posture. | At least one external-source SLO (`quickwit-search-success` derived from a Prometheus query against the indexer's metrics) demonstrates the backend end-to-end. |
-| **P8.6** | New backend `CompositeSloBudgetEngine` that reads other engines' snapshot cache and aggregates (worst-of-N, weighted-average). | Pure composition over the other backends -- only meaningful once P8.2b + P8.3 + P8.4 (and ideally P8.5) have shipped. | At least one composite SLO (`cortex-system-availability` = worst-of of every per-service availability SLO) demonstrates the backend end-to-end. |
-| **P8.7+** | OTel / tracing-based SLOs (span-derived latency, error-span ratio). | Gated on OTel infra not yet in the cortex plan -- depends on a separate transport decision (collector vs SDK direct) outside P8 scope. | Deferred until OTel transport ADR lands. |
+| **P8.4** | New backend `TimerPercentileSloBudgetEngine` reading Micrometer timer histogram buckets from target-service `/actuator/prometheus`. | Latency-target math is represented as success/total bucket math: bucket counts at or below the configured threshold are successes, `+Inf` is total. | Shipped in Amendment 5 with WireMock scrape IT + advanced boot IT. |
+| **P8.5** | New backend `PromQlSloBudgetEngine` calling Prometheus `/api/v1/query` for SLIs whose source is NOT an in-process Micrometer series (Loki / Quickwit query counts, blackbox-exporter probes, etc.). | Adds bounded outbound HTTP dependency to the monitoring service itself with the same dual-timeout posture as other HTTP adapters. | Shipped in Amendment 5 with scalar/vector PromQL WireMock IT + advanced boot IT. |
+| **P8.6** | New backend `CompositeSloBudgetEngine` that reads other engines' snapshot cache and aggregates (worst-of-N, weighted-average). | Pure composition over latest snapshots; useful once source-aware backends run in `mixed` mode. | Shipped in Amendment 5 with unit coverage for worst-of, weighted-average, missing child, and child failure propagation. |
+| **P8.7+** | OTel / tracing-based SLOs (span-derived error-span ratio). | Implemented as span-derived counter-family ratio over Prometheus text exposition; collector/SDK topology remains a separate infra decision. | Shipped in Amendment 5 with OTel WireMock IT + advanced boot IT. |
 
 ### Decision
 
@@ -587,11 +587,11 @@ The operator pipeline is now:
 1. **P8.2a** (mechanical closer for the existing surface) --
    queued first because it does NOT depend on any scope
    expansion.
-2. **P8.2b..P8.6** (gap-filling sub-phases) -- queued in
-   priority order; each ships independently with its own
-   issue + PR + ADR delta. None of them block P8.2a.
+2. **P8.2b..P8.7+** (gap-filling sub-phases) -- queued in
+   priority order at the time; now shipped via Amendments 3,
+   4, and 5. None of them blocked P8.2a.
 
-This amendment makes the deferred work visible in the same
+This amendment made the then-deferred work visible in the same
 place the original decision lives. ADR count stays at 46 (this
 is an amendment, not a new ADR -- mirrors the ADR-mechanic
 precedent in this repo).
@@ -725,8 +725,8 @@ adapter bean.
   accepts the long-as-string form. The
   `SLO_EVALUATION_INTERVAL_MILLIS_BEAN` constant keeps the
   link discoverable from either end.
-- Future SLO-related `@Scheduled` cadences in this module
-  (e.g. P8.3 / P8.4 backends) should follow the same
+- Additional SLO-related `@Scheduled` cadences in this module
+  should follow the same
   adapter-bean pattern rather than reaching for
   placeholder expansion on `fixedRateString`. Captured as
   a standing rule in `memory.md` LD141.
@@ -779,9 +779,10 @@ were:
    availability monitoring they had to author the definitions
    themselves, six rows of yml per service.
 
-Both gaps were tracked in ADR-0046 Amendment 1 + memory.md
-under the "queued-but-non-blocking" gap-fill set
-(P8.2b..P8.7+). The post-#120 boot safety made P8.2b the
+Both gaps were originally tracked in ADR-0046 Amendment 1 +
+memory.md under the "queued-but-non-blocking" gap-fill set
+(P8.2b..P8.7+), now shipped through Amendment 5. The post-#120
+boot safety made P8.2b the
 right next step in the gap-fill ring because it gives every
 operator who flips the two `enabled` gates real availability
 monitoring for the entire cortex topology, without
@@ -950,3 +951,207 @@ package:
   start; the `probeEvaluationIntervalMillis` adapter bean
   mirrors the `sloEvaluationIntervalMillis` shape exactly.
 
+## Amendment 2026-06-10 (Amendment 4) -- P8.3 counter-family SLO backend
+
+### Background
+
+The P8.2 backend (`micrometer-derivation`) evaluates availability
+from the monitoring service's own
+`cortex.monitoring.probe_total` counter family. That gives every
+cortex service a basic availability SLO after P8.2b, but it does
+not cover service-owned ratio SLIs such as remediation dispatch
+success, anomaly publish success, parser success, or sink fan-out
+success. Those samples already belong to the producing service's
+Micrometer registry, so copying them into the monitoring JVM would
+create a second source of truth.
+
+P8.3 therefore adds a backend that scrapes the target service's
+Prometheus text exposition directly and derives the same SLO
+snapshot shape from one configured counter family.
+
+### Decision
+
+1. **Extend `SloDefinition` additively.** The canonical record now
+   includes optional `CounterFamilySource counterFamily`. Existing
+   P8.2 availability definitions bind with this field absent
+   (`null`). Definitions for `backend=counter-family` must supply
+   the nested source: `metricName`, `requiredTags`,
+   `successTagPredicate`, and `failureTagPredicate`.
+2. **Add `CounterFamilySloBudgetEngine`.** The backend is gated by
+   `cortex.monitoring.slo.backend=counter-family`, resolves
+   `SloDefinition.serviceId()` through `DiscoveryClient`, selects
+   the first instance, scrapes
+   `<instance.uri>/<counter-family.actuator-path>`, parses the
+   configured counter family, and computes:
+
+   ```
+   errorRate         = failureCount / (successCount + failureCount)
+   errorBudget       = 1.0 - targetSuccessRatio
+   burnRate          = errorRate / errorBudget
+   budgetRemaining   = clamp((errorBudget - errorRate) / errorBudget)
+   ```
+
+   The resulting `SloSnapshot` is recorded through the existing
+   `MonitoringMetrics.recordSlo(...)` gauge surface. No new metric
+   names or tag keys are introduced.
+3. **Keep remote scrape config separate.** New
+   `CounterFamilySloProperties` binds
+   `cortex.monitoring.slo.counter-family.request-timeout` and
+   `.actuator-path`, defaulting to `5s` and
+   `/actuator/prometheus`. New `CounterFamilySloHttpConfig`
+   publishes a named `counterFamilySloRestClient`, HTTP/1.1-pinned
+   with the same dual connect+read timeout posture as ADR-0045.
+4. **Avoid RestClient ambiguity.** The existing
+   `EurekaActuatorHealthProbe` now explicitly injects the named
+   `eurekaActuatorRestClient`, so a deployment can enable
+   `probe.backend=eureka-actuator` and
+   `slo.backend=counter-family` together without Spring seeing two
+   unqualified `RestClient` candidates.
+5. **Parse only what the backend needs.** The new
+   `PrometheusCounterFamilyParser` skips HELP/TYPE comments,
+   accepts samples with or without labels, ignores invalid/NaN/Inf
+   values, and accepts both Micrometer Java-style names
+   (`cortex.remediation.dispatched_total`) and Prometheus
+   exposition names (`cortex_remediation_dispatched_total`).
+6. **Bound failure behavior.** Missing `counterFamily` source is a
+   permanent failure; no discovery instance, 429, 5xx, timeout, and
+   transport failures are transient; other 4xx responses are
+   permanent; no matching samples returns `unknown` with the same
+   all-clear gauge defaults as P8.2 cold-start.
+7. **Harden band boundaries.** `SloSnapshot.classifyBand(...)`
+   now applies a tiny floating-point tolerance at the 0.5 and 0.1
+   thresholds so mathematically exact boundary values do not drift
+   into the next band because of binary double representation.
+
+### Consequences
+
+- P8.3 unlocks service-owned success-ratio SLIs without moving
+  service metrics into the monitoring JVM and without adding new
+  Prometheus gauge families.
+- The backend is intentionally scrape-based and first-instance for
+  P8.3. True Prometheus-query aggregation across replicas remains
+  P8.5 (`PromQlSloBudgetEngine`).
+- The additive `SloDefinition.counterFamily` field is backward
+  compatible for YAML binding, but Java call sites must use the
+  canonical record constructor.
+- Running the combined eureka-actuator probe + counter-family SLO
+  profile is now a tested boot shape.
+
+### Verification
+
+- `PrometheusCounterFamilyParserTest`
+- `CounterFamilySloPropertiesTest`
+- `CounterFamilySloBudgetEngineWireMockIT`
+- `MonitoringCounterFamilySloBootIT`
+- Regression coverage in `SloSnapshotTest` for floating-point
+  boundary drift.
+
+### Cross-ref
+
+- ADR-0046 Amendment 1 -- queued P8.3 as the first advanced SLO
+  backend.
+- ADR-0045 -- reused HTTP/1.1 + dual-timeout posture.
+- ADR-0046 Amendment 3 -- P8.2b default availability SLOs remain
+  unchanged and continue to use the P8.2 backend unless operators
+  opt into `counter-family`.
+
+## Amendment 2026-06-10 (Amendment 5) -- P8.4-P8.7+ advanced SLO backends
+
+### Background
+
+P8.3 proved the target-service scrape pattern for service-owned
+ratio SLIs, but the remaining operator SLO gaps needed more than a
+single counter-family source:
+
+- latency SLOs over Micrometer timer histograms;
+- external or already-aggregated SLIs best expressed as PromQL;
+- system-level SLOs composed from child SLO snapshots;
+- span-derived OTel counter ratios.
+
+The core requirement stays unchanged: every backend must publish
+the existing two gauges only:
+
+```
+cortex.monitoring.slo_budget_remaining{service_id,slo_name}
+cortex.monitoring.slo_burn_rate{service_id,slo_name}
+```
+
+### Decision
+
+1. **Extend `SloDefinition` additively again.** The canonical
+   record now carries optional nested sources for `counterFamily`,
+   `timer`, `promQl`, `composite`, and `otel`. Existing P8.2/P8.3
+   constructors remain as compatibility overloads; Spring binding
+   targets the canonical constructor explicitly with
+   `@ConstructorBinding`.
+2. **Add source-aware `SloBudgetEngine.supports(...)`.** The
+   default returns `true` for legacy `noop` and
+   `micrometer-derivation`. New engines override it so `mixed`
+   deployments can safely activate all source-aware backends and
+   let `SloEvaluator` route each definition to the owning engine
+   without recording false misconfiguration snapshots.
+3. **Add `timer-percentile`.** `TimerPercentileSloBudgetEngine`
+   resolves `SloDefinition.serviceId()` through Eureka, scrapes
+   the target's Prometheus text exposition, reads the configured
+   histogram bucket family, treats the highest bucket at or below
+   `timer.threshold` as success, treats the `+Inf` bucket as total,
+   and derives the standard error-budget/burn-rate snapshot.
+4. **Add `promql`.** `PromQlSloBudgetEngine` uses a named
+   `promQlSloRestClient` against
+   `cortex.monitoring.slo.promql.base-url`, executes separate
+   success and failure instant queries, accepts scalar and vector
+   results, sums vector values, and rejects malformed, negative,
+   NaN, or infinite values as transient API failures.
+5. **Add `composite`.** `SloSnapshotStore` records the latest
+   snapshot for every `(serviceId, sloName)` before metrics are
+   written. `CompositeSloBudgetEngine` reads that cache and combines
+   child snapshots by `worst-of` or `weighted-average`. Missing,
+   noop, or unknown children return `unknown`; child transient and
+   permanent failures propagate with composite-specific reasons.
+6. **Add `otel`.** `OtelSloBudgetEngine` reuses the P8.3
+   counter-ratio evaluator against span-derived counter families
+   exposed in Prometheus text format, but keeps a distinct backend id
+   so operators can distinguish service metrics from span metrics.
+7. **Keep HTTP client ownership explicit.** `timer-percentile`,
+   `promql`, and `otel` each get their own typed properties record
+   and named `RestClient` bean. Target-service scrapers default to
+   `/actuator/prometheus`; PromQL defaults to `http://localhost:9090`.
+8. **Preserve the metric contract.** No new SLO gauge names or tag
+   keys are introduced. `SloSnapshot` adds backend constants only;
+   `MonitoringMetrics.recordSlo(...)` remains the sole metric writer.
+
+### Consequences
+
+- Operators can now run heterogeneous SLO definitions in one
+  scheduler pass by setting `cortex.monitoring.slo.backend=mixed`.
+- The monitoring service remains the SLO control-plane owner while
+  each application service keeps owning its own actuator and
+  Micrometer metrics.
+- Composite SLOs are intentionally in-memory latest-snapshot
+  composition. Durable SLO history remains Prometheus/Grafana's job.
+- OTel transport and collector topology are still infra-level
+  concerns; this amendment only consumes span-derived metrics once
+  they are exposed as Prometheus text counters.
+
+### Verification
+
+- `AdvancedSloPropertiesTest`
+- `TimerPercentileSloBudgetEngineWireMockIT`
+- `PromQlSloBudgetEngineWireMockIT`
+- `CompositeSloBudgetEngineTest`
+- `OtelSloBudgetEngineWireMockIT`
+- `MonitoringAdvancedSloBackendsBootIT`
+- `SloSnapshotStoreTest`
+- Full clean module verify:
+  `.\mvnw.cmd -pl log-monitoring-service -am clean verify -B`
+  (141 Surefire tests + 55 Failsafe ITs, Checkstyle 0,
+  SpotBugs 0, JaCoCo line 0.90 / branch 0.81)
+
+### Cross-ref
+
+- ADR-0046 Amendment 4 -- P8.3 counter-family scrape pattern reused
+  by P8.4 and P8.7+ target-service scrapers.
+- ADR-0046 Amendment 3 -- default availability SLO definitions still
+  bind unchanged and can participate as children in P8.6 composites.
+- ADR-0045 -- HTTP/1.1 + dual-timeout posture reused by the new
+  named clients.

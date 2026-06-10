@@ -13,6 +13,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.discovery.DiscoveryClient;
@@ -144,7 +145,7 @@ public final class EurekaActuatorHealthProbe implements ServiceHealthProbe {
      */
     @Autowired public EurekaActuatorHealthProbe(
             final DiscoveryClient discoveryClient,
-            final RestClient restClient,
+            @Qualifier("eurekaActuatorRestClient") final RestClient restClient,
             final EurekaActuatorProperties properties,
             @Lazy final MonitoringMetrics metrics,
             final ObjectMapper mapper) {

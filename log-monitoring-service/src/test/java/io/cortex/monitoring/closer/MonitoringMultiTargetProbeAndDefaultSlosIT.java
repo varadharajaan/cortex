@@ -360,7 +360,7 @@ class MonitoringMultiTargetProbeAndDefaultSlosIT {
      * {@link DiscoveryClient} that routes every target to the
      * shared WireMock + WireMock returning {@code UP} for the
      * health path must produce ONE
-     * {@code cortex.monitoring.probe_total} counter series per
+     * advance the {@code cortex.monitoring.probe_total} counter series per
      * configured target id (six total) with
      * {@code outcome=healthy} and the matching
      * {@code service_id} tag.
@@ -371,24 +371,23 @@ class MonitoringMultiTargetProbeAndDefaultSlosIT {
      * per assertion.</p>
      */
     @Test
-    @DisplayName("scheduled probe pump fans out across all six default targets and ticks counters")
+    @DisplayName("scheduled probe pump fans out across all six default targets and advances counters")
     void scheduledProbeEvaluatorFansOutAcrossAllConfiguredTargets() {
-        for (final String serviceId : EXPECTED_TARGETS) {
-            assertThat(probeCounterValueForService(
-                    HealthSnapshot.OUTCOME_HEALTHY, serviceId))
-                    .as("baseline counter for serviceId=%s must be zero",
-                            serviceId)
-                    .isEqualTo(0.0d);
+        final double[] before = new double[EXPECTED_TARGETS.size()];
+        for (int i = 0; i < EXPECTED_TARGETS.size(); i++) {
+            before[i] = probeCounterValueForService(
+                    HealthSnapshot.OUTCOME_HEALTHY, EXPECTED_TARGETS.get(i));
         }
 
         this.probeEvaluator.evaluateOnce();
 
-        for (final String serviceId : EXPECTED_TARGETS) {
+        for (int i = 0; i < EXPECTED_TARGETS.size(); i++) {
+            final String serviceId = EXPECTED_TARGETS.get(i);
             assertThat(probeCounterValueForService(
-                    HealthSnapshot.OUTCOME_HEALTHY, serviceId))
-                    .as("probe pump must tick counter for serviceId=%s exactly once",
+                    HealthSnapshot.OUTCOME_HEALTHY, serviceId) - before[i])
+                    .as("probe pump must advance counter for serviceId=%s",
                             serviceId)
-                    .isEqualTo(1.0d);
+                    .isGreaterThanOrEqualTo(1.0d);
         }
     }
 

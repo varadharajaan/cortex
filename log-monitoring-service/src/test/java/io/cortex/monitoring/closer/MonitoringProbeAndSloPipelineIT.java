@@ -421,7 +421,7 @@ class MonitoringProbeAndSloPipelineIT {
         this.probe.probe(new ProbeRequest(DERIVE_SERVICE_ID, DERIVE_INSTANCE_ID));
 
         final SloDefinition def = new SloDefinition(
-                DERIVE_SERVICE_ID, SLO_NAME, 0.99d, Duration.ofHours(1));
+                DERIVE_SERVICE_ID, SLO_NAME, 0.99d, Duration.ofHours(1), null);
         final SloSnapshot snap = this.engine.evaluate(def);
 
         assertThat(snap).isNotNull();
@@ -465,7 +465,7 @@ class MonitoringProbeAndSloPipelineIT {
     void sloEngineNoDataIsUnknown() {
         final SloDefinition def = new SloDefinition(
                 "log-cold-service", "availability-cold",
-                0.99d, Duration.ofHours(1));
+                0.99d, Duration.ofHours(1), null);
 
         final SloSnapshot snap = this.engine.evaluate(def);
 

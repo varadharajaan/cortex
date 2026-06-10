@@ -26,10 +26,14 @@ import org.springframework.stereotype.Component;
  * autowired {@code List<SloBudgetEngine>} bean (Spring binds it
  * to exactly one engine per profile via the {@code @ConditionalOnProperty}
  * gates on each implementation) and tracks every snapshot it
- * receives. A throwing engine (which would violate the SPI
- * contract) is caught at this layer so one rogue engine cannot
- * stall the scheduler loop -- the offending def is logged and
- * skipped; the next definition / next tick continues.</p>
+ * receives. Source-aware engines can opt out through
+ * {@link SloBudgetEngine#supports(SloDefinition)}, which keeps
+ * {@code mixed} mode from recording misleading failures for
+ * definitions owned by another backend. A throwing engine (which
+ * would violate the SPI contract) is caught at this layer so one
+ * rogue engine cannot stall the scheduler loop -- the offending
+ * def is logged and skipped; the next definition / next tick
+ * continues.</p>
  */
 @Component
 @ConditionalOnProperty(
@@ -45,6 +49,7 @@ public class SloEvaluator {
     private final SloProperties properties;
     private final List<SloBudgetEngine> engines;
     private final MonitoringMetrics metrics;
+    private final SloSnapshotStore snapshotStore;
 
     /**
      * Sole ctor. Spring injects the operator-declared properties,
@@ -58,13 +63,17 @@ public class SloEvaluator {
      *                      element under normal binder selection)
      * @param monitoringMetrics gauge surface to tick with each
      *                          {@link SloSnapshot}
+     * @param store             latest snapshot store consumed by
+     *                          composite SLOs
      */
     public SloEvaluator(final SloProperties sloProperties,
                         final List<SloBudgetEngine> sloEngines,
-                        final MonitoringMetrics monitoringMetrics) {
+                        final MonitoringMetrics monitoringMetrics,
+                        final SloSnapshotStore store) {
         this.properties = sloProperties;
         this.engines = sloEngines;
         this.metrics = monitoringMetrics;
+        this.snapshotStore = store;
     }
 
     /**
@@ -103,7 +112,9 @@ public class SloEvaluator {
         }
         for (final SloDefinition def : this.properties.definitions()) {
             for (final SloBudgetEngine engine : this.engines) {
-                tickOne(engine, def);
+                if (engine.supports(def)) {
+                    tickOne(engine, def);
+                }
             }
         }
     }
@@ -121,6 +132,7 @@ public class SloEvaluator {
         try {
             final SloSnapshot snapshot = engine.evaluate(def);
             if (snapshot != null) {
+                this.snapshotStore.record(snapshot);
                 this.metrics.recordSlo(snapshot);
             } else {
                 LOG.warn("SloBudgetEngine {} returned null snapshot for"

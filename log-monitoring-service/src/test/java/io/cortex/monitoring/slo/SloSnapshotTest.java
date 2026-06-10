@@ -21,7 +21,7 @@ class SloSnapshotTest {
 
     private static final SloDefinition DEF = new SloDefinition(
             "log-indexer-service", "availability",
-            0.99d, Duration.ofHours(1));
+            0.99d, Duration.ofHours(1), null);
 
     @Test
     void noopFactoryProducesNoopOutcomeWithFullBudgetDefaults() {
@@ -34,6 +34,16 @@ class SloSnapshotTest {
                 .isEqualTo(SloSnapshot.UNKNOWN_BUDGET_REMAINING);
         assertThat(snap.burnRate()).isEqualTo(SloSnapshot.UNKNOWN_BURN_RATE);
         assertThat(snap.reason()).contains("noop engine");
+    }
+
+    @Test
+    void advancedBackendConstantsAreStable() {
+        assertThat(SloSnapshot.BACKEND_TIMER_PERCENTILE)
+                .isEqualTo("timer-percentile");
+        assertThat(SloSnapshot.BACKEND_PROMQL).isEqualTo("promql");
+        assertThat(SloSnapshot.BACKEND_COMPOSITE).isEqualTo("composite");
+        assertThat(SloSnapshot.BACKEND_OTEL).isEqualTo("otel");
+        assertThat(SloSnapshot.BACKEND_MIXED).isEqualTo("mixed");
     }
 
     @Test
@@ -107,6 +117,14 @@ class SloSnapshotTest {
                 .isEqualTo(SloSnapshot.OUTCOME_AT_RISK);
         // exactly 0.1 -> exhausted (upper bound exclusive on at_risk)
         assertThat(SloSnapshot.classifyBand(0.1d))
+                .isEqualTo(SloSnapshot.OUTCOME_EXHAUSTED);
+    }
+
+    @Test
+    void classifyBandTreatsTinyFloatingPointDriftAsBoundary() {
+        assertThat(SloSnapshot.classifyBand(0.5000000000000004d))
+                .isEqualTo(SloSnapshot.OUTCOME_AT_RISK);
+        assertThat(SloSnapshot.classifyBand(0.1000000000000004d))
                 .isEqualTo(SloSnapshot.OUTCOME_EXHAUSTED);
     }
 

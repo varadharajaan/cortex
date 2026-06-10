@@ -35,7 +35,8 @@ import org.springframework.validation.annotation.Validated;
  * @param backend            binder gate value selecting which
  *                           {@link SloBudgetEngine} bean wires;
  *                           one of {@code noop} or
- *                           {@code micrometer-derivation};
+ *                           {@code micrometer-derivation} or
+ *                           {@code counter-family};
  *                           defaults to {@link #DEFAULT_BACKEND}
  * @param evaluationInterval cadence at which the
  *                           {@link SloEvaluator} fires; defaults
