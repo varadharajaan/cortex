@@ -2,6 +2,8 @@ package io.cortex.load;
 
 import static io.gatling.javaapi.core.CoreDsl.StringBody;
 import static io.gatling.javaapi.core.CoreDsl.atOnceUsers;
+import static io.gatling.javaapi.core.CoreDsl.doIf;
+import static io.gatling.javaapi.core.CoreDsl.exec;
 import static io.gatling.javaapi.core.CoreDsl.global;
 import static io.gatling.javaapi.core.CoreDsl.jmesPath;
 import static io.gatling.javaapi.core.CoreDsl.rampUsers;
@@ -69,12 +71,17 @@ public class GatewayLoadSimulation extends Simulation {
         .check(status().in(200, 404))
         .toChainBuilder();
 
+    // Only drive the authenticated read path when login actually issued a JWT;
+    // otherwise the bearer-bound requests would fail with "no attribute jwt"
+    // and pollute the error rate with a cascade rather than the real failure.
     private final ScenarioBuilder scenario = scenario("gateway read path")
         .exec(login)
         .pause(Duration.ofMillis(200))
-        .exec(nlToLogQl)
-        .pause(Duration.ofMillis(200))
-        .exec(searchLogs);
+        .doIf(session -> session.contains("jwt")).then(
+            exec(nlToLogQl)
+                .pause(Duration.ofMillis(200))
+                .exec(searchLogs)
+        );
 
     public GatewayLoadSimulation() {
         setUp(
