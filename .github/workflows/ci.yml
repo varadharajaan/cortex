@@ -291,6 +291,37 @@ jobs:
           echo "gateway did not become healthy in time" >&2
           docker compose -f infra/docker/docker-compose.yml ps
           exit 1
+      - name: Wait for gateway discovery convergence (indexer routable)
+        run: |
+          # The gateway's own health flips UP before the Eureka-discovered
+          # log-indexer-service has registered and entered the gateway route
+          # cache, so a load run that fires the instant the gateway is healthy
+          # races discovery and sees 502 "no instance available" on the search
+          # path (the sim's read surface). Gate on the real search route until
+          # the gateway can reach the indexer, then flush Redis so the SLO run
+          # starts on clean rate-limit buckets and measures latency, not
+          # warm-up rejections.
+          token=$(curl -fsS -X POST http://localhost:8090/api/v1/auth/login \
+            -H 'Content-Type: application/json' -H 'X-Tenant-Id: cortex-dev' \
+            -d '{"username":"admin","password":"dev-admin-pass"}' | jq -r .accessToken)
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "could not mint a bootstrap token for the convergence probe" >&2
+            exit 1
+          fi
+          for i in $(seq 1 60); do
+            s=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8090/api/v1/logs/search?index=cortex-cortex-dev-app&q=level:ERROR&maxHits=1" \
+              -H 'X-Tenant-Id: cortex-dev' -H "Authorization: Bearer $token" || echo 000)
+            echo "convergence probe #$i: logs/search=$s"
+            if [ "$s" = "200" ] || [ "$s" = "404" ]; then
+              echo "indexer routable through gateway"
+              docker exec cortex-redis redis-cli FLUSHALL >/dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "indexer did not become routable through the gateway in time" >&2
+          docker compose -f infra/docker/docker-compose.yml ps
+          exit 1
       - name: Run the Gatling SLO simulation
         run: |
           cd log-load-tests
