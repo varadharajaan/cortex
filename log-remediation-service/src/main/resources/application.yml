@@ -18,6 +18,26 @@ spring:
     serialization:
       write-dates-as-timestamps: false
 
+  # ----- Persistence (P9.3 anomaly read model) ---------------------------
+  # log-remediation-service owns the query/read side for confirmed
+  # anomalies. Local dev deliberately reuses the smoke Postgres
+  # database, but Flyway writes to its own history table so remediation
+  # migrations never collide with log-ingest-service migrations in the
+  # same local database. Production should override these with a
+  # remediation-owned Postgres database/schema.
+  datasource:
+    url: ${CORTEX_REMEDIATION_DB_URL:jdbc:postgresql://localhost:5432/cortex_ingest}
+    username: ${CORTEX_REMEDIATION_DB_USERNAME:cortex_ingest}
+    password: ${CORTEX_REMEDIATION_DB_PASSWORD:cortex_ingest}
+    hikari:
+      maximum-pool-size: 5
+      pool-name: cortex-remediation-pool
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    table: remediation_flyway_schema_history
+
   # ----- Kafka consumer (P6.0 / ADR-0032 D1) ------------------------------
   # Direct Spring for Apache Kafka @KafkaListener container per LD79 +
   # ADR-0028 D1 (symmetric with the P5 LogEventConsumer + the P4.4b
@@ -33,6 +53,9 @@ spring:
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
     listener:
       ack-mode: manual
       # missing-topics-fatal=false lets the consumer boot before the
@@ -91,6 +114,28 @@ cortex:
     # writer is wired yet.
     dlq:
       topic: ${CORTEX_REMEDIATION_DLQ_TOPIC:cortex.anomalies.v1.dlq}
+    outcomes:
+      topic: ${CORTEX_REMEDIATION_OUTCOMES_TOPIC:cortex.remediation.outcomes.v1}
+    dedupe:
+      enabled: ${CORTEX_REMEDIATION_DEDUPE_ENABLED:true}
+      ttl: ${CORTEX_REMEDIATION_DEDUPE_TTL:PT24H}
+    resilience:
+      enabled: ${CORTEX_REMEDIATION_RESILIENCE_ENABLED:true}
+      circuit-breaker:
+        failure-rate-threshold: ${CORTEX_REMEDIATION_CB_FAILURE_RATE_THRESHOLD:50}
+        sliding-window-size: ${CORTEX_REMEDIATION_CB_SLIDING_WINDOW_SIZE:10}
+        minimum-number-of-calls: ${CORTEX_REMEDIATION_CB_MINIMUM_NUMBER_OF_CALLS:5}
+        wait-duration-in-open-state: ${CORTEX_REMEDIATION_CB_WAIT_OPEN:PT30S}
+        permitted-calls-in-half-open-state: ${CORTEX_REMEDIATION_CB_HALF_OPEN_CALLS:2}
+      retry:
+        max-attempts: ${CORTEX_REMEDIATION_RETRY_MAX_ATTEMPTS:2}
+        wait-duration: ${CORTEX_REMEDIATION_RETRY_WAIT:PT0.1S}
+    policy:
+      enabled: ${CORTEX_REMEDIATION_POLICY_ENABLED:true}
+      dry-run-only: ${CORTEX_REMEDIATION_POLICY_DRY_RUN_ONLY:true}
+      auto-apply: ${CORTEX_REMEDIATION_POLICY_AUTO_APPLY:false}
+      min-severity: ${CORTEX_REMEDIATION_POLICY_MIN_SEVERITY:HIGH}
+      allowed-remediation-keys: ${CORTEX_REMEDIATION_POLICY_ALLOWED_KEYS:*}
     # RemediationDispatcher SPI binder gate (P6.0 / ADR-0032 D1).
     #
     # `provider` is the binder gate read by @ConditionalOnProperty on

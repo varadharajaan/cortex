@@ -407,3 +407,44 @@ supplied). `Instant` fields serialize as ISO-8601
 3. **Expose by surrogate `id`.** Rejected -- `id` is a DB detail and is
    not tenant-scoped; `(tenant_id, event_id)` is the stable, safe key.
 
+## Amendment 3 - 2026-06-10 (unknown-tenant integrity violation -> 400)
+
+Status: Accepted (amendment)
+Date: 2026-06-10
+Scope: maps a Postgres referential-integrity failure on the write path to
+a clean `400 VALIDATION_FAILED` instead of a generic `500`. No previous
+decision is reversed; this tightens the existing write-path error contract
+(A1 / the P4.1 ratification). Caught by the P10.1 live e2e sweep.
+
+### A3.1. The defect
+
+`raw_logs.tenant_id` carries a foreign key to the `tenants` table (A1).
+Posting a batch for a tenant that has not been provisioned (no `tenants`
+row) makes the Spring Data JDBC insert fail with a
+`DbActionExecutionException` wrapping a
+`DataIntegrityViolationException` (Postgres FK violation). The ingest
+`GlobalExceptionHandler` had no arm for either, so the failure surfaced
+as `500 unhandled ingest error` -- a server-fault status for what is
+actually a bad request (an unknown tenant the caller chose).
+
+### A3.2. The contract fix
+
+`GlobalExceptionHandler` gains one
+`@ExceptionHandler({DataIntegrityViolationException.class,
+DbActionExecutionException.class})` arm that returns RFC 7807
+`400 VALIDATION_FAILED` with the bounded, non-leaking message "the
+request references an unknown or unprovisioned tenant". The raw cause is
+unwrapped via `NestedExceptionUtils.getMostSpecificCause(ex)` for
+server-side logging ONLY -- the SQL / constraint name is never echoed to
+the client (OWASP A09: no internal detail leakage). This mirrors the
+existing `VALIDATION_FAILED` posture for Bean Validation failures, so the
+caller sees one consistent 4xx contract for every "your input is the
+problem" case.
+
+### A3.3. Why not auto-provision the tenant
+
+Rejected -- silently creating a `tenants` row on first ingest would let a
+typo'd or spoofed tenant id mint a live tenant, defeating the FK as a
+provisioning gate. Tenant creation stays an explicit out-of-band step;
+ingest validates against it and rejects unknowns at the boundary.
+

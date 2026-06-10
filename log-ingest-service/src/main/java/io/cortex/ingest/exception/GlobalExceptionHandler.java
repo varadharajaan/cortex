@@ -6,6 +6,9 @@ import java.time.OffsetDateTime;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.NestedExceptionUtils;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.relational.core.conversion.DbActionExecutionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -109,6 +112,39 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
                 buildProblem(HttpStatus.NOT_FOUND, ErrorCodes.NOT_FOUND,
                         "not found", request));
+    }
+
+    /**
+     * Maps a database integrity violation to {@code 400 Bad Request}
+     * with {@link ErrorCodes#VALIDATION_FAILED}. The only
+     * client-triggerable integrity violation on the ingest write path
+     * is the {@code raw_logs.tenant_id} foreign key into
+     * {@code tenants} -- i.e. a request that references an unknown or
+     * unprovisioned tenant (duplicate {@code (tenant_id, event_id)}
+     * rows are absorbed idempotently in the service layer and never
+     * reach this advice). Surfacing it as a clean {@code 400} instead
+     * of a generic {@code 500} keeps a client/data problem from being
+     * reported as an internal server error (rule 18.1 / A8.6); the
+     * underlying SQL constraint detail is logged server-side only and
+     * never leaked to the client.
+     *
+     * <p>Spring Data JDBC may surface the violation either directly as
+     * a {@link DataIntegrityViolationException} or wrapped in a
+     * {@link DbActionExecutionException}; both shapes are handled.</p>
+     *
+     * @param ex      thrown integrity violation
+     * @param request inbound HTTP request
+     * @return RFC 7807 problem detail wrapped in a response entity
+     */
+    @ExceptionHandler({DataIntegrityViolationException.class, DbActionExecutionException.class})
+    public ResponseEntity<ProblemDetail> handleIntegrityViolation(
+            final Exception ex, final HttpServletRequest request) {
+        final Throwable rootCause = NestedExceptionUtils.getMostSpecificCause(ex);
+        LOG.warn("ingest integrity violation (likely unknown/unprovisioned tenant): {}",
+                rootCause.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(
+                buildProblem(HttpStatus.BAD_REQUEST, ErrorCodes.VALIDATION_FAILED,
+                        "the request references an unknown or unprovisioned tenant", request));
     }
 
     /**

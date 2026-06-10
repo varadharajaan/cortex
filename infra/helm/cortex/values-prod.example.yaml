@@ -1,0 +1,60 @@
+# Example production overlay. P12 will wire these values from Terraform outputs
+# and Azure Key Vault / External Secrets; do not commit real credentials here.
+
+global:
+  imagePullSecrets:
+    - name: acr-pull-secret
+
+cortex-gateway:
+  env:
+    SPRING_PROFILES_ACTIVE: prod
+    EUREKA_CLIENT_ENABLED: "true"
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    REDIS_URI: redis://cortex-redis:6379/0
+    SPRING_AI_OLLAMA_BASE_URL: http://cortex-wiremock:8080
+  secretEnv:
+    CORTEX_GATEWAY_JWT_SECRET: replace-with-key-vault-secret
+
+cortex-ingest:
+  env:
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    CORTEX_INGEST_DB_URL: jdbc:postgresql://replace-postgres-host:5432/cortex_ingest
+    CORTEX_INGEST_DB_USERNAME: cortex_ingest
+    REDIS_HOST: replace-redis-host
+    REDIS_PORT: "6379"
+    CORTEX_KAFKA_BROKERS: replace-kafka-bootstrap:9093
+  secretEnv:
+    CORTEX_INGEST_DB_PASSWORD: replace-with-key-vault-secret
+
+cortex-remediation:
+  env:
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    CORTEX_KAFKA_BROKERS: replace-kafka-bootstrap:9093
+    CORTEX_REMEDIATION_DB_URL: jdbc:postgresql://replace-postgres-host:5432/cortex_remediation
+    CORTEX_REMEDIATION_DB_USERNAME: cortex_ingest
+    SPRING_DATA_REDIS_HOST: replace-redis-host
+    SPRING_DATA_REDIS_PORT: "6379"
+  secretEnv:
+    CORTEX_REMEDIATION_DB_PASSWORD: replace-with-key-vault-secret
+
+cortex-processor:
+  env:
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    CORTEX_KAFKA_BROKERS: replace-kafka-bootstrap:9093
+    SPRING_AI_OLLAMA_BASE_URL: replace-ai-endpoint
+
+cortex-indexer:
+  env:
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    CORTEX_INDEXER_BACKEND: quickwit
+    CORTEX_INDEXER_SEARCH_BACKEND: quickwit
+    CORTEX_QUICKWIT_BASE_URL: replace-quickwit-url
+
+cortex-monitoring:
+  env:
+    EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+    CORTEX_MONITORING_PROBE_BACKEND: eureka-actuator
+    CORTEX_MONITORING_PROBE_ENABLED: "true"
+
+cortex-echo:
+  enabled: false

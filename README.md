@@ -18,19 +18,35 @@ Quickwit full-text), and Kubernetes-native deployment.
 [![Spring Cloud](https://img.shields.io/badge/Spring%20Cloud-2023.0.x-green)](https://spring.io/projects/spring-cloud)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
 
-**Phase progress**: P0 .. P5 SHIPPED (through P5.2). P5.2 Spring AI 1.0
-anomaly classifier (PR #73, `e92efaf`, 2026-06-03). P5.1 parser + schema
-validator + DLQ publisher (PR #70, `65e2ab8`, 2026-06-03). Multi-NIC Eureka
-loopback fix (PR #71, `f8146a9`, 2026-06-03). P5.0a closer follow-ups
-(PR #68, `a8e539c`, 2026-06-03). P5.0 `log-processor-service` scaffold +
-Kafka consumer + classifier SPI + metrics (PR #67, `068a3f8`, 2026-06-03).
-P4 epic closed by P4.5 (PR #65, `2af00d1`, 2026-06-03). **Next: P5.3
-anomaly fan-out + remediation hook (within the P5 epic).**
+**Phase progress**: current workspace includes the P19/P20/P21 + P9.3/P9.3a
+auto-remediation lane in `log-remediation-service`, P11 Helm under
+`infra/helm/`, P12 Azure Terraform under `infra/terraform/`, P13 Ansible
+under `infra/ansible/`, and the P17 Grafana/SLO operator surface under
+`infra/grafana/`. Remediation adds Redis SETNX anomaly
+dedupe, Resilience4j dispatcher guard, fix-first `RemediationPlaybook` SPI,
+malformed anomaly DLQ, `cortex.remediation.outcomes.v1` audit topic, a
+Postgres-backed anomalies read model, and direct
+`GET /api/v1/anomalies` read API. The lane was verified on 2026-06-09 with
+module `clean verify`, live JVM smoke, and Newman against the live
+remediation process. P11 was verified on 2026-06-10 with Helm lint/template,
+kubectl client dry-run, and Docker Desktop Kubernetes server dry-run via
+`scripts/live-e2e/smoke-p11-helm.ps1`. P12 was verified on 2026-06-10 with
+Terraform fmt/init/validate via `scripts/live-e2e/smoke-p12-terraform.ps1`;
+no Azure apply was run. P13 was verified on 2026-06-10 with containerized
+Ansible syntax checks via `scripts/live-e2e/smoke-p13-ansible.ps1`; no real
+deploy/rollback was run. P17 was verified on 2026-06-10 with live
+Prometheus/Grafana boot via `scripts/live-e2e/smoke-p17-grafana.ps1`. P18
+release-prep was dry-run verified with
+`scripts/live-e2e/smoke-p18-release-prep.ps1`; the actual tag, SBOM build,
+cosign signatures, and GitHub Release remain behind an explicit operator
+approval gate. Earlier baseline: P0 .. P5 shipped through P5.2 on `main`; P6
+dispatcher adapters and the P6.1a cross-phase closer are documented in the
+remediation README and ADRs.
 
 See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 [docs/adr/INDEX.md](docs/adr/INDEX.md) for the ADR directory.
 
-### What's working today on `main`
+### What's working today on the current branch
 
 - **log-gateway** :8090 -- JWT + API-key auth, Bucket4j + Redis rate limit
   (global + anon + per-feature sub-buckets via `@RateLimitFeature`),
@@ -55,12 +71,37 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
   (the `classified_total` is tagged `outcome=anomaly|normal|error|skipped`).
   Actuator-only HTTP surface; pipeline activation flows through the
   Kafka topic `cortex.logs.events.v1`.
+- **log-remediation-service** :8096 -- consumes
+  `cortex.anomalies.v1`, parses anomaly CloudEvents, sends malformed
+  envelopes to `cortex.anomalies.v1.dlq`, dedupes valid events in Redis,
+  runs policy-gated `RemediationPlaybook` dry-run/apply, publishes every
+  valid decision to `cortex.remediation.outcomes.v1`, persists valid
+  anomaly rows to its own Postgres read model, exposes
+  `GET /api/v1/anomalies`, and dispatches Slack/PagerDuty/Jira only when
+  the outcome is `skipped` or `failed` (ADR-0051/0052). Auto-fix success
+  is silent except for the audit topic.
 - **eureka-server** :8761 -- service registry; every Spring Boot service
   registers and discovers via `lb://`.
 - **log-echo-service** :8093 -- thin echo backstop used by gateway smokes
   to assert end-to-end routing.
 - **infra (docker compose smoke)** -- postgres:16-alpine, redis:7-alpine,
   `confluentinc/cp-kafka` (P4.4b+), `wiremock` :8094.
+- **infra/helm** -- P11 umbrella chart `infra/helm/cortex` plus one service
+  chart per runnable component. Canonical Kubernetes names match P10 Docker
+  DNS (`cortex-gateway`, `cortex-ingest`, `cortex-remediation`, etc.).
+  Verified by Helm lint/template and kubectl client/server dry-runs.
+- **infra/terraform** -- P12 Azure scaffold for AKS, ACR, Key Vault, Blob,
+  App Insights/Log Analytics, Service Bus, and optional Postgres/Redis. The
+  stack validates locally but does not apply without operator approval.
+- **infra/ansible** -- P13 playbooks for Terraform validation/provision,
+  Helm deploy, Helm rollback, and rollout + gateway health smoke. Ansible is
+  orchestration only; Terraform/Helm remain the source of truth.
+- **infra/grafana** -- P17 provisioned Grafana datasource + dashboards +
+  SLO catalog. Local/full Docker compose expose Grafana on `:3000` with
+  local-only `admin` / `cortex` credentials.
+- **docs/release + scripts/release** -- P18 release-prep runbook, draft
+  release notes, and guarded SBOM/cosign/GitHub Release scripts. Publishing is
+  not automatic.
 
 ---
 
@@ -85,12 +126,15 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
             ^                 |    1.0)        |              v                         ^
             |                 +----------------+   +----------------------+   +-------------------+
             |                                      | log-remediation[E][M]|   | log-indexer [E][M]|
-            |                                      | (playbooks, alert    |   | (Quickwit writer, |
-            |                                      |  routing)            |   |  retention, cold) |
+            |                                      | (dedupe, policy,    |   | (Quickwit writer, |
+            |                                      |  playbook, fallback)|   |  retention, cold) |
             |                                      +----------------------+   +-------------------+
             |                                               |
             |                                               v
-            |                                     Slack / PagerDuty / Jira
+            |                       cortex.remediation.outcomes.v1 (audit)
+            |                       cortex.anomalies.v1.dlq (malformed)
+            |                       GET /api/v1/anomalies (read model)
+            |                       Slack / PagerDuty / Jira (fallback only)
             |
             |  compile-time dep -- consumed by every Spring Boot service box above
             |
@@ -132,7 +176,7 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 | `log-echo-service`           | Thin echo backstop for end-to-end gateway smokes (standalone Maven project) | P3.0b |
 | `log-ingest-service`         | Validate, dedupe, mask PII, enrich, persist + transactional outbox -> Kafka | P4.0..P4.4c |
 | `log-processor-service`      | Direct `@KafkaListener` consumer with manual offset commit (ADR-0028), CloudEvents 1.0 envelope parse + JSON-schema validation, Spring AI 1.0 anomaly classifier (ADR-0029), DLQ publisher | P5.0..P5.2 SHIPPED |
-| `log-remediation-service`    | Auto-healing playbooks, alert routing                  | P6 |
+| `log-remediation-service`    | Fix-first remediation, outcome audit, anomaly read model, guarded human fallback | P19..P21 + P9.3/P9.3a |
 | `log-indexer-service`        | Quickwit indexing, retention, cold-tier moves          | P7 |
 | `log-monitoring-service`     | Health, metrics, dashboards, SLO tracking              | P8 |
 | `infra/local/`               | docker compose smoke stack (postgres, redis, kafka, wiremock) | P3+ |
@@ -151,11 +195,26 @@ Prereqs: Java 17, Docker Desktop, Git.
 git clone https://github.com/varadharajaan/cortex.git
 cd cortex
 
-# bring up infra (Postgres, Loki, RabbitMQ, MinIO, Quickwit, Ollama, Grafana)
+# bring up infra (Postgres, Kafka, Redis, Loki, MinIO, Quickwit, Ollama, Grafana)
 docker compose -f infra/docker/docker-compose.yml up -d   # added in P10
 
 # build all modules with the project-shipped wrapper
 ./mvnw -B clean verify
+
+# verify the P11 Helm release contract
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p11-helm.ps1
+
+# verify the P12 Azure Terraform scaffold (no apply)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p12-terraform.ps1
+
+# verify the P13 Ansible playbook syntax
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p13-ansible.ps1
+
+# verify the P17 Grafana / Prometheus operator surface
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p17-grafana.ps1
+
+# dry-run the P18 v0.1.0 release-prep lane
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p18-release-prep.ps1
 
 # run a service locally (example: gateway)
 ./mvnw -pl log-gateway spring-boot:run
@@ -171,7 +230,7 @@ docker compose -f infra/docker/docker-compose.yml up -d   # added in P10
 ├── log-gateway/               # Edge gateway (P3)
 ├── log-ingest-service/        # Ingest pipeline (P4.0..P4.4c SHIPPED)
 ├── log-processor-service/     # AI processing (P5.0..P5.2 SHIPPED; P5.3 next)
-├── log-remediation-service/   # Self-healing (P6)
+├── log-remediation-service/   # Fix-first remediation + anomaly reads (P6/P19..P21/P9.3a)
 ├── log-indexer-service/       # Quickwit owner (P7)
 ├── log-monitoring-service/    # Observability (P8)
 ├── eureka-server/             # Standalone discovery (P3.0a)

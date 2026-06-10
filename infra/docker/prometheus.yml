@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# CORTEX compose-stack Prometheus configuration (P10.1 e2e stack).
+#
+# Mounts into the cortex-prometheus container at
+# /etc/prometheus/prometheus.yml. Unlike the P8.2a smoke config
+# (infra/local/prometheus.yml, which scrapes the host JVM on
+# host.docker.internal:8098), this variant scrapes the in-network
+# cortex-monitoring container by its cortex-net DNS name
+# (cortex-monitoring:8098/actuator/prometheus) at 5 s cadence so the
+# SLO gauge pair + probe counter family appear in Prometheus within
+# the e2e window.
+#
+# Loads the same cortex SLO multi-window burn-rate alert rules from
+# /etc/prometheus/rules/*.rules.yml (mounted read-only from the repo's
+# infra/local/alerts/ directory, the single source of truth for the
+# CortexSloFastBurn + CortexSloSlowBurn + CortexSloBudgetExhausted
+# rules per ADR-0046 D6). The log-monitoring Postman collection's
+# Prometheus-Container folder asserts the container is healthy, the
+# three alert rules parsed, and the log-monitoring-service scrape
+# target is UP.
+#
+# Per LD42 + LD121 the cortex services run on HTTP/1.1 only;
+# Prometheus's default scraper is HTTP/1.1 so nothing special is
+# needed here.
+# ---------------------------------------------------------------------------
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    cluster: cortex-local
+    env: docker
+
+rule_files:
+  - /etc/prometheus/rules/*.rules.yml
+
+scrape_configs:
+  - job_name: 'log-monitoring-service'
+    metrics_path: /actuator/prometheus
+    scheme: http
+    static_configs:
+      - targets:
+          - 'cortex-monitoring:8098'
+        labels:
+          service_id: log-monitoring-service
+          backend: eureka-actuator

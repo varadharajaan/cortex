@@ -200,6 +200,37 @@ class GlobalExceptionHandlerTest {
     }
 
     /**
+     * A database foreign-key violation (an unknown / unprovisioned
+     * tenant on the {@code raw_logs.tenant_id} FK) surfaces as a clean
+     * {@code 400 Bad Request} / {@link ErrorCodes#VALIDATION_FAILED}
+     * instead of a generic {@code 500}, whether the violation arrives
+     * directly as a {@link org.springframework.dao.DataIntegrityViolationException}
+     * or wrapped in a Spring Data JDBC
+     * {@link org.springframework.data.relational.core.conversion.DbActionExecutionException}.
+     */
+    @Test
+    void integrityViolationMapsToBadRequest() {
+        final org.springframework.dao.DataIntegrityViolationException direct =
+                new org.springframework.dao.DataIntegrityViolationException(
+                        "violates foreign key constraint \"raw_logs_tenant_id_fkey\"");
+        final ResponseEntity<ProblemDetail> directResponse =
+                this.handler.handleIntegrityViolation(direct, mockRequest());
+        assertThat(directResponse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(directResponse.getBody()).isNotNull();
+        assertThat(directResponse.getBody().getProperties()).containsEntry(
+                "errorCode", ErrorCodes.VALIDATION_FAILED.name());
+        assertThat(directResponse.getBody().getDetail()).contains("unprovisioned tenant");
+
+        final org.springframework.data.relational.core.conversion.DbActionExecutionException wrapped =
+                new org.springframework.data.relational.core.conversion.DbActionExecutionException(
+                        null, direct);
+        final ResponseEntity<ProblemDetail> wrappedResponse =
+                this.handler.handleIntegrityViolation(wrapped, mockRequest());
+        assertThat(wrappedResponse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(wrappedResponse.getBody()).isNotNull();
+    }
+
+    /**
      * Unexpected throwables are sanitised behind a generic
      * 500 / {@link ErrorCodes#INTERNAL_ERROR} response (no leak of
      * the internal message).

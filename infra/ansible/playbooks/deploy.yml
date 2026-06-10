@@ -1,0 +1,32 @@
+---
+- name: Deploy the P11 Helm release
+  hosts: local
+  gather_facts: false
+  vars:
+    cortex_repo_root: "{{ playbook_dir }}/../../.."
+    cortex_helm_chart: "{{ cortex_repo_root }}/infra/helm/cortex"
+    cortex_helm_value_args: "{{ cortex_helm_values_files | map('regex_replace', '^(.*)$', '--values=\\1') | list }}"
+    cortex_helm_set_args: "{{ cortex_helm_set_values | map('regex_replace', '^(.*)$', '--set=\\1') | list }}"
+    cortex_helm_wait_args: "{{ cortex_helm_wait | bool | ternary(['--wait', '--timeout', cortex_rollout_timeout], []) }}"
+    cortex_helm_dry_run_args: "{{ cortex_helm_dry_run | bool | ternary(['--dry-run'], []) }}"
+  tasks:
+    - name: Check Kubernetes API reachability
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - cluster-info
+          - --request-timeout=10s
+      changed_when: false
+
+    - name: Deploy or upgrade CORTEX
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['helm', 'upgrade', '--install', cortex_release_name, cortex_helm_chart,
+             '--namespace', cortex_namespace, '--create-namespace']
+            + cortex_helm_value_args
+            + cortex_helm_set_args
+            + cortex_helm_wait_args
+            + cortex_helm_dry_run_args
+          }}
+      changed_when: true

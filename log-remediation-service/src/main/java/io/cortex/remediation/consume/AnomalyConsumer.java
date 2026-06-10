@@ -1,10 +1,11 @@
 package io.cortex.remediation.consume;
 
-import io.cortex.remediation.dispatch.DispatchResult;
-import io.cortex.remediation.dispatch.RemediationDispatcher;
-import io.cortex.remediation.metrics.RemediationMetrics;
+import io.cortex.remediation.anomaly.AnomalyReadModelWriter;
+import io.cortex.remediation.dlq.AnomalyDlqPublisher;
+import io.cortex.remediation.engine.RemediationEngine;
 import io.cortex.remediation.parse.AnomalyEnvelopeParser;
 import io.cortex.remediation.parse.AnomalyEvent;
+import io.cortex.remediation.parse.FailureReason;
 import io.cortex.remediation.parse.ParseException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,22 +24,17 @@ import org.springframework.stereotype.Component;
  * per {@code spring.kafka.listener.ack-mode=manual} in
  * application.yml controls the offset commit boundary.</p>
  *
- * <p>P6.0 pipeline (per record):</p>
+ * <p>P21 pipeline (per record):</p>
  * <ol>
  *   <li>{@link AnomalyEnvelopeParser#parse(byte[])} -- decode the
  *       CloudEvents 1.0 envelope + extract the typed
- *       {@link AnomalyEvent}. On {@link ParseException}, log the
- *       categorical {@link FailureReason} and ack (P6.4 will route
- *       to {@code cortex.anomalies.v1.dlq} with header
- *       {@code x-failure-reason=<reason>}).</li>
- *   <li>{@link RemediationDispatcher#dispatch(AnomalyEvent)} -- SPI
- *       dispatch (P6.1..P6.3 swap the impl behind
- *       {@code cortex.remediation.dispatcher.provider=slack|pagerduty|jira}).</li>
- *   <li>{@link RemediationMetrics#incDispatched(String, String, String)}
- *       -- tick {@code cortex.remediation.dispatched_total} with
- *       {@code channel} + {@code outcome} from the
- *       {@link DispatchResult} and {@code tenant_id} from the parsed
- *       event.</li>
+ *       {@link AnomalyEvent}. On {@link ParseException}, publish the
+ *       original bytes to {@code cortex.anomalies.v1.dlq} and ack.</li>
+ *   <li>{@link AnomalyReadModelWriter#persistFailOpen(AnomalyEvent)} --
+ *       record the query/read copy for P9.3a without blocking
+ *       remediation when Postgres is unavailable.</li>
+ *   <li>{@link RemediationEngine#handle(AnomalyEvent)} -- dedupe,
+ *       policy, playbook, outcome audit, then human fallback.</li>
  *   <li>{@code ack.acknowledge()} -- commit the offset.</li>
  * </ol>
  *
@@ -54,8 +50,9 @@ import org.springframework.stereotype.Component;
 public class AnomalyConsumer {
 
     private final AnomalyEnvelopeParser parser;
-    private final RemediationDispatcher dispatcher;
-    private final RemediationMetrics metrics;
+    private final AnomalyDlqPublisher dlqPublisher;
+    private final AnomalyReadModelWriter readModelWriter;
+    private final RemediationEngine remediationEngine;
 
     /**
      * Main consumer entry point.
@@ -78,6 +75,7 @@ public class AnomalyConsumer {
         if (payload == null || payload.length == 0) {
             log.warn("Skipping null/empty CloudEvent on {} partition={} offset={}",
                     record.topic(), record.partition(), record.offset());
+            publishDlq(record, FailureReason.INVALID_ENVELOPE, "empty payload");
             ack.acknowledge();
             return;
         }
@@ -98,6 +96,7 @@ public class AnomalyConsumer {
                             + " reason={} message={}",
                     record.topic(), record.partition(), record.offset(),
                     ex.reason().header(), ex.getMessage());
+            publishDlq(record, ex.reason(), ex.getMessage());
             ack.acknowledge();
             return null;
         }
@@ -107,24 +106,34 @@ public class AnomalyConsumer {
                                 final AnomalyEvent event,
                                 final Acknowledgment ack) {
         try {
-            DispatchResult result = this.dispatcher.dispatch(event);
-            if (result == null) {
-                log.warn("Dispatcher returned null for eventId={} -- treating"
-                        + " as skipped", event.eventId());
-                result = DispatchResult.skipped("dispatcher returned null");
-            }
-            this.metrics.incDispatched(result.channel(), result.outcome(),
-                    event.tenantId());
-            log.info("Dispatched anomaly eventId={} tenantId={} channel={}"
-                            + " outcome={} reason={}",
-                    event.eventId(), event.tenantId(), result.channel(),
-                    result.outcome(), result.reason());
+            persistReadModel(event);
+            this.remediationEngine.handle(event);
             ack.acknowledge();
         } catch (RuntimeException ex) {
-            log.error("Dispatcher threw on {} partition={} offset={} eventId={}",
+            log.error("Remediation engine threw on {} partition={} offset={} eventId={}",
                     record.topic(), record.partition(), record.offset(),
                     event.eventId(), ex);
             ack.acknowledge();
+        }
+    }
+
+    private void persistReadModel(final AnomalyEvent event) {
+        try {
+            this.readModelWriter.persistFailOpen(event);
+        } catch (RuntimeException ex) {
+            log.error("Read-model writer threw eventId={} tenantId={}",
+                    event.eventId(), event.tenantId(), ex);
+        }
+    }
+
+    private void publishDlq(final ConsumerRecord<byte[], byte[]> record,
+                            final FailureReason reason,
+                            final String message) {
+        try {
+            this.dlqPublisher.publish(record, reason, message);
+        } catch (RuntimeException ex) {
+            log.error("Failed to publish anomaly DLQ record topic={} offset={}",
+                    record.topic(), record.offset(), ex);
         }
     }
 }

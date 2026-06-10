@@ -32,6 +32,11 @@ import java.time.Instant;
  *                 WARN / ERROR)
  * @param service  logical service / app name that produced the log line
  * @param message  human-readable message verbatim from the source
+ * @param confidence optional anomaly confidence score; defaults to 0.0 for old
+ *                   P5/P6 envelopes
+ * @param anomalyType optional classifier anomaly type; defaults to
+ *                    {@code UNKNOWN}
+ * @param remediationKey optional playbook lookup key; defaults to {@code none}
  */
 public record AnomalyEvent(
         String eventId,
@@ -41,7 +46,10 @@ public record AnomalyEvent(
         Instant ts,
         String level,
         String service,
-        String message) {
+        String message,
+        double confidence,
+        String anomalyType,
+        String remediationKey) {
 
     /**
      * Jackson constructor. Mirrors the producer-side
@@ -56,6 +64,9 @@ public record AnomalyEvent(
      * @param level    see record javadoc
      * @param service  see record javadoc
      * @param message  see record javadoc
+     * @param confidence see record javadoc
+     * @param anomalyType see record javadoc
+     * @param remediationKey see record javadoc
      */
     @JsonCreator
     @SuppressWarnings("checkstyle:parameternumber")
@@ -67,7 +78,10 @@ public record AnomalyEvent(
             @JsonProperty("ts") final Instant ts,
             @JsonProperty("level") final String level,
             @JsonProperty("service") final String service,
-            @JsonProperty("message") final String message) {
+            @JsonProperty("message") final String message,
+            @JsonProperty("confidence") final double confidence,
+            @JsonProperty("anomalyType") final String anomalyType,
+            @JsonProperty("remediationKey") final String remediationKey) {
         this.eventId = eventId;
         this.tenantId = tenantId;
         this.severity = severity;
@@ -76,5 +90,29 @@ public record AnomalyEvent(
         this.level = level;
         this.service = service;
         this.message = message;
+        this.confidence = confidence;
+        this.anomalyType = anomalyType == null ? "UNKNOWN" : anomalyType;
+        this.remediationKey = remediationKey == null ? "none" : remediationKey;
+    }
+
+    /**
+     * Backward-compatible constructor for P5/P6 anomaly envelopes.
+     *
+     * @param eventId  see record javadoc
+     * @param tenantId see record javadoc
+     * @param severity see record javadoc
+     * @param reason   see record javadoc
+     * @param ts       see record javadoc
+     * @param level    see record javadoc
+     * @param service  see record javadoc
+     * @param message  see record javadoc
+     */
+    @SuppressWarnings("checkstyle:parameternumber")
+    public AnomalyEvent(final String eventId, final String tenantId,
+                        final String severity, final String reason,
+                        final Instant ts, final String level,
+                        final String service, final String message) {
+        this(eventId, tenantId, severity, reason, ts, level, service, message,
+                0.0d, "UNKNOWN", "none");
     }
 }

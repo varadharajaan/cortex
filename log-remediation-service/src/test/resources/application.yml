@@ -25,6 +25,11 @@ eureka:
 spring:
   application:
     name: log-remediation-service
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    table: remediation_flyway_schema_history
   # Kafka consumer placeholder defaults used by @KafkaListener on
   # AnomalyConsumer (groupId = "${spring.kafka.consumer.group-id}").
   # Bootstrap servers are overridden by Testcontainers / EmbeddedKafka
@@ -41,6 +46,9 @@ spring:
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
     listener:
       ack-mode: manual
       missing-topics-fatal: false
@@ -53,6 +61,28 @@ cortex:
     topic: cortex.anomalies.v1
     dlq:
       topic: cortex.anomalies.v1.dlq
+    outcomes:
+      topic: cortex.remediation.outcomes.v1
+    dedupe:
+      enabled: false
+      ttl: PT24H
+    resilience:
+      enabled: true
+      circuit-breaker:
+        failure-rate-threshold: 50
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: PT30S
+        permitted-calls-in-half-open-state: 2
+      retry:
+        max-attempts: 2
+        wait-duration: PT0.1S
+    policy:
+      enabled: true
+      dry-run-only: true
+      auto-apply: false
+      min-severity: HIGH
+      allowed-remediation-keys: "*"
     dispatcher:
       provider: noop
     # P6.1 Slack properties default to blank webhook-url so the test

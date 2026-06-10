@@ -1,0 +1,75 @@
+replicaCount: 1
+image:
+  repository: cortex/log-gateway
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+serviceAccount:
+  create: true
+  name: ""
+  automount: false
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+service:
+  type: ClusterIP
+  port: 8090
+  targetPort: 8090
+  annotations: {}
+env:
+  SPRING_PROFILES_ACTIVE: dev
+  EUREKA_CLIENT_ENABLED: "true"
+  EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
+  REDIS_URI: redis://cortex-redis:6379/0
+  SPRING_AI_OLLAMA_BASE_URL: http://cortex-wiremock:8080
+secretEnv: {}
+envFrom: []
+resources:
+  requests:
+    cpu: 150m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+probes:
+  startup:
+    enabled: true
+    path: /actuator/health
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 48
+  liveness:
+    enabled: true
+    path: /actuator/health/liveness
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readiness:
+    enabled: true
+    path: /actuator/health/readiness
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cortex-echo
+description: CORTEX echo service used by local gateway routing smokes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

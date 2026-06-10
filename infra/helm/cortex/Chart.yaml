@@ -1,0 +1,42 @@
+apiVersion: v2
+name: cortex
+description: Umbrella chart for the CORTEX log management platform.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: cortex-common
+    version: 0.1.0
+    repository: file://charts/cortex-common
+  - name: cortex-eureka
+    version: 0.1.0
+    repository: file://charts/cortex-eureka
+    condition: cortex-eureka.enabled
+  - name: cortex-gateway
+    version: 0.1.0
+    repository: file://charts/cortex-gateway
+    condition: cortex-gateway.enabled
+  - name: cortex-ingest
+    version: 0.1.0
+    repository: file://charts/cortex-ingest
+    condition: cortex-ingest.enabled
+  - name: cortex-processor
+    version: 0.1.0
+    repository: file://charts/cortex-processor
+    condition: cortex-processor.enabled
+  - name: cortex-remediation
+    version: 0.1.0
+    repository: file://charts/cortex-remediation
+    condition: cortex-remediation.enabled
+  - name: cortex-indexer
+    version: 0.1.0
+    repository: file://charts/cortex-indexer
+    condition: cortex-indexer.enabled
+  - name: cortex-monitoring
+    version: 0.1.0
+    repository: file://charts/cortex-monitoring
+    condition: cortex-monitoring.enabled
+  - name: cortex-echo
+    version: 0.1.0
+    repository: file://charts/cortex-echo
+    condition: cortex-echo.enabled

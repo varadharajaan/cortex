@@ -1,0 +1,16 @@
+---
+- name: Roll back the CORTEX Helm release
+  hosts: local
+  gather_facts: false
+  vars:
+    cortex_rollback_revision_args: "{{ cortex_rollback_revision | string | length > 0 | ternary([cortex_rollback_revision | string], []) }}"
+  tasks:
+    - name: Roll back Helm release
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['helm', 'rollback', cortex_release_name]
+            + cortex_rollback_revision_args
+            + ['--namespace', cortex_namespace, '--wait', '--timeout', cortex_rollout_timeout]
+          }}
+      changed_when: true

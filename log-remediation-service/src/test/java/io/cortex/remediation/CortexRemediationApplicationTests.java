@@ -2,19 +2,20 @@ package io.cortex.remediation;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.TestPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Smoke / context-loads test for the log-remediation-service Spring
  * Boot application (P6.0).
  *
- * <p>Boots an in-JVM Kafka broker via {@link EmbeddedKafka} so the
- * autoconfigured consumer container + {@code @KafkaListener} on
- * {@code AnomalyConsumer} can wire end-to-end without a real
- * broker. Eureka registration is disabled at the property level
- * because the local-dev registry on port 8761 is not running in
- * the test JVM.</p>
+ * <p>Boots a real Postgres via Testcontainers so the P9.3 anomaly
+ * read-model DataSource + Flyway migration are part of the smoke.
+ * Kafka listener auto-start is disabled here because the dedicated
+ * {@code AnomalyConsumerKafkaIT} owns the broker round-trip.</p>
  *
  * <p>This test proves: the Spring context loads, the consumer
  * container starts, the {@code NoopRemediationDispatcher} wires as
@@ -23,32 +24,23 @@ import org.springframework.test.context.TestPropertySource;
  * the Prometheus meter registry.</p>
  */
 @SpringBootTest
-@EmbeddedKafka(
-        partitions = 1,
-        topics = {"cortex.anomalies.v1"},
-        controlledShutdown = true,
-        brokerProperties = {
-                "listeners=PLAINTEXT://localhost:0",
-                "port=0",
-                "auto.create.topics.enable=true"
-        }
-)
+@Testcontainers
 @TestPropertySource(properties = {
-        // Point the consumer at the embedded broker. The
-        // ${spring.embedded.kafka.brokers} placeholder is set by
-        // EmbeddedKafkaBroker before bean creation.
-        "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}",
+        // The Kafka listener path is covered by AnomalyConsumerKafkaIT.
+        "spring.kafka.listener.auto-startup=false",
         // Keep the local-dev Eureka registry out of the test boot
         // path - the registry on :8761 isn't running.
         "eureka.client.enabled=false",
         "eureka.client.register-with-eureka=false",
-        "eureka.client.fetch-registry=false",
-        // Short consumer rebalance timeouts so the context teardown
-        // doesn't hang waiting for default 30s leave-group.
-        "spring.kafka.consumer.properties.session.timeout.ms=6000",
-        "spring.kafka.consumer.properties.heartbeat.interval.ms=2000"
+        "eureka.client.fetch-registry=false"
 })
 class CortexRemediationApplicationTests {
+
+    /** Shared Postgres 16 container for the P9.3 read-model DataSource. */
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres =
+            new PostgreSQLContainer<>("postgres:16-alpine");
 
     /**
      * Smoke test: assert the Spring context loads. Any wiring failure

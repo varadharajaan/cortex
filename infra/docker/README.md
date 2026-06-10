@@ -107,11 +107,29 @@ Deployment/Service name + pod prefix.
 | Kafka (KRaft) | `cortex-kafka` | `apache/kafka:3.8.0` | — (`:9093` in-net) |
 | Quickwit | `cortex-quickwit` | `quickwit/quickwit:0.8.1` | — |
 | Ollama stub | `cortex-wiremock` | `wiremock/wiremock` | — |
+| Prometheus | `cortex-prometheus` | `prom/prometheus:v2.55.1` | — |
+| Grafana | `cortex-grafana` | `grafana/grafana:11.3.1` | 3000 |
 
-Only `cortex-gateway` (`:8090`, the single public entry point) and
-`cortex-eureka` (`:8761`, operator visibility) publish host ports. Eureka
-IP registration (`prefer-ip-address=true`) lets `lb://` resolve
+`cortex-gateway` (`:8090`) remains the single application entry point.
+`cortex-eureka` (`:8761`) is published for local registry visibility and
+`cortex-grafana` (`:3000`) is published for the P17 operator UI. Eureka IP
+registration (`prefer-ip-address=true`) lets `lb://` resolve
 container-to-container on `cortex-net`.
+
+### Observability UI (P17)
+
+The full stack mounts `infra/grafana/provisioning` and
+`infra/grafana/dashboards` read-only into `cortex-grafana`. The Prometheus
+datasource URL is supplied by `PROMETHEUS_URL=http://cortex-prometheus:9090`;
+the same provisioning package is used by the local smoke stack with
+`PROMETHEUS_URL=http://prometheus:9090`.
+
+Local credentials are `admin` / `cortex`. They are compose-only defaults and
+must not be reused for production.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p17-grafana.ps1
+```
 
 ### Secrets
 

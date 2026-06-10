@@ -1,0 +1,36 @@
+---
+- name: Smoke-test a deployed CORTEX Helm release
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Wait for all CORTEX deployments to roll out
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - "{{ cortex_namespace }}"
+          - rollout
+          - status
+          - "deploy/{{ item }}"
+          - "--timeout={{ cortex_rollout_timeout }}"
+      loop: "{{ cortex_deployments }}"
+      changed_when: false
+
+    - name: Run in-cluster gateway health probe
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - "{{ cortex_namespace }}"
+          - run
+          - cortex-smoke-curl
+          - --rm
+          - -i
+          - --restart=Never
+          - "--image={{ cortex_smoke_curl_image }}"
+          - --
+          - curl
+          - -fsS
+          - "{{ cortex_smoke_gateway_url }}"
+      when: cortex_smoke_http_enabled | bool
+      changed_when: false

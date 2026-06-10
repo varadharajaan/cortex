@@ -35,6 +35,7 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.kafka.KafkaContainer;
 
 /**
@@ -76,6 +77,10 @@ abstract class AnomalyCrossPhaseBaseIT {
     /** Shared Apache Kafka 3.8.0 KRaft container (singleton). */
     protected static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:3.8.0");
 
+    /** Shared Postgres 16 container for the P9.3 anomaly read model. */
+    protected static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:16-alpine");
+
     /** Shared in-process WireMock server on a dynamic port (singleton). */
     protected static final WireMockServer WIRE_MOCK = new WireMockServer(
             WireMockConfiguration.options().dynamicPort());
@@ -96,6 +101,7 @@ abstract class AnomalyCrossPhaseBaseIT {
     protected static final Duration POLL = Duration.ofMillis(200);
 
     static {
+        POSTGRES.start();
         KAFKA.start();
         WIRE_MOCK.start();
     }
@@ -108,6 +114,9 @@ abstract class AnomalyCrossPhaseBaseIT {
      */
     @DynamicPropertySource
     static void baseProperties(final DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
         registry.add("eureka.client.enabled", () -> "false");
         registry.add("eureka.client.register-with-eureka", () -> "false");
