@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P14 full CI/CD (ADR-0058). Replaced the P0 GitHub Actions stub with a
+  production CI/CD workflow: PR commitlint, root `./mvnw -B -ntp verify`
+  with Docker available for Testcontainers, retained Maven verification
+  artifacts, a matrix build for all eight P10 runtime images, a blocking Trivy
+  vulnerability scan of every built image (with a documented `.trivyignore`
+  allowlist for framework-locked residuals), release-tooling readiness checks
+  with cosign installed, GHCR publish on trusted `main` / `v*.*.*` events only,
+  and keyless cosign signing for pushed image digests. Pull requests build and
+  scan images but never push or sign.
+- P14 image-CVE backlog burndown (#156). Bumped Spring Boot 3.3.6 -> 3.3.13 and
+  Spring AI 1.0.0 -> 1.0.8, pinned Netty 4.1.135.Final, Tomcat 10.1.55, XStream
+  1.4.21, BouncyCastle 1.84, Jersey 3.1.10, PostgreSQL 42.7.11, and lz4-java
+  1.8.1, bumped the standalone `infra/eureka` pom the same way, and added
+  `apt-get upgrade` to every runtime Dockerfile stage, clearing the in-stack
+  HIGH/CRITICAL image findings on the patched 3.3.x baseline. The residual
+  framework-locked CVEs (spring-core, spring-security-web, spring-boot, and
+  kafka-clients, each fixable only via a Boot 3.4+/Spring Kafka 3.3+ migration)
+  are allowlisted in `.trivyignore` and tracked in #156.
+
 - P8.3 counter-family SLO backend (ADR-0046 Amendment 4). Added
   `CounterFamilySloBudgetEngine`, optional
   `SloDefinition.counterFamily` source binding, a Prometheus text

@@ -34,7 +34,11 @@ kubectl client dry-run, and Docker Desktop Kubernetes server dry-run via
 Terraform fmt/init/validate via `scripts/live-e2e/smoke-p12-terraform.ps1`;
 no Azure apply was run. P13 was verified on 2026-06-10 with containerized
 Ansible syntax checks via `scripts/live-e2e/smoke-p13-ansible.ps1`; no real
-deploy/rollback was run. P17 was verified on 2026-06-10 with live
+deploy/rollback was run. P14 promotes GitHub Actions from the P0 stub to full
+CI/CD: root `mvn verify` with Testcontainers, eight P10 image builds, a Trivy
+vulnerability scan of every built image, GHCR publish on trusted push/tag
+events, and keyless cosign signing of pushed image digests. P17 was verified
+on 2026-06-10 with live
 Prometheus/Grafana boot via `scripts/live-e2e/smoke-p17-grafana.ps1`. P18
 release-prep was dry-run verified with
 `scripts/live-e2e/smoke-p18-release-prep.ps1`; the actual tag, SBOM build,
@@ -96,6 +100,11 @@ See [docs/PHASES.md](docs/PHASES.md) for the 19-phase roadmap (P0 - P18) and
 - **infra/ansible** -- P13 playbooks for Terraform validation/provision,
   Helm deploy, Helm rollback, and rollout + gateway health smoke. Ansible is
   orchestration only; Terraform/Helm remain the source of truth.
+- **.github/workflows/ci.yml** -- P14 CI/CD gate. PRs run commitlint, root
+  Maven `verify`, release-tooling readiness checks, and the eight-image Docker
+  build matrix with a Trivy scan per image, without publishing. Trusted
+  `main`/`v*.*.*` events publish SHA/tagged GHCR images and sign pushed digests
+  with keyless cosign.
 - **infra/grafana** -- P17 provisioned Grafana datasource + dashboards +
   SLO catalog. Local/full Docker compose expose Grafana on `:3000` with
   local-only `admin` / `cortex` credentials.

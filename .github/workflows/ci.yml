@@ -1,30 +1,37 @@
-# CI workflow for CORTEX.
+# CI/CD workflow for CORTEX.
 #
-# Phase: P0 stub (full pipeline lands in P14).
-# Runs on push to main and on every PR:
-#   - validates Conventional Commits
-#   - validates POM well-formedness
-#   - cancels in-progress runs on the same ref
-#
-# P14 will add: full mvn verify with Testcontainers, SBOM upload,
-# image build + cosign sign, deploy preview, etc.
+# Phase: P14
+# Runs on push to main, semantic release tags, manual dispatch, and every PR.
+# The pipeline owns:
+#   - Conventional Commit linting on PRs.
+#   - Full root `mvn verify`, including Testcontainers-backed integration tests.
+#   - Eight runtime image builds from the P10 Dockerfiles.
+#   - Trivy vulnerability scan of every built image (blocking on fixable
+#     HIGH/CRITICAL; framework-locked residuals allowlisted in .trivyignore).
+#   - GHCR publish + keyless cosign signing only for trusted push/tag events.
 
 name: CI
 
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*.*.*'
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  JAVA_VERSION: '17'
+  NODE_VERSION: '22'
+  IMAGE_REGISTRY: ghcr.io
+
 permissions:
   contents: read
-  pull-requests: read
-  checks: write
 
 jobs:
 
@@ -32,13 +39,16 @@ jobs:
     name: Commit message lint
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
       - name: Install commitlint
         run: |
           npm install --no-save \
@@ -51,15 +61,199 @@ jobs:
             --to   "${{ github.event.pull_request.head.sha }}" \
             --verbose
 
-  pom-validate:
-    name: Maven validate
+  maven-verify:
+    name: Maven verify + Testcontainers
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+    env:
+      TESTCONTAINERS_REUSE_ENABLE: 'false'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-      - name: Validate parent POM
-        run: ./mvnw -B -N validate
+      - name: Show Docker runtime for Testcontainers
+        run: |
+          docker version
+          docker info
+      - name: Full Maven verify
+        run: ./mvnw -B -ntp verify
+      - name: Upload Maven verification reports
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: maven-verification-reports
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+            **/target/site/jacoco/**
+            **/target/checkstyle-result.xml
+            **/target/spotbugsXml.xml
+            **/target/dependency-check-report.*
+            **/target/cyclonedx-sbom.*
+            target/cyclonedx-sbom.*
+
+  release-tooling:
+    name: Release tooling readiness
+    runs-on: ubuntu-latest
+    needs: maven-verify
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: sigstore/cosign-installer@v3
+      - name: Show cosign version
+        run: cosign version
+      # The operator release scripts (scripts/release/*) and the
+      # scripts/live-e2e/smoke-p18-release-prep.ps1 dry-run are local-only
+      # (/scripts/ is gitignored per checkpoint policy) and run in the local
+      # release triangle. CI verifies the cosign toolchain installs plus the
+      # tracked release artifacts and pom release hooks so a fresh checkout
+      # is provably release-ready without depending on untracked scripts.
+      - name: Verify release readiness from tracked artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for doc in \
+            docs/release/v0.1.0-runbook.md \
+            docs/release/v0.1.0-release-notes.md \
+            docs/release/README.md \
+            docs/adr/0057-p18-release-prep-and-publish-gate.md; do
+            test -f "$doc" || { echo "missing release artifact: $doc" >&2; exit 1; }
+            echo "found $doc"
+          done
+          for needle in \
+            '<id>release</id>' \
+            'cyclonedx-maven-plugin' \
+            'dependency-check-maven' \
+            'maven-javadoc-plugin' \
+            'maven-source-plugin'; do
+            grep -qF "$needle" pom.xml || { echo "pom.xml missing: $needle" >&2; exit 1; }
+            echo "pom.xml has $needle"
+          done
+          echo "cosign toolchain installed; operator release scripts run in the local triangle"
+
+  image-build:
+    name: Image build (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: maven-verify
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: eureka-server
+            dockerfile: infra/docker/eureka-server.Dockerfile
+          - image: log-gateway
+            dockerfile: infra/docker/log-gateway.Dockerfile
+          - image: log-ingest-service
+            dockerfile: infra/docker/log-ingest-service.Dockerfile
+          - image: log-echo-service
+            dockerfile: infra/docker/log-echo-service.Dockerfile
+          - image: log-processor-service
+            dockerfile: infra/docker/log-processor-service.Dockerfile
+          - image: log-remediation-service
+            dockerfile: infra/docker/log-remediation-service.Dockerfile
+          - image: log-indexer-service
+            dockerfile: infra/docker/log-indexer-service.Dockerfile
+          - image: log-monitoring-service
+            dockerfile: infra/docker/log-monitoring-service.Dockerfile
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve image namespace
+        id: image-scope
+        shell: bash
+        run: |
+          echo "namespace=${GITHUB_REPOSITORY_OWNER,,}/cortex" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_REGISTRY }}/${{ steps.image-scope.outputs.namespace }}/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=ref,event=tag
+      - name: Build image for Trivy scan
+        id: build-scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          network: host
+          load: true
+          push: false
+          tags: ${{ matrix.image }}:scan
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: false
+      - name: Scan image with Trivy
+        # Blocking image gate: fails the job on a fixable HIGH/CRITICAL OS or
+        # library CVE (ignore-unfixed: true). The P14 backlog burndown (#156)
+        # bumped Spring Boot 3.3.6 -> 3.3.13, Spring AI -> 1.0.8, Netty,
+        # Tomcat, XStream, BouncyCastle, and apt-upgraded the base images so
+        # the eight images are clean on a patched 3.3.x baseline. A handful of
+        # residual CVEs whose only fix requires a Spring Boot 3.4+/Framework
+        # 6.2+/Security 6.5+ migration (a locked-stack decision, see #156) are
+        # listed in .trivyignore with justification. OWASP Dependency-Check
+        # (CVSS >= 8) remains the blocking dependency gate in maven-verify.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}:scan
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: '1'
+          vuln-type: os,library
+      - name: Build image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          network: host
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: false
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+      - name: Sign pushed image digest
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ steps.image-scope.outputs.namespace }}/${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Sign release tag reference
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ steps.image-scope.outputs.namespace }}/${{ matrix.image }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cosign sign --yes "${IMAGE}:${TAG}"

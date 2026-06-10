@@ -32,14 +32,20 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <!--
-          Pinned to 3.3.6 (minimum) because Spring Cloud Gateway 4.1.6
-          (Spring Cloud 2023.0.4) added a call to
-          `HttpHeaders.headerSet()`, which only exists in Spring
-          Framework 6.1.15+. That ships in Spring Boot 3.3.6+.
+          Pinned to 3.3.13 (latest 3.3.x patch). Minimum 3.3.6 because Spring
+          Cloud Gateway 4.1.6 (Spring Cloud 2023.0.4) added a call to
+          `HttpHeaders.headerSet()`, which only exists in Spring Framework
+          6.1.15+ (ships in Spring Boot 3.3.6+). Bumped 3.3.6 -> 3.3.13 in P14
+          to clear the Trivy image-scan backlog (#156): 3.3.13 brings the
+          patched 3.3.x BOM (spring-boot CVE-2025-22235 fix 3.3.11, plus the
+          latest 6.1.x Spring Framework and 6.3.x Spring Security in the line).
+          Staying inside the locked 3.3.x line per the plan; a 3.4+/3.5+
+          migration (needed only for the residual Framework 6.2+/Security 6.5+
+          CVEs) is a separate, approval-gated decision tracked in #156.
           Reference: spring-cloud/spring-cloud-gateway#3664 +
           Spring Cloud 2023.0.4 release notes.
         -->
-        <version>3.3.6</version>
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -133,7 +139,10 @@
         <!-- BOM versions                                                    -->
         <!-- ============================================================== -->
         <spring-cloud.version>2023.0.4</spring-cloud.version>
-        <spring-ai.version>1.0.0</spring-ai.version>
+        <!-- 1.0.8 (was 1.0.0): P14 Trivy backlog (#156). Clears Spring AI
+             CVE-2026-41712 (ChatMemory DEFAULT_CONVERSATION_ID; fix 1.0.7).
+             Stays in the 1.0.x line. -->
+        <spring-ai.version>1.0.8</spring-ai.version>
 
         <!-- ============================================================== -->
         <!-- Dependencies                                                    -->
@@ -181,6 +190,50 @@
              Required by P4.0 (log-ingest-service Eureka + Postgres on
              the same classpath / LD27 convergence rule). -->
         <checker-qual.version>3.42.0</checker-qual.version>
+
+        <!-- P14 Trivy image-scan backlog (#156). Override the Spring Boot
+             3.3.x-managed versions of these transitive libs to their patched
+             releases. Both are Spring-Boot-managed properties, so the BOM
+             picks the override up everywhere on the classpath.
+             - netty 4.1.135.Final: CVE-2025-24970 (netty-handler, fix
+               4.1.118), CVE-2026-42583 (netty-codec, fix 4.1.133),
+               CVE-2026-44249 / CVE-2026-45416 (fix 4.1.135).
+             - tomcat 10.1.55: CVE-2025-24813 (tomcat-embed-core CRITICAL,
+               fix 10.1.35). Stays in the 10.1.x line Boot 3.3.x uses. -->
+        <netty.version>4.1.135.Final</netty.version>
+        <tomcat.version>10.1.55</tomcat.version>
+
+        <!-- P14 Trivy image-scan backlog (#156). jersey-client is transitive
+             via spring-cloud-starter-netflix-eureka-client on every service.
+             3.1.10 clears CVE-2025-12383 (CRITICAL). Spring-Boot-managed
+             property, so the BOM applies it across the classpath. -->
+        <jersey.version>3.1.10</jersey.version>
+
+        <!-- P14 Trivy image-scan backlog (#156), second pass (CI surfaced
+             these on the Kafka/Postgres services that the gateway image did
+             not exercise). postgresql.version is Spring-Boot-managed.
+             postgresql 42.7.11 clears CVE-2026-42198 (pgjdbc client-side DoS).
+             kafka-clients and its transitive lz4-java are NOT bumped: the
+             embedded `spring-kafka-test` ZK broker (Spring Kafka 3.2.x, locked
+             by Boot 3.3.x) hard-requires kafka-clients 3.7.x (Kafka 3.8/3.9
+             removed methods it calls), and the lz4-java patch only ships under
+             the `at.yawk.lz4` fork. Both ride the locked kafka-clients 3.7.2
+             subtree and are allowlisted in `.trivyignore` pending the Boot
+             3.4+/Spring Kafka 3.3+ migration tracked in #156. -->
+        <postgresql.version>42.7.11</postgresql.version>
+
+        <!-- P14 Trivy image-scan backlog (#156). Not Spring-Boot-managed, so
+             pinned via dependencyManagement below (both are transitive:
+             xstream via netflix-eureka-client, bcprov via the security stack).
+             - xstream 1.4.21: CVE-2024-47072 (DoS, fix 1.4.21).
+             - bouncycastle 1.84: CVE-2026-5598 (bcprov-jdk18on private-key
+               leakage via non-constant-time code, fix 1.84). -->
+        <xstream.version>1.4.21</xstream.version>
+        <bouncycastle.version>1.84</bouncycastle.version>
+
+        <!-- Convergence pin from the P14 spring-ai 1.0.8 bump (#156):
+             spring-ai 1.0.8 wants 2.2.30, springdoc 2.6.0 wants 2.2.22. -->
+        <swagger-annotations.version>2.2.30</swagger-annotations.version>
 
         <!-- ============================================================== -->
         <!-- Plugins                                                         -->
@@ -401,6 +454,41 @@
                 <groupId>org.checkerframework</groupId>
                 <artifactId>checker-qual</artifactId>
                 <version>${checker-qual.version}</version>
+            </dependency>
+
+            <!-- P14 Trivy backlog (#156): force the patched xstream onto
+                 every classpath. xstream is transitive via
+                 spring-cloud-starter-netflix-eureka-client. See
+                 ${xstream.version} property comment. -->
+            <dependency>
+                <groupId>com.thoughtworks.xstream</groupId>
+                <artifactId>xstream</artifactId>
+                <version>${xstream.version}</version>
+            </dependency>
+
+            <!-- P14 Trivy backlog (#156): force the patched BouncyCastle.
+                 Transitive via the JWT / crypto stack. See
+                 ${bouncycastle.version} property comment. -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
+            </dependency>
+
+            <!-- Convergence pin introduced by the P14 spring-ai 1.0.0 -> 1.0.8
+                 bump (#156): spring-ai 1.0.8 pulls swagger-annotations-jakarta
+                 2.2.30 while springdoc 2.6.0 pulls 2.2.22. Pin the higher
+                 (2.2.x is backward compatible) so dependencyConvergence holds. -->
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations-jakarta</artifactId>
+                <version>${swagger-annotations.version}</version>
             </dependency>
 
         </dependencies>
