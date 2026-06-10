@@ -290,21 +290,30 @@ jobs:
       - name: Run Newman against the in-network services
         run: |
           set -e
+          # $1 collection, $2 environment, $3 base_url, $4.. extra "key=value"
+          # overrides (cross-service URLs that must resolve on cortex-net, not
+          # the host loopback the local env files default to).
           run() {
+            local collection="$1" environment="$2" base_url="$3"
+            shift 3
+            local extra=()
+            local kv
+            for kv in "$@"; do extra+=(--env-var "$kv"); done
             docker run --rm --network cortex-net \
               -v "$PWD/postman:/etc/newman" \
               postman/newman:6-alpine \
-              run "/etc/newman/$1" \
-              -e "/etc/newman/$2" \
-              --env-var "base_url=$3" \
+              run "/etc/newman/$collection" \
+              -e "/etc/newman/$environment" \
+              --env-var "base_url=$base_url" \
+              "${extra[@]}" \
               --reporters cli --bail
           }
           run log-gateway.postman_collection.json     log-gateway.postman_environment_local.json     http://cortex-gateway:8090
           run log-ingest.postman_collection.json      log-ingest.postman_environment_local.json      http://cortex-ingest:8092
-          run log-processor.postman_collection.json   log-processor.postman_environment_local.json   http://cortex-processor:8095
-          run log-remediation.postman_collection.json log-remediation.postman_environment_local.json http://cortex-remediation:8096
-          run log-indexer.postman_collection.json     log-indexer.postman_environment_local.json     http://cortex-indexer:8097
-          run log-monitoring.postman_collection.json  log-monitoring.postman_environment_local.json  http://cortex-monitoring:8098
+          run log-processor.postman_collection.json   log-processor.postman_environment_local.json   http://cortex-processor:8095   ingest_base_url=http://cortex-ingest:8092 gateway_base_url=http://cortex-gateway:8090
+          run log-remediation.postman_collection.json log-remediation.postman_environment_local.json http://cortex-remediation:8096 wiremock_base_url=http://cortex-wiremock:8080
+          run log-indexer.postman_collection.json     log-indexer.postman_environment_local.json     http://cortex-indexer:8097     quickwit_base_url=http://cortex-quickwit:7280
+          run log-monitoring.postman_collection.json  log-monitoring.postman_environment_local.json  http://cortex-monitoring:8098  prometheus_base_url=http://cortex-prometheus:9090
       - name: Dump compose logs on failure
         if: failure()
         run: docker compose -f infra/docker/docker-compose.yml logs --no-color --tail 200

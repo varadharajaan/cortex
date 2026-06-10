@@ -17,21 +17,32 @@ GitHub runner. P14 landed the CI foundation (compose-built images, root
 
 ## Decision
 
-**D1 -- A dedicated `newman` job boots the real compose stack.** The job runs
-`docker compose -f infra/docker/docker-compose.yml up -d --build`, waits for the
-published gateway health endpoint (`http://localhost:8090/actuator/health`),
-then executes the six collections. This exercises the actual P10 images and
+**D1 -- A dedicated `newman` job boots the real compose stack.** The job first
+builds the eight service images with `docker build --network=host` (the
+multi-stage Dockerfiles fetch from Maven Central, which the default bridge
+network cannot reach during `compose up --build`), then runs
+`docker compose -f infra/docker/docker-compose.yml up -d` and waits for the
+published gateway health endpoint (`http://localhost:8090/actuator/health`)
+before executing the six collections. This exercises the actual P10 images and
 container-to-container wiring, not a mocked surface, satisfying the Part 26
 "live booted server" intent in CI.
 
-**D2 -- Collections run in-network with a `base_url` override.** Each collection
-runs inside a `postman/newman:6-alpine` container attached to `cortex-net`, with
-`--env-var base_url=http://cortex-<service>:<port>` pointing at the in-network
-DNS name (gateway 8090, ingest 8092, processor 8095, remediation 8096, indexer
-8097, monitoring 8098). The committed local env files keep `localhost` defaults
-for developer use; the CI override swaps only the host so the same collection
-runs unchanged in both contexts. `--bail` stops a collection at the first
-failure (the Auth folder chains state into later requests).
+**D2 -- Collections run in-network with per-collection URL overrides.** Each
+collection runs inside a `postman/newman:6-alpine` container attached to
+`cortex-net`, with `--env-var base_url=http://cortex-<service>:<port>` pointing
+at the in-network DNS name (gateway 8090, ingest 8092, processor 8095,
+remediation 8096, indexer 8097, monitoring 8098). Four collections also reach a
+second service, so the job overrides those cross-service URLs too -- processor
+`gateway_base_url`/`ingest_base_url`, remediation `wiremock_base_url`, indexer
+`quickwit_base_url`, monitoring `prometheus_base_url` -- since the committed
+local env files default them to `localhost`, which resolves to the Newman
+container itself on `cortex-net` (a cross-service login or pipeline POST against
+`localhost` simply errors). The committed local env files keep `localhost`
+defaults for developer use; the CI overrides swap only the host. The gateway
+local env `tenant_id` is `cortex-dev` (the provisioned dev tenant the compose
+stack seeds, matching the other five collections) so the logs/batch route
+resolves a real tenant instead of a 400. `--bail` stops a collection at the
+first failure (the Auth folder chains state into later requests).
 
 **D3 -- The local `e2e-all.ps1` harness is NOT the CI implementation.** That
 script is gitignored (`/scripts/`) and absent on a fresh checkout, so the job
@@ -61,7 +72,9 @@ stack is always torn down with `down -v`.
 - **Run Newman against `localhost` published ports.** Rejected. Only the gateway
   publishes a host port; the other five services are reachable only on
   `cortex-net`, so the Newman container joins that network and targets the DNS
-  names.
+  names. Cross-service URLs in the collections (a processor pipeline POST that
+  loops back through the gateway, etc.) are overridden to their `cortex-net` DNS
+  names for the same reason.
 - **Mock the services instead of booting compose.** Rejected. Part 26 requires
   a live booted server; a mock would re-introduce the exact gap Newman exists to
   close.
