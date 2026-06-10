@@ -62,6 +62,9 @@ class ConstantsHoldersTest {
                         ErrorCodes.SEARCH_LOGS_UPSTREAM_FAILED,
                         ErrorCodes.GET_LOG_BY_ID_RATE_LIMITED,
                         ErrorCodes.GET_LOG_BY_ID_UPSTREAM_FAILED,
+                        ErrorCodes.GET_ANOMALIES_RATE_LIMITED,
+                        ErrorCodes.GET_ANOMALIES_INVALID,
+                        ErrorCodes.GET_ANOMALIES_UPSTREAM_FAILED,
                         ErrorCodes.UPSTREAM_UNAVAILABLE,
                         ErrorCodes.INTERNAL_ERROR);
         assertThat(ErrorCodes.valueOf("BAD_REQUEST")).isEqualTo(ErrorCodes.BAD_REQUEST);

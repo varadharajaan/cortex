@@ -58,6 +58,10 @@ cortex:
     # (P9.2b / ADR-0049). Get-by-id-specific test classes re-enable it.
     get-log-by-id:
       enabled: false
+    # Disable the getAnomalies endpoint in MockMvc tests by default
+    # (P9.3b / ADR-0049). Anomalies-specific test classes re-enable it.
+    get-anomalies:
+      enabled: false
 
 spring:
   ai:

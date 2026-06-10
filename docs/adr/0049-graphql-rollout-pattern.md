@@ -894,3 +894,107 @@ transport) -> `502 GET_LOG_BY_ID_UPSTREAM_FAILED`. Two new `ErrorCodes`
 - Amendment 4 (P9.1c) -- the method discriminator that makes the GET
   route fall through for free.
 
+## Amendment 6 -- P9.3b `getAnomalies` REST + GraphQL parity (fourth query)
+
+**Date**: 2026-06-10. **Status**: Accepted (fourth and final mechanical
+extension of the D1-D7 pattern, closing ADR-0004's four read queries).
+
+### Context
+
+P9.3a exposed log-remediation-service's `anomalies` read model over REST
+(`GET /api/v1/anomalies?tenantId&since&until&limit` -> `List<AnomalyResponse>`,
+ADR-0052). P9.3b adds the last of ADR-0004's four queries, `getAnomalies`,
+on both gateway surfaces by following the D1-D7 pattern + the P9.1b/P9.2b
+client-side-LB shape verbatim. This amendment records only what is **new**
+relative to `getLogById` (Amendment 5).
+
+### D-A6.1 -- A list query, not a single-entity lookup
+
+`getAnomalies` is the first read query that returns a **collection**
+(`[Anomaly!]!` / `List<Anomaly>`). An empty list is a valid result, not a
+miss, so there is NO `NOT_FOUND` mapping (unlike `getLogById`). The
+shared `GetAnomaliesService` returns the (defensively copied) list; both
+surfaces relay it unchanged. The GraphQL field is non-null-list-of-
+non-null (`[Anomaly!]!`): a zero-anomaly tenant yields `[]`, never
+`null`.
+
+### D-A6.2 -- Tenant flows downstream as a query parameter, not a header
+
+P9.1b/P9.2b forwarded the resolved tenant to the backer as the
+`X-Tenant-Id` header. The P9.3a remediation backer instead reads
+`tenantId` as a **required query parameter** (it predates the gateway and
+stays directly callable, ADR-0052). So `GetAnomaliesServiceImpl` appends
+`?tenantId=<resolved>` to the downstream URI rather than setting a header.
+The gateway still resolves the tenant identically (REST `@RequestHeader`
+X-Tenant-Id, GraphQL `@ContextValue` via the shared
+`TenantHeaderGraphQlInterceptor` promoted unconditional in Amendment 5),
+so a client-supplied argument still cannot spoof a tenant -- only the
+gateway-resolved value reaches the query string. Query values are
+URL-encoded (`UriComponentsBuilder.encode()`) so ISO-8601 `since`/`until`
+bounds (which carry `:` and possibly `+`) survive transit.
+
+### D-A6.3 -- Third downstream `RestClient` bean (`remediationRestClient`)
+
+P9.1b declares `indexerRestClient`, P9.2b `ingestRestClient`; P9.3b adds
+`remediationRestClient` (plain, timeout-bounded, HTTP/1.1, no base URL).
+Three named beans now coexist when all read features are enabled; Spring
+resolves the constructor parameters by name. Keeping a per-feature bean
+preserves independent gating, matching the Amendment 5 D-A5.3 rationale.
+
+### D-A6.4 -- `Anomaly` carries timestamps as ISO-8601 strings
+
+Like `LogEntry` (D-A5.4), the gateway is a pass-through: `Anomaly.ts` /
+`receivedAt` are `String` (the ISO-8601 values the remediation backer
+emits) so the REST JSON and the GraphQL `String` scalar are byte-identical
+with no temporal coercion. `confidence` rides the built-in `Float` scalar
+(a double); no custom scalar is needed (the `Anomaly` type has no opaque
+JSON field, unlike `searchLogs`).
+
+### Verdict -> HTTP mapping
+
+The remediation backer returns `200` (with a possibly-empty list) on
+success and `400` only on a malformed filter (the gateway always supplies
+a non-blank `tenantId`). The gateway maps: downstream `4xx` -> `422
+GET_ANOMALIES_INVALID` (a permanently-unprocessable query); everything
+else (`5xx`, transport, no-instance) -> `502 GET_ANOMALIES_UPSTREAM_FAILED`.
+The gateway also validates `tenantId` presence + `limit > 0` up front ->
+`400 VALIDATION_FAILED` (shared by both surfaces via the service). Three
+new `ErrorCodes` (`GET_ANOMALIES_RATE_LIMITED` / `_INVALID` /
+`_UPSTREAM_FAILED`) + the matching `GlobalExceptionHandler` switch cases.
+
+### Rejected alternatives
+
+1. **A GraphQL `input` type for the filters.** Rejected -- all three
+   filters (`since`, `until`, `limit`) are optional, so individual
+   optional arguments (`getAnomalies(since, until, limit)`) map 1:1 to the
+   REST query parameters and keep the parity test trivial; an input
+   wrapper adds a type for no gain (contrast `searchLogs`, whose required
+   `indexId`/`query` justified `LogSearchInput`).
+2. **Typed `Instant` `since`/`until` on the gateway.** Rejected -- the
+   gateway is a relay; `String` pass-through forwards the operator's value
+   verbatim and lets the backer own ISO-8601 parsing + the `400` on
+   malformed input, avoiding timezone re-formatting drift.
+3. **A `404`/empty-as-miss mapping.** Rejected (D-A6.1) -- a list query's
+   empty result is success, not a miss.
+
+### Verification (triangle)
+
+- **Leg A** GREEN: `mvn -pl log-gateway verify` -- new Surefire slices
+  (`GetAnomaliesControllerTest`, `GetAnomaliesGraphQlControllerTest`,
+  `GetAnomaliesServiceImplTest` WireMock, `GetAnomaliesPropertiesTest`) +
+  Failsafe `GetAnomaliesRestAndGraphQlParityIT` (payload identity +
+  `@RateLimitFeature` annotation equality) + ArchUnit + Checkstyle 0 +
+  SpotBugs 0 + JaCoCo 0.80/0.80.
+- **Leg B** GREEN: live boot smoke `scripts/live-e2e/smoke-p9-3b.ps1`
+  (gateway + remediation + Postgres + Eureka) -- `getAnomalies` returns an
+  identical payload on REST and GraphQL for a seeded tenant.
+
+### References
+
+- Issue (P9.3b) -- `gateway getAnomalies REST + GraphQL parity`.
+- ADR-0052 -- the P9.3a remediation anomalies read model + REST backer
+  this query consumes.
+- Amendment 5 (P9.2b) -- the `getLogById` shape this mirrors.
+- This closes ADR-0004's four read queries (`nlToLogQL`, `searchLogs`,
+  `getLogById`, `getAnomalies`) and the P9 epic's GraphQL parity track.
+
