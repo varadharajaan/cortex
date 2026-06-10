@@ -120,7 +120,7 @@ class MonitoringMetricsTest {
         final SloSnapshot snap = SloSnapshot.banded(
                 SloSnapshot.BACKEND_MICROMETER_DERIVATION,
                 new SloDefinition("svc-a", "availability",
-                        0.99d, Duration.ofHours(1)),
+                        0.99d, Duration.ofHours(1), null),
                 0.42d, 0.58d);
         this.metrics.recordSlo(snap);
 
@@ -137,7 +137,7 @@ class MonitoringMetricsTest {
     @Test
     void recordSloIsIdempotentAndUpdatesGaugeValuesInPlace() {
         final SloDefinition def = new SloDefinition(
-                "svc-a", "availability", 0.99d, Duration.ofHours(1));
+                "svc-a", "availability", 0.99d, Duration.ofHours(1), null);
         this.metrics.recordSlo(SloSnapshot.banded(
                 SloSnapshot.BACKEND_MICROMETER_DERIVATION,
                 def, 0.9d, 0.1d));

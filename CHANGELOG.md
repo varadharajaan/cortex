@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P8.3 counter-family SLO backend (ADR-0046 Amendment 4). Added
+  `CounterFamilySloBudgetEngine`, optional
+  `SloDefinition.counterFamily` source binding, a Prometheus text
+  counter-family parser, and the named `counterFamilySloRestClient` so
+  monitoring can derive success-ratio SLIs from target services'
+  `/actuator/prometheus` endpoints over Eureka. The backend reuses the
+  existing `cortex.monitoring.slo_budget_remaining` and
+  `cortex.monitoring.slo_burn_rate` gauges, maps no-data / HTTP /
+  transport failures into bounded `SloSnapshot` outcomes, and can boot
+  alongside the eureka-actuator probe backend without `RestClient`
+  ambiguity.
+
+- P8.4-P8.7+ advanced SLO backends (ADR-0046 Amendment 5). Added
+  `TimerPercentileSloBudgetEngine`, `PromQlSloBudgetEngine`,
+  `CompositeSloBudgetEngine`, `OtelSloBudgetEngine`, `SloSnapshotStore`,
+  source-aware `SloBudgetEngine.supports(...)`, and `mixed` mode so one
+  evaluator tick can route latency, PromQL, composite, OTel, counter-family,
+  and availability SLO definitions to the owning backend. The advanced
+  backends preserve the existing SLO gauge surface and add named HTTP clients
+  plus typed properties for timer-percentile, PromQL, and OTel sources.
+
 - P9.3b gateway `getAnomalies` REST + GraphQL parity (ADR-0049 Amendment 6),
   the fourth and final ADR-0004 read query. A shared `GetAnomaliesService`
   forwards to log-remediation-service (P9.3a) over `lb://` via the blocking

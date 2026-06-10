@@ -26,7 +26,7 @@ class NoopSloBudgetEngineTest {
         final NoopSloBudgetEngine engine = new NoopSloBudgetEngine();
         final SloDefinition def = new SloDefinition(
                 "log-indexer-service", "availability",
-                0.99d, Duration.ofHours(1));
+                0.99d, Duration.ofHours(1), null);
         final SloSnapshot snap = engine.evaluate(def);
         assertThat(snap.outcome()).isEqualTo(SloSnapshot.OUTCOME_NOOP);
         assertThat(snap.backend()).isEqualTo(SloSnapshot.BACKEND_NOOP);
@@ -38,7 +38,7 @@ class NoopSloBudgetEngineTest {
     void noopVerdictDefaultsGaugesToFullBudget() {
         final NoopSloBudgetEngine engine = new NoopSloBudgetEngine();
         final SloDefinition def = new SloDefinition(
-                "svc-a", "a", 0.5d, Duration.ofMinutes(5));
+                "svc-a", "a", 0.5d, Duration.ofMinutes(5), null);
         final SloSnapshot snap = engine.evaluate(def);
         assertThat(snap.budgetRemainingRatio())
                 .isEqualTo(SloSnapshot.UNKNOWN_BUDGET_REMAINING);

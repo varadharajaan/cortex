@@ -1,6 +1,6 @@
 # log-monitoring-service
 
-**Status: P8.0 + P8.1 + P8.2 + P8.2a + P8.1a + P8.2b SHIPPED** -- scaffold carves the
+**Status: P8.0 + P8.1 + P8.2 + P8.2a + P8.1a + P8.2b + P8.3 + P8.4 + P8.5 + P8.6 + P8.7+ SHIPPED** -- scaffold carves the
 `ServiceHealthProbe` SPI + `NoopServiceHealthProbe` default impl
 (binder-gated `cortex.monitoring.probe.backend=noop`,
 `matchIfMissing=true`) + bootstrap-registered
@@ -9,8 +9,11 @@
 `/actuator/health/monitoring`). Zero outbound HTTP at P8.0; real
 Eureka-discovery REST probe lands in P8.1 behind
 `cortex.monitoring.probe.backend=eureka-actuator`. SLO budget
-engine + alert rules land in P8.2; Grafana dashboards stay
-deferred to P17.
+engine + alert rules land in P8.2; P8.3 adds the
+`counter-family` backend for ratio SLIs scraped from target
+services' `/actuator/prometheus` endpoints; P8.4-P8.7+ add
+timer-percentile, PromQL, composite, OTel, and `mixed`
+source-aware SLO evaluation behind the same gauge surface.
 
 CORTEX log-monitoring-service is the **operator-facing leg of the
 control plane**. There is no inbound REST contract for the data
@@ -38,13 +41,16 @@ sub-phases:
    walks the Eureka registry every N seconds and probes each
    instance's `/actuator/health` over the LD42 HTTP/1.1 pin +
    LD121 dual connect+read timeout `RestClient` (P8.1).
-3. **SLO budget engine** -- consumes the
-   `cortex.monitoring.probe_total` counter family + per-service
-   SLO targets to publish
+3. **SLO budget engine** -- consumes the local
+   `cortex.monitoring.probe_total` counter family, a target
+   service counter family, Micrometer timer histogram buckets,
+   Prometheus instant queries, child SLO snapshots, or
+   OTel/span-derived counter families, then publishes
    `cortex_monitoring_slo_budget_remaining{service_id}` +
-   `cortex_monitoring_slo_burn_rate{service_id, window}` gauges
-   (P8.2). Alert rules under `infra/local/alerts/` get
-   bootstrapped in the same phase.
+   `cortex_monitoring_slo_burn_rate{service_id, slo_name}` gauges
+   (P8.2-P8.7+). Alert rules under `infra/local/alerts/` get
+   bootstrapped in P8.2; advanced backends reuse the same gauge
+   names and tag keys.
 4. **Cross-phase closer** -- Failsafe IT + smoke + Postman per
    LD104 (P8.1a).
 
@@ -173,6 +179,16 @@ scaffold-phase pattern.
   `service_id`. The `HealthSnapshot.BACKEND_*` +
   `HealthSnapshot.OUTCOME_*` constants bound the first two
   axes by construction.
+- **ADR-0046 Amendment 4** -- P8.3 `counter-family` backend.
+  The backend discovers `SloDefinition.serviceId()` through
+  Eureka, scrapes the first instance's Prometheus text
+  exposition, applies required tags + success/failure tag
+  predicates, and writes the existing SLO gauge surface. No
+  new gauge names or tag keys are introduced.
+- **ADR-0046 Amendment 5** -- P8.4-P8.7+ advanced SLO
+  backends. Adds `timer-percentile`, `promql`, `composite`,
+  `otel`, and `mixed` mode while preserving the existing SLO
+  gauge surface and source-aware `SloDefinition` binding.
 
 ## 5. Package layout
 
@@ -238,8 +254,16 @@ GET http://localhost:8098/actuator/beans
 | `cortex.monitoring.eureka.request-timeout`     | `5s`                                 | Dual connect+read timeout for the P8.1 `EurekaActuatorHealthProbe` `RestClient` (LD121) |
 | `cortex.monitoring.eureka.actuator-path`       | `/actuator/health`                   | Per-instance actuator path the P8.1 probe scrapes (must start with `/`)        |
 | `cortex.monitoring.slo.enabled`                | `false`                              | Master switch for the P8.2 `SloEvaluator` scheduled tick (NOT gating the engine beans themselves) |
-| `cortex.monitoring.slo.backend`                | `noop`                               | `SloBudgetEngine` binder gate (`noop` default; set to `micrometer-derivation` to activate the P8.2 in-process Micrometer-derivation backend) |
+| `cortex.monitoring.slo.backend`                | `noop`                               | `SloBudgetEngine` binder gate (`noop`, `micrometer-derivation`, `counter-family`, `timer-percentile`, `promql`, `composite`, `otel`, or `mixed`; `mixed` activates every source-aware backend and routes definitions by nested source) |
 | `cortex.monitoring.slo.evaluation-interval`    | `30s`                                | Duration between `SloEvaluator` scheduled ticks (Spring `Duration` syntax: `30s`, `1m`, `2m30s`)            |
+| `cortex.monitoring.slo.counter-family.request-timeout` | `5s`                         | P8.3 dual connect+read timeout for target-service `/actuator/prometheus` scrapes |
+| `cortex.monitoring.slo.counter-family.actuator-path`   | `/actuator/prometheus`       | P8.3 target-service Prometheus exposition path appended to the Eureka instance URI |
+| `cortex.monitoring.slo.timer-percentile.request-timeout` | `5s`                       | P8.4 dual connect+read timeout for target-service timer histogram scrapes |
+| `cortex.monitoring.slo.timer-percentile.actuator-path`   | `/actuator/prometheus`     | P8.4 target-service Prometheus exposition path appended to the Eureka instance URI |
+| `cortex.monitoring.slo.promql.request-timeout`  | `5s`                                 | P8.5 dual connect+read timeout for Prometheus HTTP API calls |
+| `cortex.monitoring.slo.promql.base-url`         | `http://localhost:9090`              | P8.5 Prometheus API base URL used by `PromQlSloBudgetEngine` |
+| `cortex.monitoring.slo.otel.request-timeout`    | `5s`                                 | P8.7+ dual connect+read timeout for target-service span-metric scrapes |
+| `cortex.monitoring.slo.otel.actuator-path`      | `/actuator/prometheus`               | P8.7+ target-service Prometheus exposition path appended to the Eureka instance URI |
 | `cortex.monitoring.slo.definitions`            | six default availability SLOs        | Default list of `SloDefinition(serviceId, sloName, targetSuccessRatio, window)` rows -- one `availability` SLO (`target-success-ratio=0.99`, `window=PT1H`) per cortex service, matching `cortex.monitoring.probe.targets` (P8.2b ADR-0046 Amendment 3 2026-06-08); operator overrides via standard `@ConfigurationProperties` precedence |
 
 Environment-variable overrides (all profiles):
@@ -250,21 +274,107 @@ CORTEX_MONITORING_PROBE_BACKEND=noop   # or "eureka-actuator" to activate the P8
 CORTEX_MONITORING_EUREKA_REQUEST_TIMEOUT=5s
 CORTEX_MONITORING_EUREKA_ACTUATOR_PATH=/actuator/health
 CORTEX_MONITORING_SLO_ENABLED=false           # flip to "true" to start the SloEvaluator @Scheduled tick
-CORTEX_MONITORING_SLO_BACKEND=noop            # or "micrometer-derivation" to activate the P8.2 in-process derivation backend
+CORTEX_MONITORING_SLO_BACKEND=noop            # one of noop, micrometer-derivation, counter-family, timer-percentile, promql, composite, otel, mixed
 CORTEX_MONITORING_SLO_EVALUATION_INTERVAL=30s # Spring Duration syntax: "30s", "1m", "2m30s"
+CORTEX_MONITORING_SLO_COUNTER_FAMILY_REQUEST_TIMEOUT=5s
+CORTEX_MONITORING_SLO_COUNTER_FAMILY_ACTUATOR_PATH=/actuator/prometheus
+CORTEX_MONITORING_SLO_TIMER_PERCENTILE_REQUEST_TIMEOUT=5s
+CORTEX_MONITORING_SLO_TIMER_PERCENTILE_ACTUATOR_PATH=/actuator/prometheus
+CORTEX_MONITORING_SLO_PROMQL_REQUEST_TIMEOUT=5s
+CORTEX_MONITORING_SLO_PROMQL_BASE_URL=http://localhost:9090
+CORTEX_MONITORING_SLO_OTEL_REQUEST_TIMEOUT=5s
+CORTEX_MONITORING_SLO_OTEL_ACTUATOR_PATH=/actuator/prometheus
+```
+
+For source-aware backends, set `backend` to that backend or to
+`mixed`, then add the matching nested source to each SLO
+definition. `mixed` is the usual operator mode once different SLO
+types coexist:
+
+```yaml
+cortex:
+  monitoring:
+    slo:
+      backend: mixed
+      definitions:
+        - service-id: log-remediation-service
+          slo-name: slack-dispatch-success
+          target-success-ratio: 0.99
+          window: PT1H
+          counter-family:
+            metric-name: cortex.remediation.dispatched_total
+            required-tags:
+              channel: slack
+            success-tag-predicate:
+              tag-name: outcome
+              tag-values: [dispatched]
+            failure-tag-predicate:
+              tag-name: outcome
+              tag-values: [transient_failure, permanent_failure]
+        - service-id: log-gateway
+          slo-name: route-latency-500ms
+          target-success-ratio: 0.95
+          window: PT5M
+          timer:
+            metric-name: http_server_requests_seconds
+            threshold: 500ms
+            required-tags:
+              uri: /api/v1/logs/batch
+        - service-id: log-indexer-service
+          slo-name: quickwit-search-success
+          target-success-ratio: 0.99
+          window: PT5M
+          prom-ql:
+            success-query: sum(rate(cortex_indexer_search_total{outcome="ok"}[5m]))
+            failure-query: sum(rate(cortex_indexer_search_total{outcome!="ok"}[5m]))
+        - service-id: cortex-system
+          slo-name: system-availability
+          target-success-ratio: 0.99
+          window: PT5M
+          composite:
+            mode: worst-of
+            components:
+              - service-id: log-gateway
+                slo-name: availability
+                weight: 1.0
+              - service-id: log-ingest-service
+                slo-name: availability
+                weight: 1.0
+        - service-id: log-processor-service
+          slo-name: span-error-ratio
+          target-success-ratio: 0.99
+          window: PT5M
+          otel:
+            metric-name: otel_span_requests_total
+            required-tags:
+              span_kind: SERVER
+            success-tag-predicate:
+              tag-name: status_code
+              tag-values: [OK]
+            failure-tag-predicate:
+              tag-name: status_code
+              tag-values: [ERROR]
 ```
 
 ## 8. Observability
 
 **Metrics** -- one counter family at P8.0 (incremented by the
-active probe per call) plus two SLO gauges at P8.2 (registered
-on first `recordSlo` call per `(serviceId, sloName)` key):
+active probe per call) plus two SLO gauges at P8.2-P8.7+
+(registered on first `recordSlo` call per `(serviceId, sloName)`
+key):
 
 | Metric                                            | Tags                            | Description                                                                                    |
 |---------------------------------------------------|---------------------------------|------------------------------------------------------------------------------------------------|
 | `cortex.monitoring.probe_total`                   | `backend, outcome, service_id`  | Health probes handled by the active `ServiceHealthProbe` per backend per outcome per Eureka service id |
 | `cortex.monitoring.slo_budget_remaining`          | `service_id, slo_name`          | P8.2 -- error-budget remaining in `[-1.0, +1.0]` per `(serviceId, sloName)` (1.0 = full budget; 0.0 = exhausted; negative = over-burned). Defaulted to 1.0 for cold-start / no-data and the noop backend. |
 | `cortex.monitoring.slo_burn_rate`                 | `service_id, slo_name`          | P8.2 -- burn-rate ratio per `(serviceId, sloName)` (`errorRate / errorBudget`). 0.0 = no errors; 1.0 = burning at exactly the SLO target rate; >1.0 = burning faster than allowed. Defaulted to 0.0 for cold-start / no-data and the noop backend. |
+
+Every non-noop SLO backend writes the same two gauges. Only the
+source changes: `micrometer-derivation` reads local probe counters,
+`counter-family` and `otel` scrape target-service Prometheus text
+families through Eureka, `timer-percentile` reads histogram buckets,
+`promql` calls the Prometheus HTTP API, and `composite` combines
+latest child snapshots from `SloSnapshotStore`.
 
 Multi-window burn-rate alert rules ship in
 `infra/local/alerts/slo-burn-rate.rules.yml` -- mount that file
@@ -290,8 +400,7 @@ GET /actuator/health/liveness    -> probed by K8s liveness gate
 
 ## 9. Tests
 
-P8.0+P8.1+P8.2 ship 104 unit tests across 14 classes (and 9
-Failsafe IT tests in 1 class):
+P8.0 through P8.7+ ship 141 unit tests and 55 Failsafe IT tests:
 
 - `ArchitectureTest` -- 1 test; ArchUnit
   App/Probe/Metrics/Health/Slo/Constants layers.
@@ -315,13 +424,14 @@ Failsafe IT tests in 1 class):
   singleton in-process WireMock proves the adapter end-to-end
   including `Fault.CONNECTION_RESET_BY_PEER` transport-fault
   injection per LD120.
-- `SloDefinitionTest` -- 11 tests; compact-ctor rejection
+- `SloDefinitionTest` -- 25 tests; compact-ctor rejection
   matrix (null/blank serviceId/sloName,
-  target<=0/>=1, null/zero/negative window).
-- `SloSnapshotTest` -- 13 tests; every factory shape per
+  target<=0/>=1, null/zero/negative window) plus P8.3-P8.7+
+  nested source validation.
+- `SloSnapshotTest` -- 15 tests; every factory shape per
   LD133 + `classifyBand` boundaries (0.501/0.5/0.11/0.1)
-  + null coercion.
-- `SloPropertiesTest` -- 8 tests; defensive defaults (blank
+  + tiny floating-point boundary drift + null coercion.
+- `SloPropertiesTest` -- 9 tests; defensive defaults (blank
   backend / null/zero/negative interval / null definitions)
   + defensive `List.copyOf` on definitions.
 - `NoopSloBudgetEngineTest` -- 3 tests; `backendId`
@@ -343,6 +453,40 @@ Failsafe IT tests in 1 class):
   null rejection / blank tag coercion to `unknown`).
 - `MonitoringHealthIndicatorTest` -- 1 test; UP + `backend`
   detail surfaces.
+- `PrometheusCounterFamilyParserTest` -- 4 tests; P8.3
+  Prometheus text parser accepts Micrometer Java names and
+  exposition names, parses labels, and skips invalid samples.
+- `CounterFamilySloPropertiesTest` -- 5 tests; P8.3 scrape
+  timeout/path defaults and path normalization.
+- `CounterFamilySloBudgetEngineWireMockIT` -- 6 Failsafe
+  tests; P8.3 remote scrape, no-data, missing config,
+  missing discovery instance, 5xx transient, and 4xx
+  permanent classification.
+- `MonitoringCounterFamilySloBootIT` -- 2 Failsafe tests;
+  P8.3 combined profile proves `probe.backend=eureka-actuator`
+  and `slo.backend=counter-family` can boot together with
+  distinct named `RestClient` beans and nested source binding.
+- `AdvancedSloPropertiesTest` -- 4 tests; P8.4/P8.5/P8.7+
+  defensive HTTP property defaults, path normalization, and
+  Prometheus base-url binding.
+- `SloSnapshotStoreTest` -- 2 tests; P8.6 in-memory snapshot
+  cache ignores null/blank keys and returns latest child
+  snapshots for composite evaluation.
+- `CompositeSloBudgetEngineTest` -- 5 tests; P8.6 worst-of,
+  weighted-average, missing child, transient child failure, and
+  missing source classification.
+- `TimerPercentileSloBudgetEngineWireMockIT` -- 4 Failsafe
+  tests; P8.4 histogram bucket scrape, no-data, missing source,
+  and remote 5xx classification.
+- `PromQlSloBudgetEngineWireMockIT` -- 4 Failsafe tests;
+  P8.5 scalar/vector PromQL API parsing, empty result no-data,
+  and malformed API response classification.
+- `OtelSloBudgetEngineWireMockIT` -- 3 Failsafe tests; P8.7+
+  span-metric counter ratio scrape, no-data, and missing source
+  classification.
+- `MonitoringAdvancedSloBackendsBootIT` -- 3 Failsafe tests;
+  `mixed`, `promql`, and advanced nested source binding boot
+  with the expected source-aware engines.
 
 JaCoCo BUNDLE 0.80 line + 0.80 branch gate met from P8.0 day
 one (no relaxed override block in the child pom).
@@ -499,30 +643,31 @@ closer-separation invariant.
   fan-out + default-defs binding end-to-end. SHIPPED
   (#125, ADR-0046 Amendment 3 2026-06-08).
 - **P8.3** -- new backend `CounterFamilySloBudgetEngine` +
-  `SloDefinition` schema extension carrying
-  `(metricName, successTagPredicate, failureTagPredicate)`.
-  Unlocks parse-success / dispatch-success / fan-out /
-  publish-success SLIs per P5/P6 (ADR-0046 amendment
-  2026-06-08). DEFERRED.
+  optional `SloDefinition.counterFamily` source carrying
+  `metricName`, required tags, and success/failure tag
+  predicates. Discovers the target service through Eureka,
+  scrapes its `/actuator/prometheus`, parses one counter
+  family, and writes the existing SLO gauge surface. SHIPPED
+  (ADR-0046 Amendment 4 2026-06-10).
 - **P8.4** -- new backend `TimerPercentileSloBudgetEngine`
-  reading Micrometer `Timer` series for latency SLOs
-  ("p95 <= threshold for X% of requests"). Unlocks
-  gateway p95 / ingest p95 / search p95 SLIs (ADR-0046
-  amendment 2026-06-08). DEFERRED.
+  reading Micrometer timer histogram buckets from target-service
+  `/actuator/prometheus`; bucket counts at or below the configured
+  threshold are successes and `+Inf` is total. SHIPPED
+  (ADR-0046 Amendment 5 2026-06-10).
 - **P8.5** -- new backend `PromQlSloBudgetEngine` calling
   Prometheus `/api/v1/query` for SLIs whose source is not
   an in-process Micrometer series (Loki / Quickwit query
-  counts, blackbox-exporter probes). Adds LD42 + LD121
-  HTTP/1.1 dual-timeout pin to the monitoring service
-  itself (ADR-0046 amendment 2026-06-08). DEFERRED.
+  counts, blackbox-exporter probes), with explicit success and
+  failure instant-query counts. SHIPPED (ADR-0046 Amendment 5
+  2026-06-10).
 - **P8.6** -- new backend `CompositeSloBudgetEngine` that
   reads other engines' snapshot cache and aggregates
-  (worst-of-N, weighted-average). Unlocks
-  end-to-end-log-latency / system-availability composites
-  (ADR-0046 amendment 2026-06-08). DEFERRED.
+  (worst-of-N, weighted-average). Unlocks system-availability
+  composites without new gauge names. SHIPPED (ADR-0046
+  Amendment 5 2026-06-10).
 - **P8.7+** -- OTel / tracing-based SLOs (span-derived
-  latency, error-span ratio). Gated on OTel infra not yet
-  in the cortex plan (ADR-0046 amendment 2026-06-08).
-  DEFERRED.
+  error-span ratio) via Prometheus text counter families and a
+  distinct `otel` backend id. SHIPPED (ADR-0046 Amendment 5
+  2026-06-10).
 
 Grafana dashboards stay scheduled for P17, NOT P8.

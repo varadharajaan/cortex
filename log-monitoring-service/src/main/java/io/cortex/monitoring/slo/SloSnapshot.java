@@ -7,7 +7,9 @@ package io.cortex.monitoring.slo;
  * <p>Carries the six pieces of information the
  * {@link io.cortex.monitoring.metrics.MonitoringMetrics} gauge
  * surface needs: {@code backend} (which engine produced it --
- * {@code micrometer-derivation}, or {@code noop} default),
+ * {@code micrometer-derivation}, {@code counter-family},
+ * {@code timer-percentile}, {@code promql}, {@code composite},
+ * {@code otel}, or {@code noop} default),
  * {@code serviceId} + {@code sloName} (compose the gauge tag
  * pair), {@code outcome} (coarse-grained classification band --
  * {@code healthy / at_risk / exhausted / unknown / noop /
@@ -22,8 +24,13 @@ package io.cortex.monitoring.slo;
  * string that surfaces only on failure / unknown outcomes (always
  * empty on the three happy-path bands per LD133).</p>
  *
- * @param backend              one of {@link #BACKEND_NOOP} or
- *                             {@link #BACKEND_MICROMETER_DERIVATION};
+ * @param backend              one of {@link #BACKEND_NOOP},
+ *                             {@link #BACKEND_MICROMETER_DERIVATION},
+ *                             {@link #BACKEND_COUNTER_FAMILY},
+ *                             {@link #BACKEND_TIMER_PERCENTILE},
+ *                             {@link #BACKEND_PROMQL},
+ *                             {@link #BACKEND_COMPOSITE}, or
+ *                             {@link #BACKEND_OTEL};
  *                             bounded enum-like string drives the
  *                             metric tag cardinality
  * @param serviceId            target Eureka service id; matches
@@ -52,6 +59,28 @@ public record SloSnapshot(String backend, String serviceId, String sloName,
     /** Backend value emitted by {@link MicrometerSloBudgetEngine}. */
     public static final String BACKEND_MICROMETER_DERIVATION =
             "micrometer-derivation";
+
+    /** Backend value emitted by {@link CounterFamilySloBudgetEngine}. */
+    public static final String BACKEND_COUNTER_FAMILY = "counter-family";
+
+    /** Backend value emitted by {@link TimerPercentileSloBudgetEngine}. */
+    public static final String BACKEND_TIMER_PERCENTILE = "timer-percentile";
+
+    /** Backend value emitted by {@link PromQlSloBudgetEngine}. */
+    public static final String BACKEND_PROMQL = "promql";
+
+    /** Backend value emitted by {@link CompositeSloBudgetEngine}. */
+    public static final String BACKEND_COMPOSITE = "composite";
+
+    /** Backend value emitted by {@link OtelSloBudgetEngine}. */
+    public static final String BACKEND_OTEL = "otel";
+
+    /**
+     * Backend gate that enables all source-aware engines and lets
+     * {@link SloEvaluator} route each definition to the engine that
+     * supports its source.
+     */
+    public static final String BACKEND_MIXED = "mixed";
 
     /** Outcome value: noop engine returned without evaluation. */
     public static final String OUTCOME_NOOP = "noop";
@@ -107,6 +136,13 @@ public record SloSnapshot(String backend, String serviceId, String sloName,
     public static final double BAND_EXHAUSTED_UPPER_BOUND = 0.1d;
 
     /**
+     * Floating-point tolerance for budget band boundaries. Prevents
+     * mathematically exact boundary values, e.g. {@code 0.5}, from
+     * drifting into the next band as {@code 0.5000000000000004}.
+     */
+    private static final double BAND_EPSILON = 1e-12d;
+
+    /**
      * Default gauge values for the {@link #OUTCOME_UNKNOWN}
      * verdict. Picked so cold-start dashboards show
      * "no data, all clear" rather than "max burn".
@@ -126,10 +162,10 @@ public record SloSnapshot(String backend, String serviceId, String sloName,
      *         {@link #OUTCOME_EXHAUSTED}
      */
     public static String classifyBand(final double budgetRemaining) {
-        if (budgetRemaining > BAND_AT_RISK_UPPER_BOUND) {
+        if (budgetRemaining - BAND_AT_RISK_UPPER_BOUND > BAND_EPSILON) {
             return OUTCOME_HEALTHY;
         }
-        if (budgetRemaining > BAND_EXHAUSTED_UPPER_BOUND) {
+        if (budgetRemaining - BAND_EXHAUSTED_UPPER_BOUND > BAND_EPSILON) {
             return OUTCOME_AT_RISK;
         }
         return OUTCOME_EXHAUSTED;

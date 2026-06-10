@@ -13,13 +13,17 @@ package io.cortex.monitoring.slo;
  * {@code cortex.monitoring.probe_total} counter snapshots from
  * the in-process {@code MeterRegistry}. Future backends could
  * layer Prometheus query / native histogram / OpenTelemetry
- * inputs behind the same SPI without touching
- * {@link SloEvaluator}.</p>
+ * inputs behind the same SPI. Source-aware engines can opt out of
+ * definitions they do not own via {@link #supports(SloDefinition)}
+ * so mixed-mode deployments can evaluate ratio, latency, PromQL,
+ * OTel, and composite SLOs in one scheduler pass.</p>
  *
  * <p>Selection at runtime is driven by the
  * {@code cortex.monitoring.slo.backend} property +
- * {@code @ConditionalOnProperty} on each implementation. Exactly
- * one engine bean is active in a given profile.</p>
+ * {@code @ConditionalOnProperty} or equivalent conditional on each
+ * implementation. Single-backend profiles activate one engine;
+ * {@code mixed} activates every source-aware engine and routes by
+ * {@link #supports(SloDefinition)}.</p>
  *
  * <p>Implementations MUST be thread-safe. The engine surface is
  * called from {@link SloEvaluator}'s scheduled task concurrently
@@ -48,6 +52,25 @@ public interface SloBudgetEngine {
      *         never {@code null}, never blank
      */
     String backendId();
+
+    /**
+     * Whether this engine should evaluate the supplied definition
+     * during a scheduler pass.
+     *
+     * <p>The default remains {@code true} to preserve the P8.2
+     * contract for {@link NoopSloBudgetEngine} and
+     * {@link MicrometerSloBudgetEngine}. New source-aware engines
+     * override this method so the evaluator can safely run in
+     * {@code mixed} mode without recording misleading
+     * misconfiguration snapshots for definitions owned by a
+     * different backend.</p>
+     *
+     * @param def configured definition
+     * @return true when this engine owns the definition
+     */
+    default boolean supports(final SloDefinition def) {
+        return true;
+    }
 
     /**
      * Evaluate the budget remaining + burn rate for the supplied

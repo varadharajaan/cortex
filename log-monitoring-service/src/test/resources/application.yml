@@ -69,4 +69,7 @@ cortex:
       enabled: false
       backend: noop
       evaluation-interval: 30s
+      counter-family:
+        request-timeout: 5s
+        actuator-path: /actuator/prometheus
       definitions: []
