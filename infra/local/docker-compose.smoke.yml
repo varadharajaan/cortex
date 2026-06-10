@@ -198,3 +198,33 @@ services:
       retries: 20
       start_period: 10s
     restart: unless-stopped
+
+  # P17 (ADR-0056): provisioned Grafana operator UI. Mounts the canonical
+  # infra/grafana package read-only and points the Prometheus datasource at
+  # the smoke Prometheus container through PROMETHEUS_URL.
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: cortex-smoke-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: cortex
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cortex-overview.json
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+    restart: unless-stopped

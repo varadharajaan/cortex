@@ -1,0 +1,42 @@
+version: 1
+owner: log-monitoring-service
+sourceOfTruth: log-monitoring-service/src/main/resources/application.yml
+description: >
+  Operator SLO catalog used by the P17 Grafana dashboards. The runtime service
+  defaults carry the same six availability SLOs and remain the source of truth
+  for evaluation until a control-plane SLO API exists.
+
+defaults:
+  sloName: availability
+  targetSuccessRatio: 0.99
+  window: PT1H
+  sourceMetric: cortex_monitoring_probe_total
+  budgetMetric: cortex_monitoring_slo_budget_remaining
+  burnRateMetric: cortex_monitoring_slo_burn_rate
+
+slos:
+  - serviceId: log-gateway
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+  - serviceId: log-ingest-service
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+  - serviceId: log-echo-service
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+  - serviceId: log-processor-service
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+  - serviceId: log-remediation-service
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+  - serviceId: log-indexer-service
+    sloName: availability
+    targetSuccessRatio: 0.99
+    window: PT1H
+

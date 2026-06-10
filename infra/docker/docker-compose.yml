@@ -197,6 +197,17 @@ services:
       EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
       CORTEX_KAFKA_BROKERS: cortex-kafka:9093
       SPRING_AI_OLLAMA_BASE_URL: http://cortex-wiremock:8080
+      # Full P5 fan-out against the in-stack WireMock stubs so the
+      # processor collection's classify + Loki + Quickwit assertions
+      # exercise the real pipeline (mirrors the cortex-smoke stack):
+      #   /api/chat            -> ollama-classify-anomaly.json (anomaly verdict)
+      #   /loki/api/v1/push    -> loki-push.json
+      #   /api/v1/<idx>/ingest -> quickwit-ingest.json
+      CORTEX_PROCESSOR_CLASSIFIER: spring-ai
+      CORTEX_PROCESSOR_SINKS_LOKI_ENABLED: "true"
+      CORTEX_PROCESSOR_SINKS_LOKI_BASE_URL: http://cortex-wiremock:8080
+      CORTEX_PROCESSOR_SINKS_QUICKWIT_ENABLED: "true"
+      CORTEX_PROCESSOR_SINKS_QUICKWIT_BASE_URL: http://cortex-wiremock:8080
     depends_on:
       cortex-eureka: { condition: service_healthy }
       cortex-kafka: { condition: service_healthy }
@@ -244,6 +255,11 @@ services:
       CORTEX_INDEXER_BACKEND: quickwit
       CORTEX_INDEXER_SEARCH_BACKEND: quickwit
       CORTEX_QUICKWIT_BASE_URL: http://cortex-quickwit:7280
+      # Expose the named `quickwit` health contributor at
+      # /actuator/health/quickwit (the base profile is prod-safe
+      # show-details=never; the local-dev stack mirrors the P7.1a smoke boot).
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_COMPONENTS: always
     depends_on:
       cortex-eureka: { condition: service_healthy }
       cortex-quickwit: { condition: service_healthy }
@@ -261,8 +277,87 @@ services:
       EUREKA_DEFAULT_ZONE: http://cortex-eureka:8761/eureka/
       CORTEX_MONITORING_PROBE_BACKEND: eureka-actuator
       CORTEX_MONITORING_PROBE_ENABLED: "true"
+      # Enable the scheduled SLO evaluator with the micrometer-derivation
+      # engine (P8.2 / ADR-0046) so the SLO budget + burn-rate gauge
+      # families (cortex_monitoring_slo_budget_remaining / _burn_rate) are
+      # exported on /actuator/prometheus and scraped by cortex-prometheus.
+      # 5s cadence matches the Prometheus scrape interval for a fast e2e
+      # window. Backend derives the P3..P7 ring availability SLOs from the
+      # probe_total counters.
+      CORTEX_MONITORING_SLO_ENABLED: "true"
+      CORTEX_MONITORING_SLO_BACKEND: micrometer-derivation
+      CORTEX_MONITORING_SLO_EVALUATION_INTERVAL: 5s
+      CORTEX_MONITORING_PROBE_EVALUATION_INTERVAL: 5s
+      # Expose the named `monitoring` health contributor at
+      # /actuator/health/monitoring (mirrors the P8.1a/P8.2a smoke boot).
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_COMPONENTS: always
     depends_on:
       cortex-eureka: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Prometheus server for the e2e stack (P8.2a / ADR-0047). Scrapes the
+  # in-network cortex-monitoring container (not the host JVM) via
+  # infra/docker/prometheus.yml and loads the shared SLO burn-rate alert
+  # rules from infra/local/alerts. Internal-only on cortex-net (no host
+  # port publish, mirroring the stack's gateway+eureka-only posture); the
+  # log-monitoring Postman collection's Prometheus-Container folder reaches
+  # it at cortex-prometheus:9090 to assert container health + rule parse +
+  # scrape-target UP.
+  cortex-prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: cortex-prometheus
+    hostname: cortex-prometheus
+    networks: [cortex-net]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../local/alerts:/etc/prometheus/rules:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    depends_on:
+      cortex-monitoring: { condition: service_started }
+    restart: unless-stopped
+
+  # Provisioned Grafana operator UI (P17 / ADR-0056). The same
+  # infra/grafana package is mounted by the local smoke stack and this full
+  # compose stack; only PROMETHEUS_URL differs because full compose uses the
+  # canonical cortex-prometheus DNS name.
+  cortex-grafana:
+    image: grafana/grafana:11.3.1
+    container_name: cortex-grafana
+    hostname: cortex-grafana
+    networks: [cortex-net]
+    ports:
+      - "3000:3000"
+    environment:
+      PROMETHEUS_URL: http://cortex-prometheus:9090
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: cortex
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cortex-overview.json
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      cortex-prometheus: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
     restart: unless-stopped
 
   cortex-echo:
