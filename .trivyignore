@@ -11,7 +11,7 @@
 # 3.3.6 -> 3.3.13, Spring AI 1.0.0 -> 1.0.8, Netty 4.1.135.Final, Tomcat
 # 10.1.55, XStream 1.4.21, BouncyCastle 1.84, Jersey 3.1.10, plus apt-get
 # upgrade on every runtime image. The Trivy gate is BLOCKING for every NEW
-# fixable HIGH/CRITICAL; only the three framework-locked residuals below are
+# fixable HIGH/CRITICAL; only the framework-locked residuals below are
 # allowlisted, each with its fix-version and the migration it requires.
 #
 # Review trigger: revisit on the #156 Spring Boot 3.5+ migration, or if any CVE
@@ -39,6 +39,13 @@ CVE-2026-40973
 # 3.4+/Spring Kafka 3.3+ migration tracked in #156.
 CVE-2026-35554
 
+# spring-kafka: insecure deserialization hardening. Installed 3.2.10
+# (Boot 3.3.13-managed) -> fix 3.3.16 / 4.0.6. CANNOT bump within the locked
+# stack: Spring Kafka 3.3.16 is built on the Spring Framework 6.2.x ecosystem
+# and brings kafka-clients 3.8.x; this is the same Boot 3.4+/Spring Kafka 3.3+
+# migration tracked in #156.
+CVE-2026-41731
+
 # lz4-java: transitive of kafka-clients 3.7.2 (above). org.lz4:lz4-java 1.8.0 is
 # what kafka-clients 3.7.2 pulls; the patched releases (1.8.1 for CVE-2025-12183,
 # 1.10.1 for CVE-2025-66566) only ship under the `at.yawk.lz4` fork, so clearing
@@ -47,5 +54,3 @@ CVE-2026-35554
 # Kafka 3.3+ migration (#156), which ships a newer kafka-clients + lz4-java.
 CVE-2025-12183
 CVE-2025-66566
-
-
