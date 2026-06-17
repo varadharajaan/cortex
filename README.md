@@ -31,7 +31,7 @@ policy-gated remediation when something needs action.
 
 ## Architecture
 
-![CORTEX architecture](docs/assets/cortex-architecture-v2.svg)
+![CORTEX architecture](docs/assets/image.png)
 
 CORTEX is organized around an edge API, durable ingestion, Kafka-backed eventing,
 AI processing, tiered search, and policy-gated remediation. The diagram above is
