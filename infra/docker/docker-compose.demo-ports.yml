@@ -1,0 +1,70 @@
+services:
+  cortex-eureka:
+    ports: !override
+      - "18761:8761"
+  cortex-gateway:
+    ports: !override
+      - "18090:8090"
+    environment:
+      # Demo: the gateway is edge-only (register-with-eureka=false by design), but
+      # the monitoring SLO catalog lists log-gateway as a probe target. Registering
+      # it (harmless -- nothing routes TO the gateway via lb://) lets the
+      # eureka-actuator health probe resolve it so its availability SLO turns green.
+      EUREKA_CLIENT_REGISTER_WITH_EUREKA: "true"
+      # ...and register with a cortex-net-reachable address. The monitoring probe
+      # builds its URL from the instance homePageUrl/getUri(); the gateway's edge
+      # default resolves to 127.0.0.1 (a loopback the probe can't reach). Pin the
+      # advertised hostname to the container DNS name so the probe hits
+      # http://cortex-gateway:8090/actuator/health and the gateway SLO goes green.
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "false"
+      EUREKA_INSTANCE_HOSTNAME: cortex-gateway
+  cortex-prometheus:
+    volumes:
+      - ./prometheus.demo.yml:/etc/prometheus/prometheus.yml:ro
+      - ../local/alerts:/etc/prometheus/rules:ro
+  cortex-remediation:
+    environment:
+      # Demo: route auto-remediation fallback dispatch to the in-network
+      # WireMock Slack stub so the escalation shows as channel=slack
+      # outcome=dispatched (vs the noop default's skipped). PD/Jira are the
+      # same SPI behind a provider flip.
+      CORTEX_REMEDIATION_DISPATCHER: slack
+      CORTEX_REMEDIATION_SLACK_WEBHOOK_URL: http://cortex-wiremock:8080/slack/webhook
+
+  # Demo: a REAL Loki so the processor's P5.3 Loki sink writes actual log lines
+  # and Grafana's "Explore > Logs" / Logs Drilldown works (the base stack stubs
+  # Loki with WireMock, which accepts pushes but stores nothing).
+  cortex-loki:
+    image: grafana/loki:3.2.1
+    container_name: cortex-loki
+    hostname: cortex-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    networks:
+      - cortex-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  cortex-processor:
+    environment:
+      # Demo: point the Loki sink at the REAL Loki instead of the WireMock stub,
+      # so classified log lines are actually queryable in Grafana.
+      CORTEX_PROCESSOR_SINKS_LOKI_BASE_URL: http://cortex-loki:3100
+      # Demo: point the Quickwit sink at REAL Quickwit + the tenant-scoped index
+      # the gateway searchLogs reads (cortex-<tenant>-<seg>). The sink is
+      # single-index (not tenant-aware) so for the single-tenant demo we pin it to
+      # cortex-cortex-dev-app; create it from quickwit-index-cortex-dev.json
+      # before sending demo traffic.
+      CORTEX_PROCESSOR_SINKS_QUICKWIT_BASE_URL: http://cortex-quickwit:7280
+      CORTEX_PROCESSOR_SINKS_QUICKWIT_INDEX: cortex-cortex-dev-app
+
+  cortex-grafana:
+    volumes: !override
+      # Keep the canonical dashboard provider; overlay only the demo datasource
+      # file so Grafana also gets a real Loki datasource.
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/provisioning-demo/datasources/cortex-datasources.yml:/etc/grafana/provisioning/datasources/cortex-datasources.yml:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro

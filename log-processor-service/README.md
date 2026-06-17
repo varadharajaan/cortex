@@ -146,7 +146,9 @@ so a confirmed anomaly fans out to `log-remediation-service`.
   `cortex.processor.sinks.{loki,quickwit}.enabled` feature gates.
   Both sinks pin outbound HTTP to HTTP/1.1 per LD42; both tick
   per-tenant + per-reason failure counters; sink failures NEVER
-  block the Kafka offset commit. See `cortex.processor.sinks.*`
+  block the Kafka offset commit. Loki stream labels are bounded to
+  `tenant_id`, `service`, `level`, and `anomaly`; event id stays out
+  of labels. See `cortex.processor.sinks.*`
   block in `application.yml` for the per-sink env-var overrides.
 - **ADR-0031** -- synchronous `cortex.anomalies.v1` CloudEvents
   1.0 publisher for the future P6 `log-remediation-service`

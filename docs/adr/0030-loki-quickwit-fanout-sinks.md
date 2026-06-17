@@ -14,7 +14,7 @@ the enriched event browsable in two downstream search tiers:
 
 1. **Grafana Loki** — the operator-facing live tail + label-driven
    browse surface. Optimised for high-cardinality streams keyed by a
-   small label set (tenant + level + anomaly).
+   small label set (tenant + service + level + anomaly).
 2. **Quickwit** — the warm-tier full-text search index over the same
    events plus the classifier verdict. Optimised for ad-hoc forensic
    search on the message body and the structured labels map.
@@ -121,7 +121,7 @@ HTTP/1.1 via a shared `RestClient` factory.**
     keyed by `metric|tenant|reason` per LD106. Tenant tag
     sanitised to `unknown` when blank/null.
   - `LokiSink` — `@Component @ConditionalOnProperty(prefix="cortex.processor.sinks.loki", name="enabled", havingValue="true")`.
-    Posts `{streams:[{stream:{tenant_id,level,anomaly}, values:[[tsNanos,line]]}]}`
+    Posts `{streams:[{stream:{tenant_id,service,level,anomaly}, values:[[tsNanos,line]]}]}`
     to `{base-url}/loki/api/v1/push`. Public ctor builds an
     HTTP/1.1-pinned `RestClient` via `JdkClientHttpRequestFactory`;
     package-private ctor accepts a pre-built `RestClient` for unit

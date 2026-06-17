@@ -131,6 +131,35 @@ must not be reused for production.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-e2e\smoke-p17-grafana.ps1
 ```
 
+### Local demo overlay
+
+`docker-compose.demo-ports.yml` is a local demo overlay for the full stack. It
+keeps the canonical compose file intact while exposing gateway/Eureka on
+alternate host ports, replacing WireMock Loki with real Loki, broadening
+Prometheus scrapes, adding a Grafana Loki datasource, and routing remediation's
+fallback dispatcher to the local Slack WireMock stub.
+
+```powershell
+docker compose -f infra/docker/docker-compose.yml -f infra/docker/docker-compose.demo-ports.yml up -d --build
+
+Invoke-RestMethod -Method Post `
+    -Uri http://localhost:7280/api/v1/indexes `
+    -ContentType application/json `
+    -InFile infra/docker/quickwit-index-cortex-dev.json
+```
+
+Demo entry points:
+
+| Surface | URL |
+|---|---|
+| Gateway | `http://localhost:18090` |
+| Eureka | `http://localhost:18761` |
+| Grafana | `http://localhost:3000` |
+
+The demo Quickwit index is `cortex-cortex-dev-app`, matching the processor
+sink override in the compose file and the gateway's `cortex-dev` tenant search
+path.
+
 ### Secrets
 
 Dev creds are plain env (the gateway `dev` profile bakes in the dev JWT

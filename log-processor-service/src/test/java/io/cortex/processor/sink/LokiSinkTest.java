@@ -86,6 +86,8 @@ class LokiSinkTest {
         assertThat(this.lastBody.get())
                 .contains("\"streams\"")
                 .contains("\"tenant_id\":\"cortex-dev\"")
+                .contains("\"service\":\"checkout\"")
+                .contains("\"level\":\"ERROR\"")
                 .contains("\"anomaly\":\"false\"");
         assertThat(publishedCount("cortex-dev")).isEqualTo(1.0d);
         assertThat(failedCount("cortex-dev", "http_status")).isZero();
@@ -151,6 +153,22 @@ class LokiSinkTest {
         sink.send(sample("evt-5", null), Classification.none());
         assertThat(this.lastBody.get()).contains("\"tenant_id\":\"unknown\"");
         assertThat(publishedCount("unknown")).isEqualTo(1.0d);
+    }
+
+    /** Null service is coerced to "unknown" on the Loki stream label. */
+    @Test
+    void nullServiceIsCoerced() {
+        final LokiSink sink = newSink();
+        sink.send(sample("evt-6", "cortex-dev", null), Classification.none());
+        assertThat(this.lastBody.get()).contains("\"service\":\"unknown\"");
+    }
+
+    /** Blank service is coerced to "unknown" on the Loki stream label. */
+    @Test
+    void blankServiceIsCoerced() {
+        final LokiSink sink = newSink();
+        sink.send(sample("evt-7", "cortex-dev", " "), Classification.none());
+        assertThat(this.lastBody.get()).contains("\"service\":\"unknown\"");
     }
 
     /** Reports its sink name. */
@@ -224,9 +242,22 @@ class LokiSinkTest {
      * @return sample event
      */
     private static RawLogEvent sample(final String eventId, final String tenantId) {
+        return sample(eventId, tenantId, "checkout");
+    }
+
+    /**
+     * Builds a sample {@link RawLogEvent} keyed by event id, tenant, and service.
+     *
+     * @param eventId  event id to embed
+     * @param tenantId tenant id to embed
+     * @param service  service name to embed
+     * @return sample event
+     */
+    private static RawLogEvent sample(final String eventId, final String tenantId,
+                                      final String service) {
         return new RawLogEvent(tenantId, eventId,
                 Instant.parse("2026-06-03T12:00:00Z"),
-                "ERROR", "checkout", "OOM heap exhausted",
+                "ERROR", service, "OOM heap exhausted",
                 Map.of("env", "smoke"), "idk-" + eventId,
                 Instant.parse("2026-06-03T12:00:01Z"));
     }

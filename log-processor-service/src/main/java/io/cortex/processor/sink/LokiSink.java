@@ -25,7 +25,7 @@ import org.springframework.web.client.RestClientResponseException;
  * <p>Posts a single stream entry per event to
  * {@code POST {base-url}/loki/api/v1/push}. Stream labels are kept
  * intentionally small to stay inside Loki's recommended cardinality
- * envelope: {@code tenant_id, level, anomaly}. The log line carries
+ * envelope: {@code tenant_id, service, level, anomaly}. The log line carries
  * the enriched message + reason suffix.</p>
  *
  * <p>Loki has no native idempotency on the push API; on Kafka
@@ -131,7 +131,7 @@ public class LokiSink implements ParsedEventSink {
      * <p>Shape:</p>
      * <pre>
      * { "streams": [
-     *     { "stream": { tenant_id, level, anomaly },
+     *     { "stream": { tenant_id, service, level, anomaly },
      *       "values": [["&lt;ts-nanos&gt;", "&lt;message&gt;"]] }
      * ]}
      * </pre>
@@ -144,6 +144,7 @@ public class LokiSink implements ParsedEventSink {
                                           final Classification verdict) {
         final Map<String, String> labels = new LinkedHashMap<>();
         labels.put("tenant_id", StringUtils.defaultIfBlank(event.tenantId(), "unknown"));
+        labels.put("service", StringUtils.defaultIfBlank(event.service(), "unknown"));
         labels.put("level", StringUtils.defaultIfBlank(event.level(), "unknown"));
         labels.put("anomaly", verdict != null && verdict.anomaly()
                 ? "true" : "false");

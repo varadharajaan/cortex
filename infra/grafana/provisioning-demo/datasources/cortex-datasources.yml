@@ -1,0 +1,27 @@
+# Demo-only Grafana datasources: the committed cortex-datasources.yml Prometheus
+# source PLUS a real Loki source so the "Logs Drilldown" / Explore > Logs works.
+# Mounted by infra/docker/docker-compose.demo-ports.yml over the canonical
+# datasource file only; dashboard provisioning still comes from infra/grafana/provisioning.
+apiVersion: 1
+
+datasources:
+  - name: Cortex Prometheus
+    uid: cortex-prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s
+      queryTimeout: 30s
+      httpMethod: POST
+
+  - name: Cortex Loki
+    uid: cortex-loki
+    type: loki
+    access: proxy
+    url: http://cortex-loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000

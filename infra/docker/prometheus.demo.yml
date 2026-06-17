@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# CORTEX DEMO Prometheus configuration.
+#
+# Demo-only superset of infra/docker/prometheus.yml: in addition to the
+# log-monitoring-service SLO scrape, this scrapes ALL seven application
+# services' /actuator/prometheus endpoints so the "CORTEX Overview" Grafana
+# dashboard lights up end-to-end (ingest throughput, processor classify +
+# anomaly publish, remediation dispatch, indexer search/admin) during a live
+# pitch. Mounted over the container via infra/docker/docker-compose.demo-ports.yml.
+#
+# NOT a replacement for the committed prometheus.yml (which intentionally
+# scopes the e2e SLO gate to the monitoring service). This is a local demo aid.
+# ---------------------------------------------------------------------------
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    cluster: cortex-local
+    env: docker-demo
+
+rule_files:
+  - /etc/prometheus/rules/*.rules.yml
+
+scrape_configs:
+  - job_name: 'log-monitoring-service'
+    metrics_path: /actuator/prometheus
+    scheme: http
+    # honor_labels: the probe + SLO metrics export their OWN service_id (the
+    # probed target: log-gateway, log-ingest-service, ...). Without this, the
+    # static service_id below collides and Prometheus renames the real one to
+    # exported_service_id -> the dashboard (which legends by {{service_id}})
+    # would show every series as "log-monitoring-service". honor_labels keeps
+    # the metric's own service_id so the per-service breakdown is correct.
+    honor_labels: true
+    static_configs:
+      - targets: ['cortex-monitoring:8098']
+        labels:
+          service_id: log-monitoring-service
+          backend: eureka-actuator
+
+  - job_name: 'log-gateway'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['cortex-gateway:8090']
+        labels: { service_id: log-gateway }
+
+  - job_name: 'log-ingest-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['cortex-ingest:8092']
+        labels: { service_id: log-ingest-service }
+
+  - job_name: 'log-processor-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['cortex-processor:8095']
+        labels: { service_id: log-processor-service }
+
+  - job_name: 'log-remediation-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['cortex-remediation:8096']
+        labels: { service_id: log-remediation-service }
+
+  - job_name: 'log-indexer-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['cortex-indexer:8097']
+        labels: { service_id: log-indexer-service }

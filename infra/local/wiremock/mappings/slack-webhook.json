@@ -1,0 +1,15 @@
+{
+  "priority": 40,
+  "request": {
+    "method": "POST",
+    "url": "/slack/webhook"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/plain",
+      "X-Cortex-Mock": "slack-webhook"
+    },
+    "body": "ok"
+  }
+}
