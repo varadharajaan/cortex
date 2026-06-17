@@ -31,129 +31,13 @@ policy-gated remediation when something needs action.
 
 ## Architecture
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, Arial, sans-serif", "primaryTextColor": "#111827", "lineColor": "#64748b", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1"}, "flowchart": {"curve": "basis", "nodeSpacing": 42, "rankSpacing": 58}}}%%
-flowchart LR
-    classDef user fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px
-    classDef gateway fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e,stroke-width:1.4px
-    classDef service fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1.4px
-    classDef ai fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:1.4px
-    classDef data fill:#ede9fe,stroke:#6d28d9,color:#3b0764,stroke-width:1.4px
-    classDef event fill:#fae8ff,stroke:#a21caf,color:#701a75,stroke-width:1.4px
-    classDef ops fill:#f1f5f9,stroke:#334155,color:#0f172a,stroke-width:1.2px
-    classDef alert fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d,stroke-width:1.2px
+![CORTEX architecture](docs/assets/cortex-architecture-v2.svg)
 
-    apps["Tenant apps<br/>Logback appender"]:::user
-    users["Users and operators<br/>REST + GraphQL"]:::user
-    gateway["log-gateway<br/>auth, rate limit, routing,<br/>NL query"]:::gateway
-
-    ingest["log-ingest-service<br/>validate, mask, enrich,<br/>dedupe, outbox"]:::service
-    processor["log-processor-service<br/>parse, classify,<br/>fan-out sinks"]:::service
-    indexer["log-indexer-service<br/>Quickwit admin,<br/>search proxy, retention"]:::service
-    remediation["log-remediation-service<br/>policy, playbook,<br/>audit, anomaly reads"]:::service
-    monitoring["log-monitoring-service<br/>health probes,<br/>SLO engines"]:::ops
-
-    postgres[(Postgres<br/>raw logs + read models)]:::data
-    redis[(Redis<br/>rate limits + dedupe)]:::data
-    kafka[(Kafka<br/>CloudEvents topics + DLQs)]:::event
-    loki[(Loki<br/>hot/warm log search)]:::data
-    quickwit[(Quickwit<br/>full-text search)]:::data
-    aiProvider["Spring AI provider<br/>Ollama local / cloud model"]:::ai
-    eureka["Eureka<br/>local discovery"]:::ops
-    grafana["Prometheus + Grafana<br/>metrics, dashboards, SLOs"]:::ops
-    responders["Slack / PagerDuty / Jira<br/>fallback only"]:::alert
-
-    apps --> gateway
-    users --> gateway
-    gateway --> ingest
-    gateway --> indexer
-    gateway --> remediation
-    gateway -.-> aiProvider
-    gateway -.-> redis
-
-    ingest --> postgres
-    ingest -.-> redis
-    postgres -- "outbox poller" --> kafka
-    kafka --> processor
-    processor -.-> aiProvider
-    processor --> loki
-    processor --> quickwit
-    processor -- "anomalies" --> kafka
-    kafka --> remediation
-    remediation --> postgres
-    remediation -.-> redis
-    remediation -- "skipped / failed" --> responders
-    indexer --> quickwit
-
-    gateway -.-> eureka
-    ingest -.-> eureka
-    processor -.-> eureka
-    indexer -.-> eureka
-    remediation -.-> eureka
-    monitoring -.-> eureka
-    monitoring --> grafana
-```
-
-### Terminal-Friendly View
-
-```text
-   Tenants 1..M  (each runs N agents; agents bundle log-agent-lib's Logback appender)
-        |                                                  ^
-        | push: HTTPS + JWT/APIKey + X-Tenant-Id           | query: REST + GraphQL (users / ops)
-        v                                                  |
-     +-------------------------------------------------------+
-     | log-gateway  (JWT/APIKey, rate-limit, NL->LogQL)[E][M]|
-     +-------------------------------------------------------+
-              |
-              v
-   +----------------------+   +----------------+   +----------------------+   +-------------------+
-   | log-ingest    [E][M] |-->| Kafka          |-->| log-processor  [E][M]|-->| Postgres (GIN)    |
-   | (validate, dedupe,   |   |  cortex.logs   |   | (parse, anomaly,     |   | Loki (hot+warm)   |
-   |  enrich,             |   |   .events.v1   |   |  NL->LogQL via AI)   |   | MinIO/Azure Blob  |
-   |  outbox tx)          |   |    + .dlq      |   +----------------------+   | Quickwit (fulltxt)|
-   +----------------------+   | (CloudEvents   |              |               +-------------------+
-            ^                 |    1.0)        |              v                         ^
-            |                 +----------------+   +----------------------+   +-------------------+
-            |                                      | log-remediation[E][M]|   | log-indexer [E][M]|
-            |                                      | (dedupe, policy,     |   | (Quickwit writer, |
-            |                                      |  playbook, fallback) |   |  retention, cold) |
-            |                                      +----------------------+   +-------------------+
-            |                                               |
-            |                                               v
-            |                       cortex.remediation.outcomes.v1 (audit)
-            |                       cortex.anomalies.v1.dlq (malformed)
-            |                       GET /api/v1/anomalies (read model)
-            |                       Slack / PagerDuty / Jira (fallback only)
-            |
-            |  compile-time dep -- consumed by every Spring Boot service box above
-            |
-   +-------------------+
-   | log-agent-lib     |
-   | shared SDK:       |
-   | + contracts (DTOs, IngestBatchRequest, CloudEvent envelope)
-   | + Logback appender (X-Request-Id MDC, batched HTTPS push)
-   | + PiiMasker (mask-before-hash, deterministic event_id)
-   +-------------------+
-
-
-   Control plane (wired into every Spring Boot service tagged [E] / [M] above)
-
-   register / heartbeat / lb:// discovery               scrape /actuator/prometheus + /actuator/health
-            ^   ^   ^   ^   ^                                       |   |   |   |   |
-            |   |   |   |   |                                       v   v   v   v   v
-            |   |   |   |   |                                       |   |   |   |   |
-   +---------------------------+                          +---------------------------------+
-   | Eureka :8761  [E]         |                          | log-monitoring  [M]             |
-   | service registry; every   |                          | OTel + Micrometer scrape (15s); |
-   | Spring Boot service hosts |                          | SLO eval (ingest p99, dedupe    |
-   | a Spring Cloud Discovery  |                          | miss, outbox lag); Grafana      |
-   | client and registers here |                          | dashboards; health rollups      |
-   +---------------------------+                          +---------------------------------+
-            ^   ^   ^   ^   ^                                       |   |   |   |   |
-            |   |   |   |   |                                       v   v   v   v   v
-           gw  ing prc rem idx                                     gw  ing prc rem idx
-   (gw=log-gateway, ing=log-ingest, prc=log-processor, rem=log-remediation, idx=log-indexer)
-```
+CORTEX is organized around an edge API, durable ingestion, Kafka-backed eventing,
+AI processing, tiered search, and policy-gated remediation. The diagram above is
+the visual topology; the full architecture notes are in
+[ARCHITECTURE-v2.md](docs/ARCHITECTURE-v2.md), with the canonical detailed
+reference in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -246,6 +130,8 @@ Local Grafana credentials are `admin` / `cortex` for the Docker Compose stack.
 |   `-- ansible/                # Operator orchestration playbooks
 |-- docs/
 |   |-- adr/                    # Architecture Decision Records
+|   |-- assets/                 # Checked-in architecture visuals
+|   |-- ARCHITECTURE-v2.md      # Visual architecture topology
 |   |-- ARCHITECTURE.md         # Detailed architecture reference
 |   `-- PHASES.md               # Delivery history and roadmap
 |-- postman/                    # Collections and environments
@@ -276,6 +162,7 @@ The default Maven verification path enforces:
 
 ## More Docs
 
+- [Visual architecture](docs/ARCHITECTURE-v2.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Architecture decisions](docs/adr/INDEX.md)
 - [Docker stack](infra/docker/README.md)
