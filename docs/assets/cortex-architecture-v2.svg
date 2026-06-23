@@ -200,8 +200,8 @@
     <text class="chipText" x="1192" y="874">Grafana</text>
   </g>
 
-  <path class="writeLine" d="M238 292 H348"/>
-  <text class="label" x="260" y="276" fill="#2563eb">batched logs</text>
+  <path class="writeLine" d="M238 314 H348"/>
+  <text class="label" x="260" y="298" fill="#2563eb">batched logs</text>
   <path class="readLine" d="M238 460 C278 460 278 364 348 364"/>
   <text class="label" x="246" y="444" fill="#0f766e">queries</text>
 
@@ -209,17 +209,17 @@
   <text class="label" x="454" y="500" fill="#2563eb">ingest API</text>
   <path class="writeLine" d="M594 632 C642 632 660 650 720 650"/>
   <text class="label" x="612" y="612" fill="#2563eb">outbox relay</text>
-  <path class="eventLine" d="M825 588 V408"/>
+  <path class="eventLine" d="M825 588 V422"/>
   <text class="label" x="842" y="508" fill="#059669">log events</text>
 
   <path class="aiLine" d="M825 214 V294"/>
-  <path class="eventLine" d="M930 352 H1030"/>
+  <path class="eventLine" d="M930 352 H1026"/>
   <text class="label" x="948" y="334" fill="#059669">sink writes</text>
   <path class="remedyLine" d="M930 384 C972 430 970 706 1026 706"/>
   <text class="label" x="940" y="556" fill="#e11d48">anomaly events</text>
 
-  <path class="readLine" d="M1140 380 V422"/>
-  <text class="label" x="1157" y="406" fill="#0f766e">reads</text>
+  <path class="readLine" d="M1140 380 V400"/>
+  <text class="label" x="1157" y="394" fill="#0f766e">reads</text>
   <path class="remedyLine" d="M1250 706 H1370"/>
   <text class="label" x="1272" y="688" fill="#e11d48">fallback</text>
 </svg>
